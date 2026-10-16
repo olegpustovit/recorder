@@ -168,6 +168,7 @@ struct InspectorView: View {
         .overlay(alignment: .leading) { Rectangle().fill(Theme.strokeColor).frame(width: 1) }
         .signalWindow()
         .disabled(model.voiceover.isActive)
+        .environment(model)
     }
 
     private var hasSectionReveals: Bool {
@@ -185,8 +186,17 @@ struct InspectorView: View {
         switch selection {
         case .multiple(let count):
             InspectorSelectionHeader(title: "\(count) selected") { model.selectedClips = []; model.selection = [] }
-            Text("Move or remove these items on the timeline. Select one item to change its properties.")
-                .foregroundStyle(Theme.textSecondaryColor)
+            let audio = Set(model.project.audioClips.compactMap { UUID(uuidString: $0.id) })
+            if model.selectedClips.isEmpty, model.selection.isSubset(of: audio) {
+                AudioClipsPanel(model: model, ids: model.selection)
+            } else {
+                Text("Color and Remove apply to every selected item. Select items of one kind, or a single item, for more settings.")
+                    .font(Font(Theme.captionFont)).foregroundStyle(Theme.textSecondaryColor)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Button("Remove \(count) items", role: .destructive) {
+                NSApp.sendAction(#selector(EditorWindowController.removeSelected(_:)), to: nil, from: nil)
+            }.buttonStyle(TechButtonStyle(kind: .danger, compact: true))
         case .keys(let id):
             InspectorSelectionHeader(title: "Keystroke clip") { model.selection = [] }
             KeysTab(model: model, layoutID: id)
@@ -229,21 +239,72 @@ struct InspectorView: View {
 struct InspectorSelectionHeader: View {
     let title: String
     let onBack: () -> Void
+    /// Set by `InspectorView`; gallery fixtures without it show no Color row.
+    @Environment(EditorModel.self) private var model: EditorModel?
 
     var body: some View {
-        HStack {
-            Text(title)
-                .font(Font(Theme.headingFont(28)))
-                .foregroundStyle(Theme.textPrimaryColor)
-            Spacer(minLength: 8)
-            Button(action: onBack) {
-                Image(systemName: "xmark").frame(width: 16, height: 24)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text(title)
+                    .font(Font(Theme.headingFont(28)))
+                    .foregroundStyle(Theme.textPrimaryColor)
+                Spacer(minLength: 8)
+                Button(action: onBack) {
+                    Image(systemName: "xmark").frame(width: 16, height: 24)
+                }
+                .buttonStyle(TechButtonStyle(kind: .quiet, compact: true))
+                .help("Deselect")
+                .accessibilityLabel("Deselect")
             }
-            .buttonStyle(TechButtonStyle(kind: .quiet, compact: true))
-            .help("Deselect")
-            .accessibilityLabel("Deselect")
+            if let model, !model.selectedColors.isEmpty { ColorTagRow(model: model) }
         }
         .padding(.bottom, 4)
+    }
+}
+
+/// T-656 colour tag swatches for the current selection: None, then the seven tags. One click = one undo step;
+/// a selection with different tags shows "Mixed" and no check until a swatch is chosen.
+struct ColorTagRow: View {
+    let model: EditorModel
+
+    var body: some View {
+        let colors = model.selectedColors
+        let current: BlockColor?? = Set(colors).count == 1 ? colors.first : nil
+        HStack(spacing: 4) {
+            VStack(alignment: .leading, spacing: 0) {
+                Text("Color").font(Font(Theme.labelFont)).foregroundStyle(Theme.textSecondaryColor)
+                if current == nil {
+                    Text("Mixed").font(Font(Theme.captionFont)).foregroundStyle(Theme.textTertiaryColor)
+                }
+            }
+            .fixedSize()
+            Spacer(minLength: 8)
+            swatch(nil, selected: current == .some(nil))
+            ForEach(BlockColor.allCases, id: \.self) { swatch($0, selected: current == .some($0)) }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Color")
+    }
+
+    private func swatch(_ color: BlockColor?, selected: Bool) -> some View {
+        let name = color?.rawValue.capitalized ?? "None"
+        return Button { model.setSelectedColor(color) } label: {
+            ZStack {
+                if let color {
+                    Circle().fill(Color(nsColor: Theme.tag(color))).frame(width: 14, height: 14)
+                    if selected { Image(systemName: "checkmark").font(.system(size: 8, weight: .bold)).foregroundStyle(Color(nsColor: Theme.mediaMatte)) }
+                } else {
+                    Image(systemName: "circle.slash").font(.system(size: 14, weight: .light)).foregroundStyle(Theme.textSecondaryColor)
+                }
+                if selected { Circle().strokeBorder(Theme.textPrimaryColor, lineWidth: 1.5).frame(width: 20, height: 20) }
+            }
+            .frame(width: 24, height: 24)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(color == nil ? "No color" : "Color: \(name)")
+        .accessibilityLabel(name)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
 

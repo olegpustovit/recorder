@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import CoreText
+import RecorderCore
 
 /// Signal UI: flat, dark recording software inspired by instrumentation rather than consumer video apps.
 /// Keep every app colour, type role, radius and spacing value here so AppKit and SwiftUI stay identical.
@@ -35,6 +36,26 @@ enum Theme {
     static let voiceover = adaptive("#E9D8CF")
     static let warning = adaptive("#D8C86A", light: "#75620B")
     static let danger = adaptive("#E38276", light: "#A13027")
+
+    /// Clip colour tags (2026-10-16): mid tones that read as a stripe on pale blocks and as a dot on charcoal.
+    static func tag(_ color: BlockColor) -> NSColor {
+        switch color {
+        case .red: return tagRed
+        case .orange: return tagOrange
+        case .yellow: return tagYellow
+        case .green: return tagGreen
+        case .blue: return tagBlue
+        case .purple: return tagPurple
+        case .gray: return tagGray
+        }
+    }
+    private static let tagRed = adaptive("#E0796C", light: "#B8473B")
+    private static let tagOrange = adaptive("#E59A5B", light: "#B0611F")
+    private static let tagYellow = adaptive("#D9C25A", light: "#8A7410")
+    private static let tagGreen = adaptive("#86BF7E", light: "#3E7A36")
+    private static let tagBlue = adaptive("#78A9DB", light: "#2F6AA6")
+    private static let tagPurple = adaptive("#AE92D8", light: "#6B4BA3")
+    private static let tagGray = adaptive("#9A9A94", light: "#5E5E59")
 
     /// Appearance-local inversion keeps media pixels intact and shares tokens with AppKit.
     static let mediaMatte = NSColor(hex: "#080808")

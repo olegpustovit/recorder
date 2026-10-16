@@ -16,6 +16,7 @@ public struct Clip: Codable, Equatable, Sendable {
     public var mediaStart: Double? = nil
     /// Separate the timeline clock from playback rate for an unlinked speed edit.
     public var clockSpeed: Double? = nil
+    public var color: BlockColor? = nil
     public var timeScale: Double { clockSpeed ?? speed }
     public var mediaDuration: Double { (sourceEnd - sourceStart) * (speed / timeScale) }
     public func mediaTime(atSource time: Double) -> Double { mediaIn + (time - sourceStart) * (speed / timeScale) }
