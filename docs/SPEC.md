@@ -982,3 +982,23 @@ PLAN T-640…T-650.
   Imported media is copied into `media/`. Idle spans from `events.json` appear as slots on Layer 1.
 - **Render order.** background → screen → cursor → backdrop → layers → camera → front layers → text → keys. Preview and
   export share it (parity maxDelta 0).
+
+### Voice workflow (October 2026, evening)
+
+- **No mic pre-cuts on open**; opening only transcribes. The pause eraser cuts where dragged, keeping **Tail** (default
+  120 ms) of each pause on the speech side and fading by **Fade** (default 80 ms); pauses shorter than 2×Tail+50 ms stay.
+  Right-click or press-and-hold the eraser button to set both (per Mac, UserDefaults `eraserTail`/`eraserFade`).
+- While transcribing, the Mic lane, its header, the Sound tab and the mic clip panel show an indeterminate status;
+  failures show the error text.
+- **Lanes on demand:** fixed lanes with no blocks are hidden. "+" (track-header ruler row, also header right-click) adds an
+  empty `Audio N` track (one undo) or reveals a hidden lane (Camera/Layout need a camera). Reveals are session-only; a lane
+  that held blocks stays until the editor closes; "Hide Lane" on an empty revealed lane. Audio clip menu: **Move to New
+  Track** (selection → new `Audio N` with the source volume/mute, one undo; refused on overlap).
+- **Colour tags:** optional `color` (`red|orange|yellow|green|blue|purple|gray`) on clips, zooms, keystrokeClips, layouts,
+  masks, texts, windowShots, cameraClips, audioClips, layers; missing = none; split/duplicate/paste copy it. Tokens
+  (dark/light): red `#E0796C`/`#B8473B`, orange `#E59A5B`/`#B0611F`, yellow `#D9C25A`/`#8A7410`, green `#86BF7E`/`#3E7A36`,
+  blue `#78A9DB`/`#2F6AA6`, purple `#AE92D8`/`#6B4BA3`, gray `#9A9A94`/`#5E5E59`. A tagged block = lane fill blended 38%
+  toward the tag + 3 pt top stripe. Every item menu has Color ▸ above Remove; right-clicking inside a multi-selection keeps
+  it (Color, Move to New Track for audio-only, Remove N Items). Inspector selection headers show a Color row.
+- **Multi-select inspector:** several audio clips → shared Gain, Mute, Fade in, Fade out ("Mixed" until changed, one undo
+  per gesture); any other mix → Color and Remove N items.

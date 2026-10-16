@@ -193,7 +193,7 @@ empty lanes (zoom, keys, layout, mask, text, window, camera without clips) are h
 swatches · multi-select shared settings for audio clips, colour + remove for any mixed selection (other kinds later).
 Lanes run in worktrees `../recorder-voice-{e,t,c}` (branches `voice-*`), merged by the coordinator.
 
-- [ ] **T-654 Eraser Tail + Fade preset, no pre-cuts, transcription status** (lane e)
+- [x] **T-654 Eraser Tail + Fade preset, no pre-cuts, transcription status** (lane e)
   - Core: `erasePauses(file:silent:inOutput:tail:fade:)` keeps `tail` s of the pause on each speech side (pauses shorter
     than 2×tail+0.05 s are left alone), fades the speech side by `fade`. `splitAudioAtPauses` keeps its signature.
   - App: `prepareMic` only transcribes (no slicing). Eraser toolbar button: right-click or long-press opens an NSPopover
@@ -202,7 +202,7 @@ Lanes run in worktrees `../recorder-voice-{e,t,c}` (branches `voice-*`), merged 
     and the header/AudioPanel/Sound tab show the same status; failures show the error text.
   - Verify: `make test FILTER=eraserTailFade` (+ `pausesSliceAndEraseMicOnly`); `command-scissors`, `timeline-ops`,
     `audio-mix-abutting` OK. HUMAN: drag the eraser over a pause with tail 200 ms — voice decays naturally.
-- [ ] **T-655 Lanes on demand: hide empty lanes, "+" menu, Move to New Track** (lane t)
+- [x] **T-655 Lanes on demand: hide empty lanes, "+" menu, Move to New Track** (lane t)
   - Fixed lanes with no blocks are hidden unless revealed this session; lanes with content always show. A "+" button at
     the top of the track-header gutter opens an NSMenu: "Audio Track" (appends `Audio N`, one undo) then each hidden
     lane type; choosing reveals that lane and scrolls it into view. Empty revealed lanes' header menu: "Hide Lane".
@@ -210,7 +210,7 @@ Lanes run in worktrees `../recorder-voice-{e,t,c}` (branches `voice-*`), merged 
     context menu "Move to New Track" (applies to the selection).
   - Verify: `make test FILTER=moveAudioToNewTrack`; all `timeline-*` selftests, `command-scissors`, `menu-actions`,
     `audio-lanes`, `media-import` OK (update fixtures that click a now-hidden empty lane by revealing it first).
-- [ ] **T-656 Clip colours + multi-select inspector** (lane c)
+- [x] **T-656 Clip colours + multi-select inspector** (lane c)
   - Core: optional colour tag (`red orange yellow green blue purple gray`) on every timeline block type and video clip;
     inherited by split/duplicate/paste; additive JSON key. Theme tokens for the 7 swatches (SPEC §3).
   - Timeline tints blocks by tag; context menu "Colour ▸" (swatch images + None) applies to the selection; inspector
@@ -1070,3 +1070,5 @@ T-509 · 2026-10-16 · Published v0.3.3 from 2fb0859 with T-416's waveform timin
 T-651…T-653 · 2026-10-16 · Voice editing request: 130/130 tests incl. pausesSliceAndEraseMicOnly; debug app timeline-ops, menu-actions, inspector-panels, command-scissors, waveform OK. Makefile `test` pins DEVELOPER_DIR to CLT (xcode-select now points at Xcode, whose Testing macros mismatch CLT's framework). Live Speech/eraser/visual checks are HUMAN. Not committed: agentpack.toml/pack.lock merge conflict pending.
 
 fix · 2026-10-16 · Crash after opening a mic recording: split-at-pauses slices abut at float-noisy boundaries that round to a 1-tick overlap at timescale 600, and AVFoundation throws on overlapping volume ramps (`makeAudioMix` now clamps each ramp to the previous end per track). Transcriber kept only the final result, which on long audio repeats just the last utterance; now merges every utterance (Soft Harbor 434 s: 16 → 684 words). New `--selftest audio-mix-abutting` crashes before the fix and passes after; clip-fades and captions OK.
+
+T-654…T-656 · 2026-10-16 · Voice workflow merged from lanes voice-e/t/c: eraser Tail+Fade preset, no pre-cuts, transcription status; lanes on demand + "+" menu + Move to New Track; colour tags + multi-select audio inspector. Merge conflicts (tests, context menu) resolved keeping both; multi-selection menu offers Move to New Track for audio-only selections. `make test` 133/133; debug app timeline-ops, command-scissors, menu-actions, audio-lanes, inspector-panels, timeline-clipboard/selection/tracks/full-layers, media-import, audio-mix-abutting, timeline-png --colors OK (PNG inspected). HUMAN: eraser tail by ear, "+" menu/reveal feel, swatches on a real display, multi-audio slider drag.

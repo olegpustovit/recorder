@@ -16,6 +16,7 @@ public struct Clip: Codable, Equatable, Sendable {
     public var mediaStart: Double? = nil
     /// Separate the timeline clock from playback rate for an unlinked speed edit.
     public var clockSpeed: Double? = nil
+    // shortcut: synthesized Codable, so a colour added by a newer app version fails the load; add a lenient init(from:) before adding colours.
     public var color: BlockColor? = nil
     public var timeScale: Double { clockSpeed ?? speed }
     public var mediaDuration: Double { (sourceEnd - sourceStart) * (speed / timeScale) }
