@@ -239,6 +239,25 @@ private struct LCG: RandomNumberGenerator {
     #expect(p.audioClips[0].fadeIn == nil && p.audioClips[1].fadeOut == nil)
 }
 
+@Test func moveAudioToNewTrack() {
+    var p = Project(source: Source(duration: 20, hasMic: true), clips: [Clip(sourceStart: 0, sourceEnd: 20, speed: 1)])
+    p.audioTracks[0].volume = 0.5
+    p.splitAudioAtPauses(file: "mic.m4a", silent: [TimeRange(start: 5, end: 8)])
+    let ids = p.audioClips.prefix(2).map { UUID(uuidString: $0.id)! }
+    let timing = p.audioClips.map { [$0.start, $0.end] }
+    let moved = p.moveAudioToNewTrack(ids)
+    #expect(moved)
+    #expect(p.checkInvariants() == nil)
+    #expect(p.audioTracks.last?.name == "Audio 1" && p.audioTracks.last?.volume == 0.5)
+    #expect(p.audioClips.map(\.track) == [1, 1, 0] && p.audioClips.map { [$0.start, $0.end] } == timing)
+    let added = p.addAudioTrack(), missing = p.moveAudioToNewTrack([UUID()])
+    #expect(added == 2 && p.audioTracks[2].name == "Audio 2" && !missing)
+    p.audioClips.append(AudioClip(start: 1, end: 3, file: "mic.m4a", track: 0)) // overlaps Audio 1's first clip
+    let overlapped = p
+    let refused = !p.moveAudioToNewTrack([UUID(uuidString: p.audioClips[0].id)!, UUID(uuidString: p.audioClips.last!.id)!])
+    #expect(refused && p == overlapped)
+}
+
 @Test func highlightZoomCopiesTimingAndTarget() {
     var p = Project(source: Source(duration: 20), clips: [Clip(sourceStart: 0, sourceEnd: 20, speed: 1)])
     let id = p.addZoom(atSource: 4, length: 3, mode: .manual)!

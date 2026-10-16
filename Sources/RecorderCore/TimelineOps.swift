@@ -62,6 +62,28 @@ public extension Project {
         return audioTracks.count
     }
 
+    /// Appends an empty `Audio N` track (lowest free N) with `settings`' volume/mute; returns its index.
+    @discardableResult
+    mutating func addAudioTrack(matching settings: AudioTrack? = nil) -> Int {
+        var number = 1
+        while audioTracks.contains(where: { $0.name == "Audio \(number)" }) { number += 1 }
+        audioTracks.append(AudioTrack(name: "Audio \(number)", volume: settings?.volume ?? 1, muted: settings?.muted ?? false))
+        return audioTracks.count - 1
+    }
+
+    /// Moves audio clips `ids` onto a new `Audio N` track carrying the first clip's track volume/mute. Timing and links
+    /// are unchanged; false (project untouched) when none match or the clips would overlap on one lane.
+    @discardableResult
+    mutating func moveAudioToNewTrack(_ ids: [UUID]) -> Bool {
+        let keys = Set(ids.map(\.uuidString))
+        guard let first = audioClips.first(where: { keys.contains($0.id) }) else { return false }
+        let before = self
+        let track = addAudioTrack(matching: audioTracks[first.track])
+        for i in audioClips.indices where keys.contains(audioClips[i].id) { audioClips[i].track = track }
+        guard checkInvariants() == nil else { self = before; return false }
+        return true
+    }
+
     @discardableResult
     mutating func addImportedAudio(file: String, atOutput time: Double, duration: Double, layer: String? = nil, matching settings: AudioTrack? = nil) -> UUID? {
         guard file.hasPrefix("media/"), !file.split(separator: "/").contains(".."),
@@ -69,11 +91,7 @@ public extension Project {
         let before = self
         extendAudioClock(toOutput: time)
         let track = importedAudioTrack(start: time, end: time + duration, matching: settings)
-        if track == audioTracks.count {
-            var number = 1
-            while audioTracks.contains(where: { $0.name == "Audio \(number)" }) { number += 1 }
-            audioTracks.append(AudioTrack(name: "Audio \(number)", volume: settings?.volume ?? 1, muted: settings?.muted ?? false))
-        }
+        if track == audioTracks.count { addAudioTrack(matching: settings) }
         let start = TimeMap(clips).sourceTime(atOutput: time)
         let id = UUID()
         audioClips.append(AudioClip(id: id.uuidString, start: start, end: start + duration, file: file,
@@ -1974,11 +1992,7 @@ public extension Project {
                 var part = audio; part.id = UUID().uuidString; part.layer = copy.id
                 part.start = TimeMap(clips).sourceTime(atOutput: output); part.end = part.start + interval.end - interval.start
                 part.track = importedAudioTrack(start: output, end: output + interval.end - interval.start, matching: audioTracks[audio.track])
-                if part.track == audioTracks.count {
-                    var number = 1
-                    while audioTracks.contains(where: { $0.name == "Audio \(number)" }) { number += 1 }
-                    audioTracks.append(AudioTrack(name: "Audio \(number)", volume: audioTracks[audio.track].volume, muted: audioTracks[audio.track].muted))
-                }
+                if part.track == audioTracks.count { addAudioTrack(matching: audioTracks[audio.track]) }
                 audioClips.append(part)
             }
             audioClips.sort { $0.start < $1.start }

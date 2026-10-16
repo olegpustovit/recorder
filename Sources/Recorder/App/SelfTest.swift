@@ -3609,6 +3609,7 @@ enum SelfTest {
         "timeline-ops": { _ in
             try await runTimelineOpsSelfTest()
             try await MainActor.run { try TimelineView.runAudioUISelfTest() }
+            try await MainActor.run { try TimelineView.runLanesOnDemandSelfTest() }
         },
         // T-415: manual zoom target overlay — mapping round trip + synthetic drag (see
         // `Render/ZoomTargetMapping.swift`).
@@ -4164,6 +4165,7 @@ private func makeTimelineOpsFixture(hasCamera: Bool = false) throws -> (model: E
 
     let view = TimelineView(frame: CGRect(x: 0, y: 0, width: 900, height: 160))
     view.model = model
+    view.revealedLanes = Set(Lane.allCases) // fixed lane geometry: these checks add blocks after sizing the view
     view.setFrameSize(CGSize(width: 900, height: view.contentHeight + 26))
     view.geometry.pxPerSecond = 40
     view.geometry.scrollX = 0

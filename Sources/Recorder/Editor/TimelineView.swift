@@ -39,6 +39,8 @@ final class TimelineView: NSView {
     weak var model: EditorModel? {
         didSet {
             lastClips = model?.project.clips ?? [] // no ripple from the very first assignment
+            revealedLanes = []
+            rememberShownLanes()
             observeModel()
             maybeFitOnFirstLayout()
             loadWaveformIfNeeded()
@@ -181,7 +183,7 @@ final class TimelineView: NSView {
     var lanes: [Lane] {
         guard let model else { return Lane.allCases }
         var tracks = model.project.audioTracks.indices.filter { track in
-                model.project.audioClips.contains { $0.track == track } ||
+                model.project.audioClips.contains { $0.track == track } || revealedLanes.contains(.audio(track)) ||
                     (dragKind != nil && dragProject?.audioClips.contains { $0.track == track } == true)
         }
         if model.voiceover.isActive, !tracks.contains(model.voiceover.track) { tracks.append(model.voiceover.track) }
@@ -387,14 +389,26 @@ final class TimelineView: NSView {
             button.setAccessibilityLabel("Add full-length \(name) layer")
             addSubview(button)
         }
+        addTrackButton.isBordered = false
+        addTrackButton.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "Add Track")?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 11, weight: .regular))
+        addTrackButton.imagePosition = .imageOnly
+        addTrackButton.contentTintColor = Theme.textSecondary
+        addTrackButton.target = self
+        addTrackButton.action = #selector(addTrackTapped(_:))
+        addTrackButton.toolTip = "Add Track"
+        addTrackButton.setAccessibilityLabel("Add Track")
+        addSubview(addTrackButton)
     }
 
+    private let addTrackButton = NSButton(title: "", target: nil, action: nil)
     private let fullZoomButton = NSButton(title: "+", target: nil, action: nil)
     private let fullKeysButton = NSButton(title: "+", target: nil, action: nil)
 
     override func layout() {
         super.layout()
         layoutAudioHeaders()
+        addTrackButton.frame = CGRect(x: max(0, gutterWidth - 22), y: 2, width: min(18, gutterWidth), height: 18)
         for (button, lane) in [(fullZoomButton, Lane.zoom), (fullKeysButton, Lane.keys)] {
             let row = laneRow(lane)
             button.frame = CGRect(x: 78, y: row.minY, width: 24, height: row.height)
@@ -413,6 +427,47 @@ final class TimelineView: NSView {
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// "+" menu: a new empty audio track, then every lane that is currently hidden.
+    func addTrackMenu() -> NSMenu {
+        let menu = NSMenu()
+        func item(_ title: String, _ symbol: String, _ action: Selector, _ lane: Lane?) {
+            let item = actionItem(title, action: action, represented: lane)
+            item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+            menu.addItem(item)
+        }
+        item("Audio Track", "waveform", #selector(menuAddAudioTrack), nil)
+        let hidden = Self.addableLanes.filter { entry in
+            !laneShown(entry.lane) && (model?.project.source.hasCamera == true || (entry.lane != .camera && entry.lane != .layout))
+        }
+        if !hidden.isEmpty { menu.addItem(.separator()) }
+        for entry in hidden { item(entry.title, entry.symbol, #selector(menuRevealLane(_:)), entry.lane) }
+        return menu
+    }
+
+    @objc private func addTrackTapped(_ sender: NSButton) {
+        addTrackMenu().popUp(positioning: nil, at: CGPoint(x: sender.frame.minX, y: sender.frame.maxY + 2), in: self)
+    }
+
+    @objc private func menuAddAudioTrack() {
+        guard let model, model.voiceover.isActive != true else { return }
+        var track = 0
+        model.edit("Add Audio Track") { track = $0.addAudioTrack() }
+        revealLane(.audio(track))
+    }
+
+    @objc private func menuRevealLane(_ sender: NSMenuItem) {
+        if let lane = sender.representedObject as? Lane { revealLane(lane) }
+    }
+
+    @objc private func menuHideLane(_ sender: NSMenuItem) {
+        guard let lane = sender.representedObject as? Lane else { return }
+        revealedLanes.remove(lane)
+        needsLayout = true
+        enclosingScrollView?.superview?.needsLayout = true
+        needsDisplay = true
+        onNavigationChange?()
+    }
 
     override func setFrameSize(_ newSize: NSSize) {
         if newSize != frame.size, dragKind != nil { cancelActiveDrag(); dragOrigin = nil }
@@ -444,6 +499,9 @@ final class TimelineView: NSView {
         }
         if let start = selectionStart {
             if now - start < Theme.Motion.contextReveal { active = true } else { selectionStart = nil }
+        }
+        if let start = revealFlash?.start {
+            if now - start < Theme.Motion.reveal { active = true } else { revealFlash = nil }
         }
         if let start = rippleStart {
             if now - start < Self.rippleDuration { active = true } else { rippleStart = nil; rippleFromClips = nil }
@@ -484,6 +542,7 @@ final class TimelineView: NSView {
                 // T-408 "Ripple animation": clips changed from something other than a live drag
                 // of this view's own doing (remove/restore/speed/undo/redo/an edit from elsewhere)
                 // → animate from the old geometry. Nothing animates while a drag is active.
+                self.rememberShownLanes()
                 if self.dragKind == nil, model.project.clips != self.lastClips {
                     self.beginRipple(from: self.lastClips)
                 }
@@ -514,17 +573,66 @@ final class TimelineView: NSView {
 
     // MARK: - Lane layout
 
-    private var hasLayoutLane: Bool { model?.project.layouts.isEmpty == false }
+    private var hasLayoutLane: Bool { laneShown(.layout) }
+
+    // MARK: - Lanes on demand (T-655)
+
+    /// Empty fixed lanes and empty audio tracks show only once "+" reveals them. Session-only: a fixed lane that held
+    /// blocks stays revealed while the editor is open, so deleting its last block doesn't shift the lanes below.
+    var revealedLanes: Set<Lane> = []
+    /// Lanes "+" can reveal, in lane order (camera-only lanes need a camera recording).
+    private static let addableLanes: [(lane: Lane, title: String, symbol: String)] = [
+        (.camera, "Camera", "video"), (.zoom, "Zoom", "plus.magnifyingglass"), (.keys, "Keystrokes", "keyboard"),
+        (.layout, "Camera Layout", "rectangle.inset.bottomright.filled"), (.mask, "Mask", "eye.slash"), (.text, "Text", "textformat")]
+    private var revealFlash: (lane: Lane, start: CFTimeInterval)?
+
+    private func laneHasContent(_ lane: Lane) -> Bool {
+        guard let p = model?.project else { return true }
+        switch lane {
+        case .clip, .layer: return true
+        case .camera: return !p.cameraClips.isEmpty
+        case .zoom: return !p.zooms.isEmpty
+        case .keys: return !p.keystrokeClips.isEmpty
+        case .layout: return !p.layouts.isEmpty
+        case .mask: return !p.masks.isEmpty
+        case .text: return !p.texts.isEmpty
+        case .window: return p.windowCount > 1
+        case .audio(let track): return p.audioClips.contains { $0.track == track }
+        }
+    }
+
+    private func laneShown(_ lane: Lane) -> Bool {
+        if lane == .camera || lane == .layout, model?.project.source.hasCamera != true { return false }
+        return laneHasContent(lane) || revealedLanes.contains(lane)
+    }
+
+    private func rememberShownLanes() {
+        revealedLanes.formUnion(Lane.allCases.filter(laneHasContent))
+    }
+
+    /// Shows `lane`, scrolls it into view and briefly highlights it.
+    func revealLane(_ lane: Lane) {
+        revealedLanes.insert(lane)
+        needsLayout = true
+        enclosingScrollView?.superview?.needsLayout = true
+        superview?.superview?.needsLayout = true
+        layoutSubtreeIfNeeded()
+        enclosingScrollView?.superview?.layoutSubtreeIfNeeded()
+        scrollToVisible(laneRow(lane).insetBy(dx: 0, dy: -4))
+        if !reduceMotion { revealFlash = (lane, CACurrentMediaTime()); ensureAnimating() }
+        needsDisplay = true
+        onNavigationChange?()
+    }
 
     private func baseLaneHeight(_ lane: Lane) -> CGFloat {
         switch lane {
         case .clip: return Self.clipHeight
-        case .camera: return model?.project.source.hasCamera == true ? 24 : 0
-        case .zoom: return Self.zoomHeight
-        case .keys: return Self.layoutHeight
+        case .camera: return laneShown(.camera) ? 24 : 0
+        case .zoom: return laneShown(.zoom) ? Self.zoomHeight : 0
+        case .keys: return laneShown(.keys) ? Self.layoutHeight : 0
         case .layout: return hasLayoutLane ? Self.layoutHeight : 0
-        case .mask, .text: return Self.maskHeight
-        case .window: return model?.project.windowCount ?? 1 > 1 ? Self.maskHeight : 0
+        case .mask, .text: return laneShown(lane) ? Self.maskHeight : 0
+        case .window: return laneShown(.window) ? Self.maskHeight : 0
         case .audio(let track):
             // Transcript (or transcription status) line under the waveform (2026-10-16) on the track holding mic.m4a.
             let line = model?.transcript?.isEmpty == false || model?.transcriptStatus != nil
@@ -695,6 +803,11 @@ final class TimelineView: NSView {
             guard row.height > 0 else { continue }
             Theme.bgControl.setFill()
             CGRect(x: gutterWidth, y: row.minY + 3, width: max(0, bounds.width - gutterWidth), height: row.height - 6).fill()
+            if let flash = revealFlash, flash.lane == lane {
+                let progress = min(1, (CACurrentMediaTime() - flash.start) / Theme.Motion.reveal)
+                Theme.textPrimary.withAlphaComponent(0.14 * (1 - progress)).setFill()
+                row.fill()
+            }
         }
         let interval = geometry.tickInterval()
         var t = max(0, floor(geometry.output(forX: 0) / interval) * interval)
@@ -1525,6 +1638,15 @@ final class TimelineView: NSView {
     override func menu(for event: NSEvent) -> NSMenu? {
         guard model?.voiceover.isActive != true else { return nil }
         let p = convert(event.locationInWindow, from: nil)
+        if p.x < gutterWidth, p.y < contentHeight {
+            // Track headers: the "+" menu, plus "Hide Lane" on an empty revealed lane.
+            let menu = addTrackMenu()
+            if let lane = lanes.first(where: { laneRow($0).contains(CGPoint(x: 1, y: p.y)) }), revealedLanes.contains(lane), !laneHasContent(lane) {
+                menu.insertItem(.separator(), at: 0)
+                menu.insertItem(actionItem("Hide Lane", action: #selector(menuHideLane(_:)), represented: lane), at: 0)
+            }
+            return menu
+        }
         switch hitTest(at: p) {
         case .clipBody(let i), .clipEdge(let i, _):
             return clipContextMenu(index: i)
@@ -3143,6 +3265,47 @@ extension TimelineView {
         try check(model.project == baseline, "layer UI left project mutated")
     }
 
+    /// T-655: empty fixed lanes hidden, "+" reveals them, a lane that held blocks stays this session,
+    /// "Audio Track" / "Move to New Track" are one undo step each and show their lane.
+    @MainActor static func runLanesOnDemandSelfTest() throws {
+        struct Fail: Error, CustomStringConvertible { let description: String }
+        func check(_ value: Bool, _ description: String) throws { if !value { throw Fail(description: description) } }
+        _ = NSApplication.shared
+        let package = FileManager.default.temporaryDirectory.appendingPathComponent("lanes-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: package, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: package) }
+        var project = Project(source: Source(duration: 12, hasMic: true), clips: [Clip(sourceStart: 0, sourceEnd: 12)])
+        project.splitAudioAtPauses(file: "mic.m4a", silent: [TimeRange(start: 5, end: 7)], fade: 0)
+        let model = EditorModel(packageURL: package, project: project, events: EventLog())
+        defer { model.saveNow() }
+        let view = TimelineView(frame: CGRect(x: 0, y: 0, width: 1000, height: 300))
+        view.model = model
+        let fixed: [Lane] = [.camera, .zoom, .keys, .layout, .mask, .text, .window]
+        try check(fixed.allSatisfy { view.laneHeight($0) == 0 } && view.laneHeight(.audio(0)) > 0, "empty fixed lanes hidden")
+        let titles = view.addTrackMenu().items.map(\.title)
+        try check(titles == ["Audio Track", "", "Zoom", "Keystrokes", "Mask", "Text"], "+ menu lists hidden lanes: \(titles)")
+        view.revealLane(.zoom)
+        try check(view.laneHeight(.zoom) > 0 && !view.addTrackMenu().items.map(\.title).contains("Zoom"), "reveal shows the lane")
+        guard case .emptyLane(.zoom, _) = view.hitTest(at: CGPoint(x: 400, y: view.laneMidY(.zoom))) else { throw Fail(description: "revealed lane accepts add") }
+        model.edit("Add") { _ = $0.addMask(atSource: 2, kind: .mask) }
+        view.rememberShownLanes()
+        model.edit("Remove") { $0.masks = [] }
+        try check(view.laneHeight(.mask) > 0, "lane that held blocks stays this session")
+        view.menuHideLane(view.actionItem("", action: nil, represented: Lane.mask))
+        try check(view.laneHeight(.mask) == 0, "Hide Lane on an empty lane")
+        let steps = model.undoStepCount
+        view.menuAddAudioTrack()
+        try check(model.undoStepCount == steps + 1 && model.project.audioTracks.last?.name == "Audio 1" && view.lanes.contains(.audio(1)), "Audio Track adds a visible empty lane")
+        model.undo()
+        model.selection = [UUID(uuidString: model.project.audioClips[0].id)!]
+        let menu = view.audioContextMenu(id: UUID(uuidString: model.project.audioClips[0].id)!)
+        try check(menu.items.contains { $0.title == "Move to New Track" }, "audio menu offers Move to New Track")
+        view.menuMoveAudioToNewTrack()
+        try check(model.project.audioClips[0].track == 1 && model.project.audioClips[1].track == 0 && view.lanes.contains(.audio(1)), "Move to New Track")
+        model.undo()
+        try check(model.project == project, "undo restores the project")
+    }
+
     @MainActor static func runAudioUISelfTest() throws {
         struct Fail: Error, CustomStringConvertible { let description: String }
         func check(_ value: Bool, _ description: String) throws { if !value { throw Fail(description: description) } }
@@ -3337,7 +3500,7 @@ extension TimelineView {
     }
 
     private func audioContextMenu(id: UUID) -> NSMenu {
-        selectBlock(id, addToSelection: false)
+        if model?.selection.contains(id) != true { selectBlock(id, addToSelection: false) }
         let menu = NSMenu()
         guard let model, let clip = model.project.audioClips.first(where: { $0.id == id.uuidString }) else { return menu }
         menu.addItem(actionItem("Split at Playhead (C)", action: #selector(menuSplitAtPlayhead)))
@@ -3348,6 +3511,9 @@ extension TimelineView {
             menu.addItem(actionItem("Link to Its Video", action: #selector(menuAudioLink(_:)), represented: "layer"))
         }
         if model.project.syncOffset(clip) != nil { menu.addItem(actionItem("Move into Sync", action: #selector(menuAudioSync))) }
+        let move = actionItem("Move to New Track", action: #selector(menuMoveAudioToNewTrack))
+        move.image = NSImage(systemSymbolName: "rectangle.stack.badge.plus", accessibilityDescription: nil)
+        menu.addItem(move)
         menu.addItem(.separator())
         let mute = actionItem("Mute Clip", action: #selector(menuAudioMute))
         mute.state = clip.gain == 0 ? .on : .off; menu.addItem(mute)
@@ -3359,6 +3525,16 @@ extension TimelineView {
     @objc private func menuAudioLink(_ sender: NSMenuItem) {
         guard let model, let id = model.selection.first, let target = sender.representedObject as? String else { return }
         AudioPanel(model: model, audioID: id).changeLink(AudioClip.Link(rawValue: target))
+    }
+
+    /// Moves every selected audio clip onto one new `Audio N` lane (one undo step), then reveals it.
+    @objc func menuMoveAudioToNewTrack() {
+        guard let model else { return }
+        let ids = model.project.audioClips.compactMap { UUID(uuidString: $0.id) }.filter(model.selection.contains)
+        var project = model.project
+        guard project.moveAudioToNewTrack(ids) else { NSSound.beep(); return }
+        model.edit("Move to New Track") { $0 = project }
+        revealLane(.audio(project.audioTracks.count - 1))
     }
 
     @objc func menuAudioSync() {
