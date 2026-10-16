@@ -117,6 +117,16 @@ import RecorderCore
     }
     var timeMap: TimeMap { TimeMap(project.clips) }
 
+    /// Colour tags of every selected video clip and block (T-656), for the Color menu and inspector row.
+    var selectedColors: [BlockColor?] {
+        selectedClips.filter(project.clips.indices.contains).map { project.clips[$0].color } + selection.map(project.color(ofBlock:))
+    }
+
+    func setSelectedColor(_ color: BlockColor?) {
+        let blocks = selection, clips = selectedClips
+        edit(color == nil ? "Clear Color" : "Set Color") { $0.setColor(color, blocks: blocks, clips: clips) }
+    }
+
     /// 240 Hz lookup tables for the render pipeline (SPEC §6.2, §6.3, §6.5) — simulated once here,
     /// not per frame, so scrubbing/export sampling (`CameraPath`/`CursorPath.sample`) is O(1)
     /// (T-413). Rebuilt only when a change could actually move them (see `rebuildPathsIfNeeded`).

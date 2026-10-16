@@ -182,14 +182,13 @@ public extension Project {
               clip.mediaIn + clip.mediaDuration - clip.mediaTime(atSource: s) >= Self.minClipLength else { return false }
         let before = self
 
-        clips[i] = Clip(sourceStart: clip.sourceStart, sourceEnd: s, speed: clip.speed)
-        clips[i].mediaStart = clip.mediaStart
-        clips[i].clockSpeed = clip.clockSpeed
-        clips[i].fadeIn = clip.fadeIn
-        var right = Clip(sourceStart: s, sourceEnd: clip.sourceEnd, speed: clip.speed)
+        // Copies keep every per-clip setting (speed, clock, colour); only the inner fades are dropped.
+        clips[i].sourceEnd = s
+        clips[i].fadeOut = nil
+        var right = clip
+        right.sourceStart = s
         right.mediaStart = clip.mediaTime(atSource: s)
-        right.clockSpeed = clip.clockSpeed
-        right.fadeOut = clip.fadeOut
+        right.fadeIn = nil
         clips.insert(right, at: i + 1)
         editLinkedLayers(in: s...s, moveBy: 0)
         settleConnected()
@@ -1511,14 +1510,13 @@ public extension Project {
         guard let i = clips.firstIndex(where: { !$0.isEmpty && s > $0.sourceStart + Self.minClipLength && s < $0.sourceEnd - Self.minClipLength }) else { return }
         let before = self
         let clip = clips[i]
-        clips[i] = Clip(sourceStart: clip.sourceStart, sourceEnd: s, speed: clip.speed)
-        clips[i].mediaStart = clip.mediaStart
-        clips[i].clockSpeed = clip.clockSpeed
-        clips[i].fadeIn = clip.fadeIn
-        var right = Clip(sourceStart: s, sourceEnd: clip.sourceEnd, speed: clip.speed)
+        // Copies keep every per-clip setting (speed, clock, colour); only the inner fades are dropped.
+        clips[i].sourceEnd = s
+        clips[i].fadeOut = nil
+        var right = clip
+        right.sourceStart = s
         right.mediaStart = clip.mediaTime(atSource: s)
-        right.clockSpeed = clip.clockSpeed
-        right.fadeOut = clip.fadeOut
+        right.fadeIn = nil
         clips.insert(right, at: i + 1)
         editLinkedLayers(in: s...s, moveBy: 0)
         settleConnected()
@@ -1634,6 +1632,7 @@ private protocol TimedBlock {
     var id: String { get set }
     var start: Double { get set }
     var end: Double { get set }
+    var color: BlockColor? { get set }
     mutating func advanceMedia(by delta: Double)
 }
 private extension TimedBlock { mutating func advanceMedia(by delta: Double) {} }
@@ -1950,6 +1949,23 @@ public extension Project {
         assert(checkInvariants() == nil)
     }
 
+    /// Colour tag (2026-10-16) on the blocks `ids` (any kind) and video clips `clipIndices`; nil clears it.
+    mutating func setColor(_ color: BlockColor?, blocks ids: Set<UUID>, clips clipIndices: Set<Int> = []) {
+        let keys = Set(ids.map(\.uuidString))
+        func tag<T: TimedBlock>(_ blocks: inout [T]) { for i in blocks.indices where keys.contains(blocks[i].id) { blocks[i].color = color } }
+        tag(&zooms); tag(&keystrokeClips); tag(&layouts); tag(&masks); tag(&texts); tag(&windowShots)
+        tag(&cameraClips); tag(&audioClips); tag(&layers)
+        for i in clipIndices where clips.indices.contains(i) { clips[i].color = color }
+    }
+
+    /// The colour tag of block `id` (any kind), nil when untagged or unknown.
+    func color(ofBlock id: UUID) -> BlockColor? {
+        let key = id.uuidString
+        func find<T: TimedBlock>(_ blocks: [T]) -> BlockColor?? { blocks.first { $0.id == key }.map(\.color) }
+        return find(zooms) ?? find(keystrokeClips) ?? find(layouts) ?? find(masks) ?? find(texts) ?? find(windowShots)
+            ?? find(cameraClips) ?? find(audioClips) ?? find(layers) ?? nil
+    }
+
     @discardableResult
     mutating func duplicateBlock(_ id: UUID) -> UUID? {
         let key = id.uuidString
@@ -1981,11 +1997,11 @@ public extension Project {
             guard checkInvariants() == nil else { self = before; return nil }
         } else if let zoom = zooms.first(where: { $0.id == key }) {
             guard zooms.addBlock(atSource: zoom.end, length: zoom.end - zoom.start, duration: timelineSourceDuration, minLength: Self.minBlockLength, make: { start, end in
-                Zoom(id: newID.uuidString, start: start, end: end, scale: zoom.scale, mode: zoom.mode, center: zoom.center, instant: zoom.instant, enabled: zoom.enabled)
+                var copy = zoom; copy.id = newID.uuidString; copy.start = start; copy.end = end; return copy
             }) != nil else { return nil }
         } else if let mask = masks.first(where: { $0.id == key }) {
             guard masks.addBlock(atSource: mask.end, length: mask.end - mask.start, duration: timelineSourceDuration, minLength: Self.minBlockLength, make: { start, end in
-                Mask(id: newID.uuidString, start: start, end: end, kind: mask.kind, rect: mask.rect, opacity: mask.opacity, transition: mask.transition)
+                var copy = mask; copy.id = newID.uuidString; copy.start = start; copy.end = end; return copy
             }) != nil else { return nil }
         } else if let text = texts.first(where: { $0.id == key }) {
             guard texts.addBlock(atSource: text.end, length: text.end - text.start, duration: timelineSourceDuration, minLength: Self.minBlockLength, make: { start, end in

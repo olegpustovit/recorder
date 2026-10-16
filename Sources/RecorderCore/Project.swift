@@ -8,6 +8,10 @@ extension KeyedDecodingContainer {
 
 // MARK: - Small shared shapes
 
+/// Optional user colour tag on a timeline item (2026-10-16), Finder-tag style; copies inherit it on split/duplicate/paste.
+public enum BlockColor: String, Codable, CaseIterable, Sendable { case red, orange, yellow, green, blue, purple, gray }
+
+
 public struct TimeRange: Codable, Equatable, Sendable {
     public var start: Double
     public var end: Double
@@ -102,12 +106,13 @@ public struct Zoom: Codable, Equatable, Sendable {
     public var center: NormPoint
     public var instant: Bool
     public var enabled: Bool
+    public var color: BlockColor? = nil
     public init(id: String = UUID().uuidString, start: Double = 0, end: Double = 3, scale: Double = 2,
                 mode: Mode = .manual, center: NormPoint = NormPoint(), instant: Bool = false, enabled: Bool = true) {
         self.id = id; self.start = start; self.end = end; self.scale = scale
         self.mode = mode; self.center = center; self.instant = instant; self.enabled = enabled
     }
-    enum CodingKeys: String, CodingKey { case id, start, end, scale, mode, center, instant, enabled }
+    enum CodingKeys: String, CodingKey { case id, start, end, scale, mode, center, instant, enabled, color }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.value(.id, default: UUID().uuidString)
@@ -118,6 +123,7 @@ public struct Zoom: Codable, Equatable, Sendable {
         center = try c.value(.center, default: NormPoint())
         instant = try c.value(.instant, default: false)
         enabled = try c.value(.enabled, default: true)
+        color = try? c.decodeIfPresent(BlockColor.self, forKey: .color)
     }
 }
 
@@ -132,10 +138,11 @@ public struct Layout: Codable, Equatable, Sendable {
     public var mediaStart: Double? = nil
     public var mediaRate: Double? = nil
     public var transition: Double = 0.3
+    public var color: BlockColor? = nil
     public init(id: String = UUID().uuidString, start: Double = 0, end: Double = 0, kind: Kind = .cameraFull, camera: Camera? = nil, keys: Keys? = nil) {
         self.id = id; self.start = start; self.end = end; self.kind = kind; self.camera = camera; self.keys = keys
     }
-    enum CodingKeys: String, CodingKey { case id, start, end, kind, camera, keys, transition, mediaStart, mediaRate }
+    enum CodingKeys: String, CodingKey { case id, start, end, kind, camera, keys, transition, mediaStart, mediaRate, color }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.value(.id, default: UUID().uuidString)
@@ -147,6 +154,7 @@ public struct Layout: Codable, Equatable, Sendable {
         mediaStart = try c.decodeIfPresent(Double.self, forKey: .mediaStart)
         mediaRate = try c.decodeIfPresent(Double.self, forKey: .mediaRate)
         transition = try c.value(.transition, default: 0.3)
+        color = try? c.decodeIfPresent(BlockColor.self, forKey: .color)
     }
 }
 
@@ -159,6 +167,7 @@ public struct Mask: Codable, Equatable, Sendable {
     public var rect: NormRect
     public var opacity: Double
     public var transition: Double
+    public var color: BlockColor? = nil
 
     public func strength(at time: Double) -> Double {
         guard time >= start, time <= end else { return 0 }
@@ -172,7 +181,7 @@ public struct Mask: Codable, Equatable, Sendable {
                 rect: NormRect = NormRect(), opacity: Double = 0.8, transition: Double = 0) {
         self.id = id; self.start = start; self.end = end; self.kind = kind; self.rect = rect; self.opacity = opacity; self.transition = transition
     }
-    enum CodingKeys: String, CodingKey { case id, start, end, kind, rect, opacity, transition }
+    enum CodingKeys: String, CodingKey { case id, start, end, kind, rect, opacity, transition, color }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.value(.id, default: UUID().uuidString)
@@ -182,6 +191,7 @@ public struct Mask: Codable, Equatable, Sendable {
         rect = try c.value(.rect, default: NormRect())
         opacity = try c.value(.opacity, default: 0.8)
         transition = try c.value(.transition, default: 0)
+        color = try? c.decodeIfPresent(BlockColor.self, forKey: .color)
     }
 }
 
@@ -204,13 +214,14 @@ public struct TextBlock: Codable, Equatable, Sendable {
     public var style: Style
     public var position: NormPoint
     public var size: Double
+    public var color: BlockColor? = nil
 
     public init(id: String = UUID().uuidString, start: Double = 0, end: Double = 0, text: String = "Text", words: [Word]? = nil,
                 style: Style = .title, position: NormPoint? = nil, size: Double = 48) {
         self.id = id; self.start = start; self.end = end; self.text = text; self.words = words; self.style = style
         self.position = position ?? NormPoint(x: 0.5, y: style == .caption ? 0.8 : 0.5); self.size = size
     }
-    enum CodingKeys: String, CodingKey { case id, start, end, text, words, style, position, size }
+    enum CodingKeys: String, CodingKey { case id, start, end, text, words, style, position, size, color }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.value(.id, default: UUID().uuidString)
@@ -221,6 +232,7 @@ public struct TextBlock: Codable, Equatable, Sendable {
         style = try c.value(.style, default: .title)
         position = try c.value(.position, default: NormPoint())
         size = try c.value(.size, default: 48)
+        color = try? c.decodeIfPresent(BlockColor.self, forKey: .color)
     }
 
     /// Index into `words` of the word being spoken at source time `t` (the last one that has started).
@@ -265,16 +277,18 @@ public struct WindowShot: Codable, Equatable, Sendable {
     public var start: Double
     public var end: Double
     public var window: Int
+    public var color: BlockColor? = nil
     public init(id: String = UUID().uuidString, start: Double = 0, end: Double = 0, window: Int = 0) {
         self.id = id; self.start = start; self.end = end; self.window = window
     }
-    enum CodingKeys: String, CodingKey { case id, start, end, window }
+    enum CodingKeys: String, CodingKey { case id, start, end, window, color }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.value(.id, default: UUID().uuidString)
         start = try c.value(.start, default: 0)
         end = try c.value(.end, default: 0)
         window = try c.value(.window, default: 0)
+        color = try? c.decodeIfPresent(BlockColor.self, forKey: .color)
     }
 }
 
@@ -285,6 +299,7 @@ public struct CameraClip: Codable, Equatable, Sendable {
     public var end: Double
     public var mediaStart: Double
     public var mediaRate: Double? = nil
+    public var color: BlockColor? = nil
     public init(id: String = UUID().uuidString, start: Double, end: Double, mediaStart: Double? = nil) {
         self.id = id; self.start = start; self.end = end; self.mediaStart = mediaStart ?? start
     }
@@ -323,6 +338,7 @@ public struct AudioClip: Codable, Equatable, Sendable {
     public var gain: Double
     public var fadeIn: Double?
     public var fadeOut: Double?
+    public var color: BlockColor? = nil
 
     public init(id: String = UUID().uuidString, start: Double, end: Double, mediaStart: Double = 0,
                 mediaRate: Double? = nil, file: String, track: Int = 0, link: Link? = nil, layer: String? = nil,
@@ -332,7 +348,7 @@ public struct AudioClip: Codable, Equatable, Sendable {
         self.gain = gain; self.fadeIn = fadeIn; self.fadeOut = fadeOut
     }
     enum CodingKeys: String, CodingKey {
-        case id, start, end, mediaStart, mediaRate, file, track, link, layer, gain, fadeIn, fadeOut
+        case id, start, end, mediaStart, mediaRate, file, track, link, layer, gain, fadeIn, fadeOut, color
     }
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -348,6 +364,7 @@ public struct AudioClip: Codable, Equatable, Sendable {
         gain = try container.value(.gain, default: 1)
         fadeIn = try container.decodeIfPresent(Double.self, forKey: .fadeIn)
         fadeOut = try container.decodeIfPresent(Double.self, forKey: .fadeOut)
+        color = try? container.decodeIfPresent(BlockColor.self, forKey: .color)
     }
 }
 
@@ -368,6 +385,7 @@ public struct LayerBlock: Codable, Equatable, Sendable {
     public var fadeIn: Double?
     public var fadeOut: Double?
     public var aboveCamera: Bool
+    public var color: BlockColor? = nil
 
     public init(id: String = UUID().uuidString, kind: Kind, start: Double, end: Double, file: String,
                 mediaStart: Double = 0, track: Int = 0, rect: NormRect, backdrop: Backdrop = .dim,
@@ -377,7 +395,7 @@ public struct LayerBlock: Codable, Equatable, Sendable {
         self.motion = motion; self.fadeIn = fadeIn; self.fadeOut = fadeOut; self.aboveCamera = aboveCamera
     }
     enum CodingKeys: String, CodingKey {
-        case id, kind, start, end, file, mediaStart, track, rect, backdrop, motion, fadeIn, fadeOut, aboveCamera
+        case id, kind, start, end, file, mediaStart, track, rect, backdrop, motion, fadeIn, fadeOut, aboveCamera, color
     }
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -394,6 +412,7 @@ public struct LayerBlock: Codable, Equatable, Sendable {
         fadeIn = container.contains(.fadeIn) ? try container.decodeIfPresent(Double.self, forKey: .fadeIn) : 0.3
         fadeOut = container.contains(.fadeOut) ? try container.decodeIfPresent(Double.self, forKey: .fadeOut) : 0.3
         aboveCamera = try container.value(.aboveCamera, default: false)
+        color = try? container.decodeIfPresent(BlockColor.self, forKey: .color)
     }
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
@@ -404,6 +423,7 @@ public struct LayerBlock: Codable, Equatable, Sendable {
         try container.encode(backdrop, forKey: .backdrop); try container.encode(motion, forKey: .motion)
         try container.encode(fadeIn, forKey: .fadeIn); try container.encode(fadeOut, forKey: .fadeOut)
         try container.encode(aboveCamera, forKey: .aboveCamera)
+        try container.encodeIfPresent(color, forKey: .color)
     }
 }
 

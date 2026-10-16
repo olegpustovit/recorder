@@ -808,7 +808,7 @@ final class TimelineView: NSView {
             if let eased, let fromRects, i < fromRects.count { rect = lerp(fromRects[i], targetRects[i], eased) }
             guard rect.width > 0.5, !clip.isEmpty else { continue }
             let label = "Clip \(i + 1)  ·  \(formatSpeed(clip.speed))×"
-            drawBlock(rect, fill: Theme.clip, tornLeft: false, tornRight: false, label: label, selected: model?.selectedClips.contains(i) == true)
+            drawBlock(rect, fill: Theme.clip, tornLeft: false, tornRight: false, label: label, selected: model?.selectedClips.contains(i) == true, tag: clip.color)
         }
     }
 
@@ -882,7 +882,7 @@ final class TimelineView: NSView {
                 let rect = CGRect(x: x(forOutput: segment.outStart), y: row.minY + 2,
                                   width: x(forOutput: segment.outEnd) - x(forOutput: segment.outStart), height: row.height - 4)
                 drawBlock(rect, fill: Theme.layout, tornLeft: false, tornRight: false, label: "Camera",
-                          selected: UUID(uuidString: clip.id).map { model?.selection.contains($0) == true } ?? false)
+                          selected: UUID(uuidString: clip.id).map { model?.selection.contains($0) == true } ?? false, tag: clip.color)
             }
         }
     }
@@ -897,7 +897,7 @@ final class TimelineView: NSView {
                 let rect = CGRect(x: x(forOutput: segment.outStart), y: row.minY + 2,
                                    width: max(0, x(forOutput: segment.outEnd) - x(forOutput: segment.outStart)), height: row.height - 4)
                 guard rect.width > 0.5 else { continue }
-                drawBlock(rect, fill: Theme.zoom, tornLeft: segment.tornLeft, tornRight: segment.tornRight, label: label, selected: selected)
+                drawBlock(rect, fill: Theme.zoom, tornLeft: segment.tornLeft, tornRight: segment.tornRight, label: label, selected: selected, tag: zoom.color)
             }
         }
     }
@@ -912,7 +912,7 @@ final class TimelineView: NSView {
                 let rect = CGRect(x: x(forOutput: segment.outStart), y: row.minY + 2,
                                    width: max(0, x(forOutput: segment.outEnd) - x(forOutput: segment.outStart)), height: row.height - 4)
                 guard rect.width > 0.5 else { continue }
-                drawBlock(rect, fill: Theme.layout, tornLeft: segment.tornLeft, tornRight: segment.tornRight, label: label, selected: selected)
+                drawBlock(rect, fill: Theme.layout, tornLeft: segment.tornLeft, tornRight: segment.tornRight, label: label, selected: selected, tag: layout.color)
             }
         }
     }
@@ -927,7 +927,7 @@ final class TimelineView: NSView {
                 let rect = CGRect(x: x(forOutput: segment.outStart), y: row.minY + 2,
                                    width: max(0, x(forOutput: segment.outEnd) - x(forOutput: segment.outStart)), height: row.height - 4)
                 guard rect.width > 0.5 else { continue }
-                drawBlock(rect, fill: Theme.layout, tornLeft: segment.tornLeft, tornRight: segment.tornRight, label: label, selected: selected)
+                drawBlock(rect, fill: Theme.layout, tornLeft: segment.tornLeft, tornRight: segment.tornRight, label: label, selected: selected, tag: layout.color)
             }
         }
     }
@@ -945,7 +945,7 @@ final class TimelineView: NSView {
                 let rect = CGRect(x: x(forOutput: segment.outStart), y: row.minY + 2,
                                    width: max(0, x(forOutput: segment.outEnd) - x(forOutput: segment.outStart)), height: row.height - 4)
                 guard rect.width > 0.5 else { continue }
-                drawBlock(rect, fill: Theme.mask, tornLeft: segment.tornLeft, tornRight: segment.tornRight, label: label, selected: selected)
+                drawBlock(rect, fill: Theme.mask, tornLeft: segment.tornLeft, tornRight: segment.tornRight, label: label, selected: selected, tag: mask.color)
             }
         }
     }
@@ -959,7 +959,7 @@ final class TimelineView: NSView {
                 let rect = CGRect(x: x(forOutput: segment.outStart), y: row.minY + 2,
                                    width: max(0, x(forOutput: segment.outEnd) - x(forOutput: segment.outStart)), height: row.height - 4)
                 guard rect.width > 0.5 else { continue }
-                drawBlock(rect, fill: Theme.text, tornLeft: segment.tornLeft, tornRight: segment.tornRight, label: text.text, selected: selected)
+                drawBlock(rect, fill: Theme.text, tornLeft: segment.tornLeft, tornRight: segment.tornRight, label: text.text, selected: selected, tag: text.color)
             }
         }
     }
@@ -975,7 +975,7 @@ final class TimelineView: NSView {
                 let rect = CGRect(x: x(forOutput: segment.outStart), y: row.minY + 2,
                                    width: max(0, x(forOutput: segment.outEnd) - x(forOutput: segment.outStart)), height: row.height - 4)
                 guard rect.width > 0.5 else { continue }
-                drawBlock(rect, fill: Theme.clip, tornLeft: segment.tornLeft, tornRight: segment.tornRight, label: "Window \(shot.window + 1)", selected: selected)
+                drawBlock(rect, fill: Theme.clip, tornLeft: segment.tornLeft, tornRight: segment.tornRight, label: "Window \(shot.window + 1)", selected: selected, tag: shot.color)
             }
         }
     }
@@ -1001,12 +1001,26 @@ final class TimelineView: NSView {
 
     // MARK: - Solid blocks, dark labels and a white selection outline
 
-    private func drawBlock(_ rect: CGRect, fill: NSColor, tornLeft: Bool, tornRight: Bool, label: String?, selected: Bool = false) {
+    /// A colour-tagged block keeps its pale lane fill (dark labels stay readable), tinted toward the tag.
+    private func tinted(_ fill: NSColor, _ tag: BlockColor?) -> NSColor {
+        tag.flatMap { fill.blended(withFraction: 0.38, of: Theme.tag($0)) } ?? fill
+    }
+
+    /// 3 pt full-strength tag stripe along the top edge, so the colour reads even under hover/selection.
+    private func drawTagStripe(_ rect: CGRect, _ tag: BlockColor?) {
+        guard let tag else { return }
+        Theme.tag(tag).setFill()
+        CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: min(3, rect.height)).fill()
+    }
+
+    private func drawBlock(_ rect: CGRect, fill: NSColor, tornLeft: Bool, tornRight: Bool, label: String?, selected: Bool = false, tag: BlockColor? = nil) {
         let radius: CGFloat = 0
         let path = NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius)
         let hovered = hoverX.map { x in hoverY.map { rect.contains(CGPoint(x: x, y: $0)) } ?? false } ?? false
+        let fill = tinted(fill, tag)
         (hovered && dragKind == nil ? fill.blended(withFraction: 0.09, of: Theme.bgWindow) ?? fill : fill).setFill()
         path.fill()
+        drawTagStripe(rect, tag)
 
         // A separated outline stays visible against pale blocks without a glow.
         if selected {
@@ -1487,15 +1501,15 @@ final class TimelineView: NSView {
     /// `⌫` removes the selection: the selected clip, or every selected zoom/layout/mask block.
     func removeSelection(ignoringLinks: Bool = false) {
         guard let model else { return }
-        if !model.selectedClips.isEmpty {
-            let indices = model.selectedClips
-            model.edit("Remove Clips") { $0.deleteClips(indices, propagate: !ignoringLinks) }
-            model.selectedClip = nil
-        } else if !model.selection.isEmpty {
-            let ids = model.selection
-            model.edit("Remove") { project in for id in ids { project.removeBlock(id, propagate: !ignoringLinks) } }
-            model.selection = []
+        let indices = model.selectedClips, ids = model.selection
+        guard !indices.isEmpty || !ids.isEmpty else { return }
+        // Blocks first: removing them never renumbers clips. A mixed marquee selection is one undo step.
+        model.edit(indices.isEmpty ? "Remove" : "Remove Clips") { project in
+            for id in ids { project.removeBlock(id, propagate: !ignoringLinks) }
+            if !indices.isEmpty { project.deleteClips(indices, propagate: !ignoringLinks) }
         }
+        model.selectedClip = nil
+        model.selection = []
     }
 
     // MARK: - Context menus (SPEC §7.2 "Context menus")
@@ -1506,9 +1520,58 @@ final class TimelineView: NSView {
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
-        guard model?.voiceover.isActive != true else { return nil }
+        guard let model, !model.voiceover.isActive else { return nil }
         let p = convert(event.locationInWindow, from: nil)
-        switch hitTest(at: p) {
+        let hit = hitTest(at: p)
+        let clicked: Bool?
+        switch hit {
+        case .clipBody(let i), .clipEdge(let i, _): clicked = model.selectedClips.contains(i)
+        case .blockBody(let id), .blockEdge(let id, _): clicked = model.selection.contains(id)
+        default: clicked = nil
+        }
+        // Right-clicking inside a multi-selection acts on all of it (Finder convention) instead of collapsing it.
+        let count = model.selectedClips.count + model.selection.count
+        if clicked == true, count > 1 {
+            let menu = NSMenu()
+            menu.addItem(colorMenuItem())
+            menu.addItem(.separator())
+            menu.addItem(actionItem("Remove \(count) Items (\u{232B})", action: #selector(menuRemoveSelection)))
+            return menu
+        }
+        let menu = itemMenu(hit, at: p)
+        // Every item menu ends with Remove; Color sits just above it.
+        if clicked != nil, let menu, menu.numberOfItems > 0 { menu.insertItem(colorMenuItem(), at: menu.numberOfItems - 1) }
+        return menu
+    }
+
+    @objc private func menuRemoveSelection() { removeSelection() }
+
+    private func colorMenuItem() -> NSMenuItem {
+        let colors = model?.selectedColors ?? []
+        let current = Set(colors).count == 1 ? colors.first : nil
+        let item = NSMenuItem(title: "Color", action: nil, keyEquivalent: "")
+        let menu = NSMenu()
+        let none = actionItem("None", action: #selector(menuSetColor(_:)))
+        none.state = current == .some(nil) ? .on : .off
+        menu.addItem(none)
+        for color in BlockColor.allCases {
+            let swatch = actionItem(color.rawValue.capitalized, action: #selector(menuSetColor(_:)), represented: color.rawValue)
+            swatch.image = NSImage(size: NSSize(width: 12, height: 12), flipped: false) { rect in
+                Theme.tag(color).setFill(); NSBezierPath(ovalIn: rect.insetBy(dx: 1, dy: 1)).fill(); return true
+            }
+            swatch.state = current == .some(color) ? .on : .off
+            menu.addItem(swatch)
+        }
+        item.submenu = menu
+        return item
+    }
+
+    @objc private func menuSetColor(_ sender: NSMenuItem) {
+        model?.setSelectedColor((sender.representedObject as? String).flatMap(BlockColor.init(rawValue:)))
+    }
+
+    private func itemMenu(_ hit: TimelineHit, at p: CGPoint) -> NSMenu? {
+        switch hit {
         case .clipBody(let i), .clipEdge(let i, _):
             return clipContextMenu(index: i)
         case .blockBody(let id), .blockEdge(let id, _):
@@ -1904,7 +1967,7 @@ final class TimelineView: NSView {
         }
         for layer in project.layers {
             guard let rect = mediaLayerRect(layer), rect.maxX >= gutterWidth, rect.minX <= bounds.width else { continue }
-            let color = layer.kind == .image ? Theme.mask : Theme.zoom
+            let color = tinted(layer.kind == .image ? Theme.mask : Theme.zoom, layer.color)
             drawBlock(rect, fill: color, tornLeft: false, tornRight: false, label: nil, selected: UUID(uuidString: layer.id).map(model.selection.contains) ?? false)
             NSGraphicsContext.saveGraphicsState()
             rect.clip()
@@ -1923,6 +1986,7 @@ final class TimelineView: NSView {
                 }
             }
             color.withAlphaComponent(0.92).setFill(); CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: 12).fill()
+            drawTagStripe(rect, layer.color)
             let label = missing ? "Missing media" : String(format: "%@ · %.1f s", layer.kind == .image ? "Image" : "Video", layer.end - layer.start)
             (label as NSString).draw(at: CGPoint(x: max(rect.minX + 18, gutterWidth + 4), y: rect.minY), withAttributes: [.font: Theme.captionFont, .foregroundColor: Theme.mediaMatte])
             let fadeIn = CGFloat((layer.fadeIn ?? 0) * geometry.pxPerSecond), fadeOut = CGFloat((layer.fadeOut ?? 0) * geometry.pxPerSecond)
@@ -3398,7 +3462,7 @@ extension TimelineView {
                 guard rect.maxX >= gutterWidth, rect.minX <= bounds.width else { continue }
                 let voice = project.audioTracks[audio.track].name.hasPrefix("Voiceover")
                 drawBlock(rect, fill: voice ? Theme.voiceover : Theme.audio,
-                          tornLeft: false, tornRight: false, label: nil, selected: selected)
+                          tornLeft: false, tornRight: false, label: nil, selected: selected, tag: audio.color)
                 let strip = CGRect(x: rect.minX + 3, y: rect.minY + 14, width: max(0, rect.width - 6), height: 14)
                 drawAudioWaveform(audio, segment: segment, in: strip)
                 drawTranscript(audio, segment: segment, in: CGRect(x: rect.minX + 3, y: strip.maxY + 2, width: strip.width, height: rect.maxY - strip.maxY - 2))

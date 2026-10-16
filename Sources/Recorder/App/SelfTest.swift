@@ -1067,6 +1067,22 @@ enum SelfTest {
                 if !(["Cover", "Blur", "Highlight"].allSatisfy(maskTitles.contains) && maskTitles.contains(where: { $0.hasPrefix("Duplicate") })) {
                     errors.append("mask context menu: \(maskTitles)")
                 }
+                // T-656: every item menu offers Color; right-clicking inside a multi-selection keeps it and acts on all.
+                if !maskTitles.contains("Color") { errors.append("mask menu lacks Color: \(maskTitles)") }
+                model.selection = [zoom0ID, mask0ID]
+                let zoomEvent = NSEvent.mouseEvent(with: .rightMouseDown, location: CGPoint(x: x(7), y: view.frame.height - view.laneMidY(.zoom)), modifierFlags: [],
+                                                   timestamp: 0, windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+                let multiMenu = view.menu(for: zoomEvent)
+                let steps = model.undoStepCount
+                if let blue = multiMenu?.items.first?.submenu?.items.first(where: { $0.title == "Blue" }), let action = blue.action {
+                    NSApp.sendAction(action, to: blue.target, from: blue)
+                }
+                if model.selection.count != 2 || multiMenu?.items.last?.title != "Remove 2 Items (\u{232B})" || model.undoStepCount != steps + 1
+                    || model.project.zooms[0].color != .blue || model.project.masks[0].color != .blue || model.selectedColors != [.blue, .blue] {
+                    errors.append("multi-selection Color menu: \(multiMenu?.items.map(\.title) ?? [])")
+                }
+                model.undo()
+                if model.project.zooms[0].color != nil { errors.append("Color undo") }
                 expect(CGPoint(x: x(3), y: 10), .ruler, "ruler")
                 expect(CGPoint(x: x(25), y: 18), .cutBubble(afterClip: 1), "cutBubble")
                 if case .emptyLane(.zoom, _) = view.hitTest(at: CGPoint(x: x(40), y: view.laneMidY(.zoom))) {} else {
@@ -1098,6 +1114,15 @@ enum SelfTest {
                 let container = TimelineContainerView(toolbar: toolbar, timeline: view)
                 if args.contains("--compact") { view.toggleCompactTrackHeaders() }
                 if args.contains("--selected-audio"), let audio = model.project.audioClips.first { model.selection = [UUID(uuidString: audio.id)!] }
+                if args.contains("--colors") {
+                    model.edit("Color fixture") { project in
+                        project.setColor(.blue, blocks: [zoom0ID], clips: [1])
+                        project.setColor(.purple, blocks: [mask0ID])
+                        project.setColor(.green, blocks: Set(project.audioClips.prefix(2).compactMap { UUID(uuidString: $0.id) }))
+                        project.setColor(.orange, blocks: [layout0ID])
+                    }
+                    model.selection = Set(model.project.audioClips.prefix(2).compactMap { UUID(uuidString: $0.id) })
+                }
                 if args.contains("--playing") { model.playhead = 12; model.isPlaying = true }
                 container.frame = CGRect(x: 0, y: 0, width: width, height: args.contains("--minimum") ? 250 : max(250, view.contentHeight + 58))
                 container.layoutSubtreeIfNeeded()
@@ -1438,6 +1463,12 @@ enum SelfTest {
                     initialTab = .audio; project.source.hasMic = true; project.source.hasSystemAudio = true
                     project.audioTracks = [AudioTrack(name: "Mic"), AudioTrack(name: "System")]
                 case "audio-empty": initialTab = .audio
+                case "audio-multi":
+                    project.source.hasMic = true
+                    project.audioTracks = [AudioTrack(name: "Mic"), AudioTrack(name: "Audio 1")]
+                    project.audioClips = [AudioClip(start: 0, end: 10, file: "mic.m4a", track: 0, gain: 1, fadeIn: 0.5),
+                                          AudioClip(start: 2, end: 8, file: "music.m4a", track: 1, gain: 0.5)]
+                    project.audioClips[0].color = .green; project.audioClips[1].color = .blue
                 case "animations": initialTab = .animations
                 case "keys": initialTab = .keys
                 default:
@@ -1449,6 +1480,7 @@ enum SelfTest {
                 if variant == "zoom" { model.selection = [UUID(uuidString: zoom.id)!] }
                 if variant == "clip" { model.selectedClip = 1 }
                 if variant == "group" { model.selectedClips = [0, 1] }
+                if variant == "audio-multi" { model.selection = Set(project.audioClips.compactMap { UUID(uuidString: $0.id) }) }
                 if variant == "camera-clip" {
                     let id = UUID()
                     model.edit("Fixture camera") {
