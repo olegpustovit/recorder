@@ -1479,17 +1479,21 @@ public extension Project {
     }
 
     /// Pause eraser: removes every pause of `file` that overlaps OUTPUT `range`, audio only, leaving silent gaps.
-    mutating func erasePauses(file: String, silent: [TimeRange], inOutput range: TimeRange) {
+    /// Keeps `tail` media seconds of each pause on both speech sides (pauses shorter than 2×tail + 0.05 s are left
+    /// alone) and fades the speech side of each new cut by `fade` output seconds.
+    mutating func erasePauses(file: String, silent: [TimeRange], inOutput range: TimeRange, tail: Double = 0, fade: Double = 0.06) {
         let touched = silent.filter { pause in
+            pause.end - pause.start >= 2 * tail + 0.05 &&
             audioClips.contains { audio in audio.file == file && audioSegments(audio).contains { segment in
                 let lower = max(pause.start, segment.media.start), upper = min(pause.end, segment.media.end)
                 guard upper > lower, let a = outputTime(of: audio, media: lower), let b = outputTime(of: audio, media: upper) else { return false }
                 return a < range.end && b > range.start
             } }
         }
+        .map { TimeRange(start: $0.start + tail, end: $0.end - tail) }
         guard !touched.isEmpty else { return }
         let before = self
-        splitAudioAtPauses(file: file, silent: touched)
+        splitAudioAtPauses(file: file, silent: touched, fade: fade)
         let pauses = Set(audioClips.filter { audio in
             let segments = audioSegments(audio)
             guard audio.file == file, let first = segments.first, let last = segments.last else { return false }

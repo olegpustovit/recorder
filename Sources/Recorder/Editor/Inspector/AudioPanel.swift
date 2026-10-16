@@ -20,6 +20,7 @@ struct AudioPanel: View {
                 Text(URL(fileURLWithPath: clip.file).lastPathComponent)
                     .font(Font(Theme.captionFont)).foregroundStyle(Theme.textSecondaryColor)
                 let words = model.transcriptWords(in: clip)
+                if words.isEmpty, clip.file == "mic.m4a" { TranscriptStatus(model: model) }
                 if !words.isEmpty {
                     Text("Transcript").font(Font(Theme.headingFont(22)))
                     Text(words.map(\.text).joined(separator: " ")).font(Font(Theme.captionFont))

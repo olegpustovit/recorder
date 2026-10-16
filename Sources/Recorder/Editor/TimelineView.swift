@@ -164,7 +164,8 @@ final class TimelineView: NSView {
         let a = geometry.output(forX: geometryX(NSPoint(x: min(drag.start, drag.end), y: 0)))
         let b = geometry.output(forX: geometryX(NSPoint(x: max(drag.start, drag.end) + 1, y: 0)))
         var erased = model.project
-        erased.erasePauses(file: "mic.m4a", silent: silentSpans["mic.m4a"] ?? [], inOutput: TimeRange(start: a, end: b))
+        erased.erasePauses(file: "mic.m4a", silent: silentSpans["mic.m4a"] ?? [], inOutput: TimeRange(start: a, end: b),
+                           tail: EraserOptionsView.tail, fade: EraserOptionsView.fade)
         if erased != model.project { model.edit("Erase Pauses") { $0 = erased } }
     }
 
@@ -263,6 +264,20 @@ final class TimelineView: NSView {
     }
     private var audioHeaderButtons: [Int: (volume: NSButton, mute: NSButton, record: NSButton)] = [:]
     private var volumePopover: NSPopover?
+    /// Replaces the Mic header's colour stripe while the mic is being transcribed.
+    private lazy var transcribeSpinner: NSProgressIndicator = {
+        let spinner = NSProgressIndicator()
+        spinner.style = .spinning; spinner.controlSize = .small; spinner.isIndeterminate = true; spinner.isDisplayedWhenStopped = false
+        spinner.toolTip = "Transcribing the microphone on this Mac"
+        spinner.setAccessibilityLabel("Transcribing microphone")
+        addSubview(spinner)
+        return spinner
+    }()
+    /// The audio track holding `mic.m4a` while it is being transcribed.
+    private var transcribingTrack: Int? {
+        guard let model, model.isTranscribing else { return nil }
+        return model.project.audioClips.first { $0.file == "mic.m4a" }?.track
+    }
     private var hoverX: CGFloat?
     private var hoverY: CGFloat?
     private var trackingArea: NSTrackingArea?
@@ -456,6 +471,8 @@ final class TimelineView: NSView {
             _ = model.voiceover.liveRange
             _ = model.voiceover.level
             _ = model.transcript
+            _ = model.transcriptStatus
+            _ = model.isTranscribing
         } onChange: { [weak self] in
             DispatchQueue.main.async {
                 guard let self, let model = self.model else { return }
@@ -509,9 +526,9 @@ final class TimelineView: NSView {
         case .mask, .text: return Self.maskHeight
         case .window: return model?.project.windowCount ?? 1 > 1 ? Self.maskHeight : 0
         case .audio(let track):
-            // Transcript line under the waveform (2026-10-16) on the track holding mic.m4a.
-            let transcribed = model?.transcript?.isEmpty == false && model?.project.audioClips.contains { $0.track == track && $0.file == "mic.m4a" } == true
-            return transcribed ? 50 : 36
+            // Transcript (or transcription status) line under the waveform (2026-10-16) on the track holding mic.m4a.
+            let line = model?.transcript?.isEmpty == false || model?.transcriptStatus != nil
+            return line && model?.project.audioClips.contains { $0.track == track && $0.file == "mic.m4a" } == true ? 50 : 36
         case .layer: return 36
         }
     }
@@ -3453,6 +3470,9 @@ extension TimelineView {
         let attributes: [NSAttributedString.Key: Any] = [.font: Theme.captionFont, .foregroundColor: Theme.mediaMatte]
         let scale = (segment.output.end - segment.output.start) / max(segment.media.end - segment.media.start, 1e-9)
         var nextX = max(rect.minX, gutterWidth + 2)
+        if model.transcript?.isEmpty != false, let status = model.transcriptStatus {
+            (status as NSString).draw(at: CGPoint(x: nextX, y: rect.minY), withAttributes: attributes)
+        }
         for word in model.transcriptWords(media: segment.media) where word.start >= segment.media.start - 0.05 && word.start < segment.media.end {
             let x = max(self.x(forOutput: segment.output.start + max(0, word.start - segment.media.start) * scale), rect.minX)
             guard x >= nextX else { continue }
@@ -3517,6 +3537,12 @@ extension TimelineView {
         for track in Array(audioHeaderButtons.keys) where !visible.contains(track) {
             if let buttons = audioHeaderButtons.removeValue(forKey: track) { [buttons.volume, buttons.mute, buttons.record].forEach { $0.removeFromSuperview() } }
         }
+        if let track = transcribingTrack, visible.contains(track) {
+            transcribeSpinner.frame = CGRect(x: compactTrackHeaders ? 1 : 3, y: laneRow(.audio(track)).minY + 9, width: 14, height: 14)
+            transcribeSpinner.startAnimation(nil)
+        } else if transcribeSpinner.superview != nil {
+            transcribeSpinner.stopAnimation(nil)
+        }
         for track in visible {
             let settings = model.project.audioTracks.indices.contains(track) ? model.project.audioTracks[track] : AudioTrack(id: "live", name: model.voiceover.trackName)
             if audioHeaderButtons[track] == nil {
@@ -3557,7 +3583,7 @@ extension TimelineView {
     private func drawAudioHeader(_ track: Int, row: CGRect) {
         guard let model else { return }
         let settings = model.project.audioTracks.indices.contains(track) ? model.project.audioTracks[track] : AudioTrack(id: "live", name: model.voiceover.trackName)
-        if compactTrackHeaders || !settings.name.hasPrefix("Voiceover") {
+        if (compactTrackHeaders || !settings.name.hasPrefix("Voiceover")) && transcribingTrack != track {
             (settings.name.hasPrefix("Voiceover") ? Theme.voiceover : Theme.audio).setFill()
             CGRect(x: compactTrackHeaders ? 5 : 9, y: row.midY - 5, width: 3, height: 10).fill()
         }
@@ -3708,7 +3734,8 @@ final class TimelineToolbar: NSView {
 
     private let pointerButton = NSButton(title: "", target: nil, action: nil)
     private let splitButton = ScissorsButton(title: "", target: nil, action: nil)
-    private let eraserButton = NSButton(title: "", target: nil, action: nil)
+    private let eraserButton = OptionsButton(title: "", target: nil, action: nil)
+    private var eraserPopover: NSPopover?
     private let rippleButton = NSButton(title: "", target: nil, action: nil)
     private let linkButton = NSButton(title: "", target: nil, action: nil)
     private let snapButton = NSButton(title: "", target: nil, action: nil)
@@ -3723,7 +3750,7 @@ final class TimelineToolbar: NSView {
         let buttons: [(NSButton, Selector, String)] = [
             (pointerButton, #selector(pointerTapped), "Select tool (V). Drag empty video space or below tracks to box-select video; Shift-click to add or remove clips."),
             (splitButton, #selector(splitTapped), "Blade tool (S). Command-click splits the clip at the playhead without changing tools. C splits the selection."),
-            (eraserButton, #selector(eraserTapped), "Pause eraser (E). Drag across the timeline to remove the microphone pauses it touches, leaving silent gaps."),
+            (eraserButton, #selector(eraserTapped), "Pause eraser (E). Drag across the timeline to remove the microphone pauses it touches, leaving silent gaps. Right-click or press and hold for Tail and Fade."),
             (snapButton, #selector(snapTapped), "Toggle snapping (N). Hold Command while dragging to bypass."),
             (linkButton, #selector(linkTapped), "Link layers to video. Video cuts, deletion, trims, moves and speed changes carry layers; layer edits stay independent."),
             (rippleButton, #selector(rippleTapped), "Ripple Delete. Close the space when deleting video clips; turn off to leave a gap."),
@@ -3750,6 +3777,10 @@ final class TimelineToolbar: NSView {
             button.imagePosition = .imageOnly
             button.title = ""
         }
+        eraserButton.onOptions = { [weak self] in self?.showEraserOptions() }
+        eraserButton.setAccessibilityCustomActions([NSAccessibilityCustomAction(name: "Eraser Tail and Fade") { [weak self] in
+            self?.showEraserOptions(); return true
+        }])
         let left = NSStackView(views: [pointerButton, splitButton, eraserButton, snapButton, linkButton, rippleButton])
         let right = NSStackView(views: [focusButton, fitButton, zoomOutButton, zoomInButton])
         for stack in [left, right] {
@@ -3799,6 +3830,13 @@ final class TimelineToolbar: NSView {
         timelineView?.toggleEraser(); syncSlider()
         timelineView?.window?.makeFirstResponder(timelineView)
     }
+    func showEraserOptions() {
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.contentViewController = NSHostingController(rootView: EraserOptionsView().padding(16).frame(width: 280).signalWindow())
+        eraserPopover = popover
+        popover.show(relativeTo: eraserButton.bounds, of: eraserButton, preferredEdge: .maxY)
+    }
     @objc private func rippleTapped() { timelineView?.toggleRippleDelete() }
     @objc private func linkTapped() { timelineView?.toggleLinkedVideoEdits() }
     @objc private func snapTapped() { timelineView?.toggleSnapping() }
@@ -3812,6 +3850,44 @@ final class TimelineToolbar: NSView {
     @objc private func fitTapped() { timelineView?.fit() }
     @objc private func zoomOutTapped() { timelineView?.stepZoom(by: 1 / 1.4) }
     @objc private func zoomInTapped() { timelineView?.stepZoom(by: 1.4) }
+}
+
+/// A toolbar button whose options open on right-click, Control-click or press-and-hold (0.5 s, which skips the click).
+private final class OptionsButton: NSButton {
+    var onOptions: (() -> Void)?
+    override func rightMouseDown(with event: NSEvent) { onOptions?() }
+    override func mouseDown(with event: NSEvent) {
+        if event.modifierFlags.contains(.control) { onOptions?(); return }
+        let action = self.action
+        let hold = Timer(timeInterval: 0.5, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.action = nil; self?.onOptions?() }
+        }
+        RunLoop.current.add(hold, forMode: .common)
+        super.mouseDown(with: event) // tracks until release
+        hold.invalidate()
+        self.action = action
+    }
+}
+
+/// Pause eraser preset (T-654): how much of each pause stays on the speech side, and its fade. Remembered per Mac.
+struct EraserOptionsView: View {
+    @AppStorage("eraserTail") private var tailValue = 0.12
+    @AppStorage("eraserFade") private var fadeValue = 0.08
+    static var tail: Double { UserDefaults.standard.object(forKey: "eraserTail") as? Double ?? 0.12 }
+    static var fade: Double { UserDefaults.standard.object(forKey: "eraserFade") as? Double ?? 0.08 }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Pause eraser").font(Font(Theme.headingFont(22)))
+            LabeledSlider(title: "Tail", value: $tailValue, range: 0...0.5, defaultValue: 0.12, format: Self.milliseconds)
+            LabeledSlider(title: "Fade", value: $fadeValue, range: 0...0.3, defaultValue: 0.08, format: Self.milliseconds)
+            Text("Tail keeps a little of each pause after and before speech so words decay naturally; Fade ramps the cut.")
+                .font(Font(Theme.captionFont)).foregroundStyle(Theme.textSecondaryColor)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private static func milliseconds(_ seconds: Double) -> String { "\(Int((seconds * 1000).rounded())) ms" }
 }
 
 // Capture the modifier on mouse-down; NSButton still owns normal click tracking and release.

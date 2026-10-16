@@ -28,13 +28,12 @@ struct AudioTab: View {
                         .fixedSize(horizontal: false, vertical: true)
                     Button(captioning ? "Generating captions…" : "Generate Captions") { generateCaptions() }
                         .buttonStyle(TechButtonStyle(kind: .secondary, compact: true))
-                        .disabled(captioning)
-                    if let status = model.transcriptStatus {
-                        Text(status).font(Font(Theme.captionFont)).foregroundStyle(Theme.textSecondaryColor)
-                            .fixedSize(horizontal: false, vertical: true)
+                        .disabled(captioning || model.isTranscribing)
+                    if model.transcriptStatus != nil {
+                        TranscriptStatus(model: model)
                         Button("Transcribe Again") { Task { await model.transcribe() } }
                             .buttonStyle(TechButtonStyle(kind: .secondary, compact: true))
-                            .disabled(status == "Transcribing…")
+                            .disabled(model.isTranscribing)
                     }
                     if let captionStatus {
                         Text(captionStatus).font(Font(Theme.captionFont)).foregroundStyle(Theme.textSecondaryColor)
@@ -137,5 +136,21 @@ struct AudioTab: View {
     private var clickSoundBinding: Binding<Bool> {
         Binding(get: { project.cursor.clickSound },
                 set: { newValue in model.edit("Mouse click sound") { $0.cursor.clickSound = newValue } })
+    }
+}
+
+/// Mic transcription status: a small indeterminate spinner while transcribing, else the result/error text.
+struct TranscriptStatus: View {
+    let model: EditorModel
+
+    var body: some View {
+        if let status = model.transcriptStatus {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                if model.isTranscribing { ProgressView().controlSize(.small).accessibilityHidden(true) }
+                Text(status).font(Font(Theme.captionFont)).foregroundStyle(Theme.textSecondaryColor)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .accessibilityElement(children: .combine)
+        }
     }
 }
