@@ -3659,6 +3659,16 @@ enum SelfTest {
             print("wrote \(url.path)")
         },
         // T-630: on-device transcription of an audio file -> caption phrases. Needs the Speech permission (run via LaunchServices).
+        // 2026-10-16 crash: mic split at pauses gives abutting clips whose float boundaries round to a 1-tick ramp overlap.
+        "audio-mix-abutting": { _ in
+            var project = Project(title: "Mix", source: Source(kind: .display, pixelWidth: 640, pixelHeight: 360, scale: 1, duration: 300))
+            project.audioTracks = [AudioTrack(name: "Mic")]
+            project.clips = [Clip(sourceStart: 0, sourceEnd: 300, speed: 1)]
+            project.audioClips = [AudioClip(start: 160, end: 164.67000000000002, mediaStart: 160, file: "mic.m4a", fadeIn: 0.06, fadeOut: 0.06),
+                                  AudioClip(start: 164.66999999999999, end: 168.685, mediaStart: 164.66999999999999, file: "mic.m4a", fadeIn: 0.06, fadeOut: 0.06)]
+            guard let track = AVMutableComposition().addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else { return }
+            _ = makeAudioMix(project: project, audioTracks: [track])  // throws an uncaught NSException (crash) on overlap
+        },
         "captions": { args in
             struct Fail: Error, CustomStringConvertible { let description: String }
             guard let path = args.first else { throw Fail(description: "usage: captions <audio.m4a>") }

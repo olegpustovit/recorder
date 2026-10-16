@@ -211,14 +211,19 @@ func makeAudioMix(project: Project, audioTracks: [AVMutableCompositionTrack]) ->
         params.setVolume(0, at: .zero)
         let settings = project.audioTracks[index]
         let volume = settings.muted ? 0 : settings.volume
-        for audio in project.audioClips where audio.track == index {
-            let ramps = project.audioVolumeRamps(audio)
-            for ramp in ramps {
-                let range = CMTimeRange(start: CMTime(seconds: ramp.range.start, preferredTimescale: 600),
-                                        end: CMTime(seconds: ramp.range.end, preferredTimescale: 600))
-                params.setVolumeRamp(fromStartVolume: Float(volume * ramp.start), toEndVolume: Float(volume * ramp.end), timeRange: range)
+        // Abutting clips (e.g. mic split at pauses) can round to a 1-tick overlap, which AVFoundation throws on: clamp to the previous ramp's end.
+        var cursor = CMTime.negativeInfinity
+        for audio in project.audioClips.filter({ $0.track == index }).sorted(by: { $0.start < $1.start }) {
+            let previous = cursor
+            for ramp in project.audioVolumeRamps(audio) {
+                let start = max(cursor, CMTime(seconds: ramp.range.start, preferredTimescale: 600))
+                let end = CMTime(seconds: ramp.range.end, preferredTimescale: 600)
+                guard start < end else { continue }
+                params.setVolumeRamp(fromStartVolume: Float(volume * ramp.start), toEndVolume: Float(volume * ramp.end),
+                                     timeRange: CMTimeRange(start: start, end: end))
+                cursor = end
             }
-            if let end = ramps.last?.range.end { params.setVolume(0, at: CMTime(seconds: end, preferredTimescale: 600)) }
+            if cursor != previous { params.setVolume(0, at: cursor) }
         }
         inputParameters.append(params)
     }

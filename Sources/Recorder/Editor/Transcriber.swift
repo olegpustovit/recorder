@@ -27,13 +27,19 @@ enum Transcriber {
         request.shouldReportPartialResults = false
         return try await withCheckedThrowingContinuation { c in
             var done = false
+            // Long audio arrives as one result per utterance (absolute timestamps); the final one repeats only the last utterance.
+            var utterances: [Double: [Word]] = [:]
             recognizer.recognitionTask(with: request) { result, error in
                 guard !done else { return }
+                if let result {
+                    let words = result.bestTranscription.segments.map {
+                        Word(text: $0.substring, start: $0.timestamp, end: $0.timestamp + $0.duration)
+                    }
+                    if let first = words.first { utterances[first.start] = words }
+                }
                 if let result, result.isFinal {
                     done = true
-                    c.resume(returning: result.bestTranscription.segments.map {
-                        Word(text: $0.substring, start: $0.timestamp, end: $0.timestamp + $0.duration)
-                    })
+                    c.resume(returning: utterances.sorted { $0.key < $1.key }.flatMap(\.value))
                 } else if let error {
                     done = true
                     c.resume(throwing: error)
