@@ -1673,6 +1673,7 @@ final class TimelineView: NSView {
         if clicked == true, count > 1 {
             let menu = NSMenu()
             menu.addItem(colorMenuItem())
+            if canJoinSelection { menu.addItem(actionItem("Join Clips (⌘J)", action: #selector(joinSelection))) }
             if model.selectedClips.isEmpty, model.selection.allSatisfy({ id in model.project.audioClips.contains { $0.id == id.uuidString } }) {
                 let move = actionItem("Move to New Track", action: #selector(menuMoveAudioToNewTrack))
                 move.image = NSImage(systemSymbolName: "rectangle.stack.badge.plus", accessibilityDescription: nil)
@@ -1837,6 +1838,7 @@ final class TimelineView: NSView {
         if model?.selectedClips.contains(index) != true { selectClip(index) }
         let menu = NSMenu()
         menu.addItem(actionItem("Split at Playhead (C)", action: #selector(menuSplitAtPlayhead)))
+        if canJoinSelection { menu.addItem(actionItem("Join Clips (⌘J)", action: #selector(joinSelection))) }
         let speed = NSMenuItem(title: "Speed", action: nil, keyEquivalent: "")
         speed.submenu = speedSubmenu(index: index)
         menu.addItem(speed)
@@ -1868,6 +1870,31 @@ final class TimelineView: NSView {
     func splitClipAtPlayhead() {
         guard let model else { return }
         performSplit(atOutput: model.playhead, clipOnly: true)
+    }
+
+    /// Join Clips (⌘J): the selected video clips and audio clips that continue the same media are merged back into one;
+    /// a single selected clip joins its next neighbour. nil when nothing is joinable.
+    private func joinedSelection() -> (project: Project, clips: Set<Int>, audio: Set<UUID>)? {
+        guard let model else { return nil }
+        var project = model.project
+        var clips = model.selectedClips.union(model.selectedClip.map { [$0] } ?? [])
+        if clips.count == 1, let i = clips.first { clips.insert(i + 1) }
+        var audio = Set(project.audioClips.compactMap { UUID(uuidString: $0.id) }.filter(model.selection.contains))
+        if audio.count == 1, let one = project.audioClips.first(where: { $0.id == audio.first?.uuidString }),
+           let next = project.audioClips.filter({ $0.track == one.track && $0.start >= one.end - 1e-6 && $0.id != one.id }).min(by: { $0.start < $1.start }),
+           let id = UUID(uuidString: next.id) { audio.insert(id) }
+        let joinedClips = project.joinClips(clips), joinedAudio = project.joinAudio(audio)
+        guard !joinedClips.isEmpty || !joinedAudio.isEmpty else { return nil }
+        return (project, joinedClips, joinedAudio)
+    }
+
+    var canJoinSelection: Bool { joinedSelection() != nil }
+
+    @objc func joinSelection() {
+        guard let model, let joined = joinedSelection() else { NSSound.beep(); return }
+        model.edit("Join Clips") { $0 = joined.project }
+        if !joined.clips.isEmpty { model.selectedClips = joined.clips }
+        if !joined.audio.isEmpty { model.selection = joined.audio }
     }
 
     @objc func menuSplitAtPlayhead() {
@@ -2417,7 +2444,10 @@ final class TimelineView: NSView {
             marqueeRect = rect
             let rects = clipRects(model.project.clips, row: laneRow(.clip))
             model.selectedClips = marqueeSelection.union(rects.indices.filter { !model.project.clips[$0].isEmpty && rects[$0].intersects(rect) })
-            model.selection = []
+            let audio = model.project.audioClips.filter { audio in
+                model.project.audioSegments(audio).contains { audioRect(audio, output: $0.output).intersects(rect) }
+            }.compactMap { UUID(uuidString: $0.id) }
+            model.selection = (NSEvent.modifierFlags.contains(.shift) ? marqueeOriginalSelection.blocks : []).union(audio)
             needsDisplay = true
             return
         }
@@ -3478,6 +3508,25 @@ extension TimelineView {
         model.beginGesture(); panel.fadeBinding(incoming: false).wrappedValue = 0.44; model.commitGesture("Audio Fade")
         try check(model.project.audioClips[0].fadeOut == 0.4 && model.undoStepCount == 1, "Audio inspector fade")
         model.undo()
+        // Box selection → group move → Join Clips (⌘J), each one undo step.
+        let voice = UUID(uuidString: project.audioClips[2].id)!
+        model.edit("Split") { _ = $0.splitAudio(voice, atOutput: 9) }
+        let halves = Set(model.project.audioClips.filter { $0.track == 2 }.compactMap { UUID(uuidString: $0.id) })
+        let marquee = CGPoint(x: view.x(forOutput: 7.5), y: view.laneRow(.audio(2)).minY + 3)
+        drag(marquee, CGPoint(x: view.x(forOutput: 10.5), y: view.laneRow(.audio(2)).maxY - 3), modifiers: [])
+        try check(halves.count == 2 && model.selection == halves, "Box selection picks both audio halves")
+        let steps = model.undoStepCount
+        drag(point(8.5, track: 2), point(9.5, track: 2))
+        let moved = model.project.audioClips.filter { $0.track == 2 }.sorted { $0.start < $1.start }
+        try check(model.selection == halves && moved.map(\.start) == [9, 10] && moved.map(\.end) == [10, 11] && model.undoStepCount == steps + 1, "Group move")
+        try check(view.canJoinSelection, "Join enabled for continuous halves")
+        view.joinSelection()
+        let joined = model.project.audioClips.filter { $0.track == 2 }
+        try check(joined.count == 1 && joined[0].start == 9 && joined[0].end == 11 && model.undoStepCount == steps + 2, "Join Clips")
+        model.selectedClips = [0]; model.selection = []
+        try check(!view.canJoinSelection, "Nothing to join on a single uncut clip")
+        model.undo(); model.undo(); model.undo()
+        try check(model.project == project, "Box/join undo")
         let hosting = NSHostingView(rootView: InspectorView(model: model))
         hosting.frame = CGRect(x: 0, y: 0, width: 320, height: 600)
         guard let bitmap = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) else { throw Fail(description: "Audio panel bitmap") }
@@ -3504,7 +3553,7 @@ extension TimelineView {
         guard let clip = model.project.audioClips.first(where: { $0.id == id.uuidString }),
               let first = model.project.audioSegments(clip).first else { return false }
         if splitModeSticky { return false }
-        selectBlock(id, addToSelection: event.modifierFlags.contains(.shift))
+        if event.modifierFlags.contains(.shift) || !model.selection.contains(id) { selectBlock(id, addToSelection: event.modifierFlags.contains(.shift)) }
         if event.modifierFlags.contains(.shift) { return true }
         dragProject = model.project
         dragOrigin = audioRect(clip, output: TimeRange(start: first.output.start, end: model.project.audioSegments(clip).last!.output.end))
@@ -3525,10 +3574,26 @@ extension TimelineView {
         let raw = geometry.output(forX: geometryX(point)) - (edge == nil ? grabOffset : 0)
         let (output, snapped) = snappedOutput(raw, excludingBlock: id, disabled: snapDisabled)
         var changed = original
+        let group = original.audioClips.filter { UUID(uuidString: $0.id).map(model.selection.contains) == true }
         if let edge {
             changed.resizeAudio(id, edge: edge, toOutput: output,
                                 mediaDuration: mediaDurations[clip.file] ?? clip.mediaStart + original.audioSegments(clip).reduce(0) { $0 + $1.media.end - $1.media.start },
                                 propagate: !dragIgnoresLinks)
+        } else if group.count > 1, let from = original.audioSegments(clip).first?.output.start {
+            // Box/shift selection: every selected audio clip moves by the grabbed clip's delta, links ignored; a move that
+            // would collide anywhere keeps the last valid position.
+            let delta = max(0, output) - from
+            func start(_ audio: AudioClip, in project: Project) -> Double? {
+                project.audioClips.first { $0.id == audio.id }.flatMap { project.audioSegments($0).first?.output.start }
+            }
+            for audio in group.sorted(by: { delta > 0 ? $0.start > $1.start : $0.start < $1.start }) {
+                guard let id = UUID(uuidString: audio.id), let s = start(audio, in: original) else { continue }
+                changed.moveAudio(id, toOutput: s + delta, propagate: false)
+            }
+            guard group.allSatisfy({ audio in
+                guard let a = start(audio, in: original), let b = start(audio, in: changed) else { return false }
+                return abs(b - a - delta) < 1e-6
+            }) else { return }
         } else {
             if let lane = lanes.first(where: { laneRow($0).contains(CGPoint(x: gutterWidth + 1, y: point.y)) }),
                case .audio(let track) = lane, let index = changed.audioClips.firstIndex(where: { $0.id == clip.id }) {
@@ -3573,6 +3638,7 @@ extension TimelineView {
         let menu = NSMenu()
         guard let model, let clip = model.project.audioClips.first(where: { $0.id == id.uuidString }) else { return menu }
         menu.addItem(actionItem("Split at Playhead (C)", action: #selector(menuSplitAtPlayhead)))
+        if canJoinSelection { menu.addItem(actionItem("Join Clips (⌘J)", action: #selector(joinSelection))) }
         if clip.link != nil { menu.addItem(actionItem("Unlink (⌘L)", action: #selector(menuAudioLink(_:)), represented: "none")) }
         menu.addItem(actionItem("Link to Screen", action: #selector(menuAudioLink(_:)), represented: "screen"))
         if model.project.source.hasCamera { menu.addItem(actionItem("Link to Camera", action: #selector(menuAudioLink(_:)), represented: "camera")) }

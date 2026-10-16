@@ -1002,3 +1002,7 @@ PLAN T-640…T-650.
   it (Color, Move to New Track for audio-only, Remove N Items). Inspector selection headers show a Color row.
 - **Multi-select inspector:** several audio clips → shared Gain, Mute, Fade in, Fade out ("Mixed" until changed, one undo
   per gesture); any other mix → Color and Remove N items.
+- **Box selection + Join:** dragging from empty timeline space selects the video and audio clips it touches (⇧ adds).
+  Dragging a selected audio clip moves all selected audio clips together (links ignored; stops at collisions; one undo).
+  **Join Clips** (⌘J, Edit menu, right-click) merges selected neighbours that continue the same media at the same
+  speed/gain — the inverse of a split; a single selected clip joins its next neighbour. Gaps (erased pauses) don't join.

@@ -239,6 +239,37 @@ private struct LCG: RandomNumberGenerator {
     #expect(p.audioClips[0].fadeIn == nil && p.audioClips[1].fadeOut == nil)
 }
 
+@Test func joinClipsUndoesSplits() {
+    var p = Project(source: Source(duration: 20, hasMic: true), clips: [Clip(sourceStart: 0, sourceEnd: 20, speed: 1)])
+    let original = p
+    _ = p.split(atOutput: 5); _ = p.split(atOutput: 10)
+    p.clips[0].fadeIn = 0.5; p.clips[2].fadeOut = 0.4
+    let joined = p.joinClips([0, 1, 2])
+    #expect(joined == [0])
+    #expect(p.clips.count == 1 && p.clips[0].sourceEnd == 20 && p.clips[0].fadeIn == 0.5 && p.clips[0].fadeOut == 0.4)
+    p.clips[0].fadeIn = nil; p.clips[0].fadeOut = nil
+    #expect(p.clips == original.clips && p.checkInvariants() == nil)
+    _ = p.split(atOutput: 5); _ = p.split(atOutput: 10)
+    p.clips.remove(at: 1) // 0–5 then 10–20: not continuous media
+    let cut = p
+    let refused = p.joinClips([0, 1])
+    #expect(refused.isEmpty && p == cut)
+
+    var a = Project(source: Source(duration: 20, hasMic: true), clips: [Clip(sourceStart: 0, sourceEnd: 20, speed: 1)])
+    let mic = UUID(uuidString: a.audioClips[0].id)!
+    let split = a.splitAudio(mic, atOutput: 8, propagate: false)
+    #expect(split)
+    let ids = Set(a.audioClips.map { UUID(uuidString: $0.id)! })
+    let audioJoined = a.joinAudio(ids)
+    #expect(audioJoined == [mic])
+    #expect(a.audioClips.count == 1 && a.audioClips[0].end == 20 && a.checkInvariants() == nil)
+    a.splitAudioAtPauses(file: "mic.m4a", silent: [TimeRange(start: 5, end: 8)])
+    a.audioClips.remove(at: 1) // erased pause leaves a gap: not joinable
+    let erased = a
+    let audioRefused = a.joinAudio(Set(a.audioClips.map { UUID(uuidString: $0.id)! }))
+    #expect(audioRefused.isEmpty && a == erased)
+}
+
 @Test func moveAudioToNewTrack() {
     var p = Project(source: Source(duration: 20, hasMic: true), clips: [Clip(sourceStart: 0, sourceEnd: 20, speed: 1)])
     p.audioTracks[0].volume = 0.5

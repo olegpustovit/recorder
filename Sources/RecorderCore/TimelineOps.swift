@@ -84,6 +84,43 @@ public extension Project {
         return true
     }
 
+    /// Join Clips (⌘J): merges each run of neighbouring selected video clips that continue the same media at the same
+    /// speed (undoing a split). Returns the surviving indices; empty (project untouched) when nothing is joinable.
+    @discardableResult
+    mutating func joinClips(_ indices: Set<Int>) -> Set<Int> {
+        var kept = indices.filter { clips.indices.contains($0) }, joined = false
+        for i in indices.sorted(by: >) where kept.contains(i) && kept.contains(i + 1) {
+            let a = clips[i], b = clips[i + 1]
+            guard !a.isEmpty, !b.isEmpty, abs(a.sourceEnd - b.sourceStart) < 1e-6, a.speed == b.speed, a.clockSpeed == b.clockSpeed,
+                  abs(a.mediaTime(atSource: a.sourceEnd) - b.mediaIn) < 1e-6 else { continue }
+            clips[i].sourceEnd = b.sourceEnd; clips[i].fadeOut = b.fadeOut
+            clips.remove(at: i + 1)
+            kept = Set(kept.filter { $0 != i + 1 }.map { $0 > i + 1 ? $0 - 1 : $0 })
+            joined = true
+        }
+        return joined ? kept : []
+    }
+
+    /// Join Clips for audio: merges selected clips on one track that continue the same media with the same link, gain
+    /// and rate (e.g. after a split). Returns the surviving ids; empty (project untouched) when nothing is joinable.
+    @discardableResult
+    mutating func joinAudio(_ ids: Set<UUID>) -> Set<UUID> {
+        let keys = Set(ids.map(\.uuidString))
+        var survivors = keys, joined = false
+        for _ in 0..<audioClips.count {
+            let sorted = audioClips.filter { survivors.contains($0.id) }.sorted { $0.start < $1.start }
+            guard let (a, b) = zip(sorted, sorted.dropFirst()).first(where: { a, b in
+                a.track == b.track && a.file == b.file && a.link == b.link && a.layer == b.layer && a.gain == b.gain &&
+                    a.mediaRate == b.mediaRate && abs(a.end - b.start) < 1e-6 &&
+                    abs(a.mediaStart + (a.end - a.start) * (a.mediaRate ?? 1) - b.mediaStart) < 1e-6
+            }), let i = audioClips.firstIndex(where: { $0.id == a.id }) else { break }
+            audioClips[i].end = b.end; audioClips[i].fadeOut = b.fadeOut
+            audioClips.removeAll { $0.id == b.id }
+            survivors.remove(b.id); joined = true
+        }
+        return joined ? Set(survivors.compactMap(UUID.init(uuidString:))) : []
+    }
+
     @discardableResult
     mutating func addImportedAudio(file: String, atOutput time: Double, duration: Double, layer: String? = nil, matching settings: AudioTrack? = nil) -> UUID? {
         guard file.hasPrefix("media/"), !file.split(separator: "/").contains(".."),

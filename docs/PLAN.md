@@ -219,6 +219,13 @@ Lanes run in worktrees `../recorder-voice-{e,t,c}` (branches `voice-*`), merged 
     one undo per gesture; any other mix → count, Colour, Remove.
   - Verify: `make test FILTER=clipColor`; `inspector-panels`, `timeline-clipboard`, `timeline-ops` OK.
 
+- [x] **T-657 Box selection + group move + Join Clips (⌘J)**
+  - Dragging from empty timeline space boxes video clips *and* audio clips; dragging a selected audio clip moves every
+    selected audio clip by the same delta (links ignored, stops at collisions), one undo. Core `joinClips(_:)` /
+    `joinAudio(_:)` merge neighbours that continue the same media (undo a split); ⌘J (Edit ▸ Join Clips) and right-click
+    "Join Clips"; a single selection joins its next neighbour.
+  - Verify: `make test FILTER=joinClipsUndoesSplits`; `inspector-panels` (audio UI box → move → join → undo), timeline-*.
+
 ---
 
 ## Requested Nudge fixes — 2026-09-22
@@ -1072,3 +1079,5 @@ T-651…T-653 · 2026-10-16 · Voice editing request: 130/130 tests incl. pauses
 fix · 2026-10-16 · Crash after opening a mic recording: split-at-pauses slices abut at float-noisy boundaries that round to a 1-tick overlap at timescale 600, and AVFoundation throws on overlapping volume ramps (`makeAudioMix` now clamps each ramp to the previous end per track). Transcriber kept only the final result, which on long audio repeats just the last utterance; now merges every utterance (Soft Harbor 434 s: 16 → 684 words). New `--selftest audio-mix-abutting` crashes before the fix and passes after; clip-fades and captions OK.
 
 T-654…T-656 · 2026-10-16 · Voice workflow merged from lanes voice-e/t/c: eraser Tail+Fade preset, no pre-cuts, transcription status; lanes on demand + "+" menu + Move to New Track; colour tags + multi-select audio inspector. Merge conflicts (tests, context menu) resolved keeping both; multi-selection menu offers Move to New Track for audio-only selections. `make test` 133/133; debug app timeline-ops, command-scissors, menu-actions, audio-lanes, inspector-panels, timeline-clipboard/selection/tracks/full-layers, media-import, audio-mix-abutting, timeline-png --colors OK (PNG inspected). HUMAN: eraser tail by ear, "+" menu/reveal feel, swatches on a real display, multi-audio slider drag.
+
+T-657 · 2026-10-16 · Box selection of audio clips, group audio move, Join Clips (⌘J) for video and audio. `make test` 134/134; debug app inspector-panels (box→move→join→undo), timeline-ops, command-scissors, menu-actions, audio-lanes, timeline-clipboard/selection/tracks/full-layers, media-import OK. HUMAN: box-drag and ⌘J feel in the live editor.
