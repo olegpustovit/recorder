@@ -186,6 +186,41 @@ User request: transcript-aware mic editing, pause eraser, select-all auto zooms,
 
 ---
 
+## Requested voice workflow — 2026-10-16 (evening)
+
+User decisions: no mic pre-cuts on open (eraser cuts only where dragged) · eraser preset Tail + Fade · "+" adds lanes;
+empty lanes (zoom, keys, layout, mask, text, window, camera without clips) are hidden, never clutter · fixed colour
+swatches · multi-select shared settings for audio clips, colour + remove for any mixed selection (other kinds later).
+Lanes run in worktrees `../recorder-voice-{e,t,c}` (branches `voice-*`), merged by the coordinator.
+
+- [ ] **T-654 Eraser Tail + Fade preset, no pre-cuts, transcription status** (lane e)
+  - Core: `erasePauses(file:silent:inOutput:tail:fade:)` keeps `tail` s of the pause on each speech side (pauses shorter
+    than 2×tail+0.05 s are left alone), fades the speech side by `fade`. `splitAudioAtPauses` keeps its signature.
+  - App: `prepareMic` only transcribes (no slicing). Eraser toolbar button: right-click or long-press opens an NSPopover
+    with `LabeledSlider`s Tail (0–500 ms, default 120) and Fade (0–300 ms, default 80), remembered in UserDefaults.
+    While transcribing: Mic lane shows an indeterminate status ("Transcribing…" + spinner) where words will appear,
+    and the header/AudioPanel/Sound tab show the same status; failures show the error text.
+  - Verify: `make test FILTER=eraserTailFade` (+ `pausesSliceAndEraseMicOnly`); `command-scissors`, `timeline-ops`,
+    `audio-mix-abutting` OK. HUMAN: drag the eraser over a pause with tail 200 ms — voice decays naturally.
+- [ ] **T-655 Lanes on demand: hide empty lanes, "+" menu, Move to New Track** (lane t)
+  - Fixed lanes with no blocks are hidden unless revealed this session; lanes with content always show. A "+" button at
+    the top of the track-header gutter opens an NSMenu: "Audio Track" (appends `Audio N`, one undo) then each hidden
+    lane type; choosing reveals that lane and scrolls it into view. Empty revealed lanes' header menu: "Hide Lane".
+  - Core `moveAudioToNewTrack(_ ids:)` (new `Audio N` with the source track's volume/mute, one undo) via audio clip
+    context menu "Move to New Track" (applies to the selection).
+  - Verify: `make test FILTER=moveAudioToNewTrack`; all `timeline-*` selftests, `command-scissors`, `menu-actions`,
+    `audio-lanes`, `media-import` OK (update fixtures that click a now-hidden empty lane by revealing it first).
+- [ ] **T-656 Clip colours + multi-select inspector** (lane c)
+  - Core: optional colour tag (`red orange yellow green blue purple gray`) on every timeline block type and video clip;
+    inherited by split/duplicate/paste; additive JSON key. Theme tokens for the 7 swatches (SPEC §3).
+  - Timeline tints blocks by tag; context menu "Colour ▸" (swatch images + None) applies to the selection; inspector
+    selection headers show the swatch row.
+  - Multi-selection: all audio clips → shared Gain / Mute / Fade in / Fade out / Colour, mixed values shown as "Mixed",
+    one undo per gesture; any other mix → count, Colour, Remove.
+  - Verify: `make test FILTER=clipColor`; `inspector-panels`, `timeline-clipboard`, `timeline-ops` OK.
+
+---
+
 ## Requested Nudge fixes — 2026-09-22
 
 User-requested fixes are handled individually in this order, separately from the outstanding HUMAN milestone gates.
