@@ -165,22 +165,21 @@ import RecorderCore
     /// Not part of `Project`, so undo never drops it. nil = not transcribed yet.
     private(set) var transcript: [Word]?
     var transcriptStatus: String?
+    private(set) var isTranscribing = false
     var transcriptURL: URL { packageURL.appendingPathComponent("transcript.json") }
 
-    /// First open of a mic recording: slice the mic at its pauses (one undo step, audio only) and transcribe it.
+    /// First open of a mic recording: transcribe it (no pre-cuts; the pause eraser cuts only where dragged).
     /// `transcript.json` existing marks the package as prepared.
     func prepareMic() async {
-        guard project.source.hasMic, transcript == nil, let url = Waveform.audioURL(in: packageURL, file: "mic.m4a") else { return }
-        let silent = await Waveform.silent(in: url)
-        var sliced = project
-        sliced.splitAudioAtPauses(file: "mic.m4a", silent: silent)
-        if sliced != project { edit("Split Mic at Pauses") { $0 = sliced } }
+        guard project.source.hasMic, transcript == nil else { return }
         await transcribe()
     }
 
     /// Transcribes `mic.m4a` on-device into `transcript.json`; failures leave an empty transcript and a status line.
     func transcribe() async {
-        guard let url = Waveform.audioURL(in: packageURL, file: "mic.m4a") else { return }
+        guard !isTranscribing, let url = Waveform.audioURL(in: packageURL, file: "mic.m4a") else { return }
+        isTranscribing = true
+        defer { isTranscribing = false }
         transcriptStatus = "Transcribing…"
         var words: [Word] = []
         do {

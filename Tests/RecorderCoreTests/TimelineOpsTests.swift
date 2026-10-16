@@ -227,6 +227,18 @@ private struct LCG: RandomNumberGenerator {
     #expect(fresh.audioClips.map(\.start) == [0, 8, 15])
 }
 
+@Test func eraserTailFade() {
+    var p = Project(source: Source(duration: 20, hasMic: true), clips: [Clip(sourceStart: 0, sourceEnd: 20, speed: 1)])
+    let silent = [TimeRange(start: 5, end: 8), TimeRange(start: 12, end: 12.2)]
+    p.erasePauses(file: "mic.m4a", silent: silent, inOutput: TimeRange(start: 0, end: 20), tail: 0.12, fade: 0.08)
+    #expect(p.checkInvariants() == nil)
+    #expect(p.clips == [Clip(sourceStart: 0, sourceEnd: 20, speed: 1)]) // video untouched
+    #expect(p.audioClips.count == 2) // the 0.2 s pause is shorter than 2×tail + 0.05: left alone
+    #expect(abs(p.audioClips[0].end - 5.12) < 1e-9 && abs(p.audioClips[1].start - 7.88) < 1e-9) // tail kept
+    #expect(p.audioClips[0].fadeOut == 0.08 && p.audioClips[1].fadeIn == 0.08)
+    #expect(p.audioClips[0].fadeIn == nil && p.audioClips[1].fadeOut == nil)
+}
+
 @Test func highlightZoomCopiesTimingAndTarget() {
     var p = Project(source: Source(duration: 20), clips: [Clip(sourceStart: 0, sourceEnd: 20, speed: 1)])
     let id = p.addZoom(atSource: 4, length: 3, mode: .manual)!
