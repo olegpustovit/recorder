@@ -24,7 +24,7 @@ build:
 # make test                 -> all tests
 # make test FILTER=timeMap  -> one test / suite
 test:
-	DEVELOPER_DIR=$(CLT:/Library/Developer=) swift test $(TESTFLAGS) $(if $(FILTER),--filter $(FILTER))
+	DEVELOPER_DIR=$${DEVELOPER_DIR:-$(CLT:/Library/Developer=)} swift test $(TESTFLAGS) $(if $(FILTER),--filter $(FILTER))
 
 app: build
 	@[ ! -e "$(SIGN_KC)" ] || security unlock-keychain -p "" "$(SIGN_KC)"

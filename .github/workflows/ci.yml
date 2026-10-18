@@ -11,10 +11,11 @@ permissions:
 jobs:
   test:
     runs-on: macos-26
+    # The image's default DEVELOPER_DIR is Command Line Tools, which lacks the SwiftUI macro plugin.
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     steps:
       - uses: actions/checkout@v4
-      # The image's xcode-select points at Command Line Tools, whose SwiftUI macro plugin is missing.
-      - run: sudo xcode-select -s /Applications/Xcode_26.6.app
       - name: Check local installer without changing app or privacy grants
         run: ruby scripts/test-install.rb
       - run: make test
