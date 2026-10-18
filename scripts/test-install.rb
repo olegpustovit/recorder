@@ -82,7 +82,7 @@ end
         %w[space.microapps.recorder sh.nexo.recorder].map { |id| "tccutil|reset|#{service}|#{id}" }
       }
     abort "#{scenario}: wrong reset scope #{resets}" unless resets == expected_resets
-    abort 'Missing signing requirement' unless calls.first.include?('certificate leaf[subject.CN] = "Recorder Dev"')
+    abort 'Missing signing requirement' unless calls.any? { |line| line.include?('certificate leaf[subject.CN] = "Recorder Dev"') }
     puts "install #{scenario}: OK"
   end
 end
@@ -94,7 +94,7 @@ Dir.mktmpdir('recorder-cert-test-') do |dir|
   File.write(security, <<~'SH')
     #!/bin/sh
     case "$1" in
-      find-identity) exit 0 ;;
+      find-identity|show-keychain-info|unlock-keychain) exit 0 ;;
       import) exec /usr/bin/openssl pkcs12 -in "$2" -passin pass:recorder -noout ;;
       *) exit 1 ;;
     esac
