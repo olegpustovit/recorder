@@ -1006,3 +1006,5 @@ PLAN T-640…T-650.
   Dragging a selected audio clip moves all selected audio clips together (links ignored; stops at collisions; one undo).
   **Join Clips** (⌘J, Edit menu, right-click) merges selected neighbours that continue the same media at the same
   speed/gain — the inverse of a split; a single selected clip joins its next neighbour. Gaps (erased pauses) don't join.
+- **Transcription engine:** macOS 26+ uses `SpeechAnalyzer` + `SpeechTranscriber` (long-form, always on-device, model
+  installed by the system on first use per language); macOS 15 uses `SFSpeechRecognizer` with on-device required.

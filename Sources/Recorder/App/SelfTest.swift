@@ -3710,6 +3710,8 @@ enum SelfTest {
             print("words:", words.map(\.text).joined(separator: " "))
             print("phrases:", phrases.map(\.text))
             guard !words.isEmpty, !phrases.isEmpty, phrases.allSatisfy({ ($0.words?.count ?? 0) <= 4 }) else { throw Fail(description: "no words/phrases") }
+            print("timing:", words.prefix(3).map { "\($0.text)@\($0.start)-\($0.end)" }, "…", words.last.map { "\($0.text)@\($0.end)" } ?? "")
+            guard zip(words, words.dropFirst()).allSatisfy({ $0.start <= $1.start }), words.allSatisfy({ $0.start < $0.end }) else { throw Fail(description: "word timings missing or out of order") }
         },
         // T-629: /tmp/TextFixture.recorder — a caption (with word timings), a title and a label, back to back.
         "make-text-fixture": { _ in

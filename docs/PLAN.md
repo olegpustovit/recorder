@@ -225,6 +225,11 @@ Lanes run in worktrees `../recorder-voice-{e,t,c}` (branches `voice-*`), merged 
     `joinAudio(_:)` merge neighbours that continue the same media (undo a split); ⌘J (Edit ▸ Join Clips) and right-click
     "Join Clips"; a single selection joins its next neighbour.
   - Verify: `make test FILTER=joinClipsUndoesSplits`; `inspector-panels` (audio UI box → move → join → undo), timeline-*.
+- [x] **T-658 Transcription on SpeechAnalyzer**
+  - macOS 26+: `Transcriber.words` uses `SpeechAnalyzer` + `SpeechTranscriber` (`audioTimeRange` runs → `Word`s; the
+    system installs the language model via `AssetInventory` on first use). macOS 15 keeps `SFSpeechRecognizer` on-device.
+    Captions (word-highlight Caption style, T-629) consume the same words; no new layer.
+  - Verify: `--selftest captions <mic.m4a>` on a 7 min take (ordered word timings to the end); `preview-frame` caption PNG.
 
 ---
 
@@ -1081,3 +1086,4 @@ fix · 2026-10-16 · Crash after opening a mic recording: split-at-pauses slices
 T-654…T-656 · 2026-10-16 · Voice workflow merged from lanes voice-e/t/c: eraser Tail+Fade preset, no pre-cuts, transcription status; lanes on demand + "+" menu + Move to New Track; colour tags + multi-select audio inspector. Merge conflicts (tests, context menu) resolved keeping both; multi-selection menu offers Move to New Track for audio-only selections. `make test` 133/133; debug app timeline-ops, command-scissors, menu-actions, audio-lanes, inspector-panels, timeline-clipboard/selection/tracks/full-layers, media-import, audio-mix-abutting, timeline-png --colors OK (PNG inspected). HUMAN: eraser tail by ear, "+" menu/reveal feel, swatches on a real display, multi-audio slider drag.
 
 T-657 · 2026-10-16 · Box selection of audio clips, group audio move, Join Clips (⌘J) for video and audio. `make test` 134/134; debug app inspector-panels (box→move→join→undo), timeline-ops, command-scissors, menu-actions, audio-lanes, timeline-clipboard/selection/tracks/full-layers, media-import OK. HUMAN: box-drag and ⌘J feel in the live editor.
+T-658 · 2026-10-18 · Transcriber on SpeechAnalyzer/SpeechTranscriber (macOS 26+), SFSpeechRecognizer fallback. `captions` selftest on Soft Harbor (434 s): ~7.6 s, words to 431.8 s, ordered timings; caption preview-frame shows the current-word box.

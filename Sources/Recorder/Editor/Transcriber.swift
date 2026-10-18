@@ -1,16 +1,60 @@
+import AVFoundation
 import Foundation
 import Speech
 import RecorderCore
 
 /// On-device speech recognition of `mic.m4a` into timed words (source seconds = mic seconds).
 /// Never uses the server: fails clearly when on-device recognition is unavailable.
-/// ponytail: SFSpeechRecognizer only; macOS 26's SpeechAnalyzer/SpeechTranscriber is the upgrade path.
+/// macOS 26+: SpeechAnalyzer + SpeechTranscriber (long-form model, always on-device, system-managed assets).
+/// macOS 15: SFSpeechRecognizer with `requiresOnDeviceRecognition`.
 enum Transcriber {
     struct Failure: Error, LocalizedError {
         let errorDescription: String?
     }
 
     static func words(in audio: URL) async throws -> [Word] {
+        if #available(macOS 26, *) { return try await analyzerWords(in: audio) }
+        return try await recognizerWords(in: audio)
+    }
+
+    @available(macOS 26, *)
+    static func analyzerWords(in audio: URL) async throws -> [Word] {
+        guard SpeechTranscriber.isAvailable else { throw Failure(errorDescription: "On-device speech transcription is not available on this Mac.") }
+        guard let locale = await SpeechTranscriber.supportedLocale(equivalentTo: .current) else {
+            throw Failure(errorDescription: "On-device speech transcription does not support \(Locale.current.identifier).")
+        }
+        let transcriber = SpeechTranscriber(locale: locale, transcriptionOptions: [], reportingOptions: [], attributeOptions: [.audioTimeRange])
+        if let install = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
+            try await install.downloadAndInstall()  // first use per language: the system downloads the model once
+        }
+        let file = try AVAudioFile(forReading: audio)
+        let analyzer = SpeechAnalyzer(modules: [transcriber])
+        // Collect concurrently: results stream while the file is analysed and end when the analyzer finishes.
+        let collect = Task {
+            var words: [Word] = []
+            for try await result in transcriber.results {
+                for run in result.text.runs {
+                    let text = String(result.text[run.range].characters).trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !text.isEmpty, let range = run.audioTimeRange else { continue }
+                    words.append(Word(text: text, start: range.start.seconds, end: range.end.seconds))
+                }
+            }
+            return words
+        }
+        do {
+            if let end = try await analyzer.analyzeSequence(from: file) {
+                try await analyzer.finalizeAndFinish(through: end)
+            } else {
+                await analyzer.cancelAndFinishNow()
+            }
+        } catch {
+            collect.cancel()
+            throw error
+        }
+        return try await collect.value
+    }
+
+    static func recognizerWords(in audio: URL) async throws -> [Word] {
         let status = await withCheckedContinuation { c in SFSpeechRecognizer.requestAuthorization { c.resume(returning: $0) } }
         guard status == .authorized else {
             throw Failure(errorDescription: "Speech Recognition is not allowed. Enable Recorder in System Settings ▸ Privacy & Security ▸ Speech Recognition.")
