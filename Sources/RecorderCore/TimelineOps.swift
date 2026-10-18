@@ -110,9 +110,12 @@ public extension Project {
         for _ in 0..<audioClips.count {
             let sorted = audioClips.filter { survivors.contains($0.id) }.sorted { $0.start < $1.start }
             guard let (a, b) = zip(sorted, sorted.dropFirst()).first(where: { a, b in
-                a.track == b.track && a.file == b.file && a.link == b.link && a.layer == b.layer && a.gain == b.gain &&
-                    a.mediaRate == b.mediaRate && abs(a.end - b.start) < 1e-6 &&
-                    abs(a.mediaStart + (a.end - a.start) * (a.mediaRate ?? 1) - b.mediaStart) < 1e-6
+                // Split so the type checker stays fast on CI's compiler.
+                let sameSource = a.track == b.track && a.file == b.file && a.link == b.link && a.layer == b.layer
+                let sameSetup = a.gain == b.gain && a.mediaRate == b.mediaRate
+                let contiguous = abs(a.end - b.start) < 1e-6
+                let sameMedia = abs(a.mediaStart + (a.end - a.start) * (a.mediaRate ?? 1) - b.mediaStart) < 1e-6
+                return sameSource && sameSetup && contiguous && sameMedia
             }), let i = audioClips.firstIndex(where: { $0.id == a.id }) else { break }
             audioClips[i].end = b.end; audioClips[i].fadeOut = b.fadeOut
             audioClips.removeAll { $0.id == b.id }
@@ -2021,8 +2024,11 @@ public extension Project {
     func color(ofBlock id: UUID) -> BlockColor? {
         let key = id.uuidString
         func find<T: TimedBlock>(_ blocks: [T]) -> BlockColor?? { blocks.first { $0.id == key }.map(\.color) }
-        return find(zooms) ?? find(keystrokeClips) ?? find(layouts) ?? find(masks) ?? find(texts) ?? find(windowShots)
-            ?? find(cameraClips) ?? find(audioClips) ?? find(layers) ?? nil
+        // First block with this id wins, even when it is untagged (.some(nil)).
+        let hits: [BlockColor??] = [find(zooms), find(keystrokeClips), find(layouts), find(masks), find(texts),
+                                    find(windowShots), find(cameraClips), find(audioClips), find(layers)]
+        guard let hit = hits.first(where: { $0 != nil }) else { return nil }
+        return hit ?? nil
     }
 
     @discardableResult
