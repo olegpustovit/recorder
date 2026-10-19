@@ -235,9 +235,9 @@ Lanes run in worktrees `../recorder-voice-{e,t,c}` (branches `voice-*`), merged 
 
 | Scope | Tasks | Done |
 |---|---|---|
-| Selected clip cursor visibility | T-659 | 0/1 |
+| Selected clip cursor visibility | T-659 | 1/1 |
 
-- [ ] **T-659 Hide cursor in the selected clip inspector**
+- [x] **T-659 Hide cursor in the selected clip inspector**
   - Do: add a Hide cursor toggle below Playback speed in the selected Clip panel. Persist optional `Clip.hideCursor`
     (missing means visible), apply it at the shared preview/export frame-state boundary, and use the same edit from
     Edit ▸ Hide Cursor in Selected Clip. One undo step per toggle; no changes to other cuts or project cursor settings.
@@ -246,6 +246,10 @@ Lanes run in worktrees `../recorder-voice-{e,t,c}` (branches `voice-*`), merged 
   - Verify: `make test`; `make app`; `--selftest clip-cursor`, `clip-fades`, `inspector-panels`, `menu-actions`,
     `timeline-ops`, `timeline-clipboard`, `timeline-selection`; preview/export parity on a mixed visible/hidden fixture;
     inspect 300/360-point Clip panel PNGs; verify the published universal DMG, signature, notarization, version and digest.
+  - Released: [v0.4.1](https://github.com/olegpustovit/recorder/releases/tag/v0.4.1), source `88bf5af`.
+    All listed local checks pass; clean CI and signed/notarized release runs pass. Public DMG digest, both
+    architectures, version, strict signature, app/DMG tickets and Gatekeeper checks pass; its clip-cursor,
+    menu-actions and mixed visible/hidden parity checks pass (maxDelta=0). Hardware gates remain as disclosed.
 
 ---
 
@@ -1105,3 +1109,5 @@ T-657 · 2026-10-16 · Box selection of audio clips, group audio move, Join Clip
 T-658 · 2026-10-18 · Transcriber on SpeechAnalyzer/SpeechTranscriber (macOS 26+), SFSpeechRecognizer fallback. `captions` selftest on Soft Harbor (434 s): ~7.6 s, words to 431.8 s, ordered timings; caption preview-frame shows the current-word box.
 
 T-659 · 2026-10-19 · Added Hide cursor below Playback speed in the selected Clip inspector, optional per-clip JSON flag, shared menu/model undo edit and shared preview/export frame gating. Splits/paste retain the flag; join/restoration preserves differing visibility; global and legacy range hides remain supported. CLT make test passes 135/135; debug make app version 0.4.1, clip-cursor, clip-fades, inspector-panels, menu-actions, timeline-ops, timeline-clipboard and timeline-selection pass. Inspected 300/360-point panel renders and the full 320-point inspector. Synthetic fixture with an explicit cursor sprite verifies hiding changes the selected clip's pixels while its neighbor stays byte-identical; preview/export parity is exact at five visible/hidden times. Installer regressions, strict codesign, shell syntax and diff checks pass. Reference boards are absent; existing UI kit and user's panel followed. Signed/notarized patch publication and public-download verification pending; T-659 remains unchecked until those pass.
+
+T-659 · 2026-10-19 · Published v0.4.1 from 88bf5af; CI 39308484407 and Release 39308486851 succeed, both with 135/135 Core tests. Assembled universal release passes clip-cursor before publication alongside existing permission/device/waveform/background/export smoke checks. Independently downloaded the public 8,886,782-byte DMG: SHA-256 303467938116baff9c898d577f847f91aece6bf02011b056166e1f992e238472 matches GitHub's asset digest; checksum, app/DMG stapled tickets, Gatekeeper Notarized Developer ID assessments, strict app signature, x86_64 + arm64 and bundle version 0.4.1 pass. Mounted read-only app passes clip-cursor, menu-actions and five-time visible/hidden preview/export parity with maxDelta=0; detached afterward. make gallery/gallery-png pass and the rendered gallery was inspected. Task marked complete (1/1); public notes describe the toggle and preserve hardware/permission/latency/VoiceOver/performance limits and older-version compatibility caveat. No installed app replacement or TCC changes.
