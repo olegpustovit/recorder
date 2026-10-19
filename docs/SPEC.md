@@ -922,6 +922,13 @@ Finder desktop-icon exceptions remain independent. Preview and export share the 
 
 Video clips have explicit Fade in and Fade out controls in the selected clip inspector. Both default to Off, including existing projects without stored fade values. There is no automatic arrival fade after a gap. Optional `Clip.fadeIn` / `fadeOut` store output seconds, clamped to the clip duration when edited and rendered; zero or absent means Off. Each edge uses smoothstep opacity, and overlapping fades use the lower opacity. Preview and export use the same opacity function. Splitting retains fades only on the original outer edges; the new cut is immediate. Slider edits support undo/redo and autosave.
 
+The selected Clip inspector has a **Hide cursor** toggle below Playback speed, applying only to that cut. Optional
+`Clip.hideCursor: true` suppresses the recorded cursor for the whole clip in both preview and export; absent/false
+retains the project cursor behavior (global hide, idle hide and legacy `cursorHidden` ranges still apply). This is an
+additive version-3 key. Edit ▸ Hide Cursor in Selected Clip sets the same flag; the inspector can turn it off again.
+Each toggle is one undo step and autosaves. Split, copy/paste, trim, move and speed edits retain the flag, including
+repeated media with different cursor visibility. Joining/restoring does not merge clips with different hide flags.
+
 With snapping enabled, dragging the leading edge of a clip selection within six pixels of timeline zero snaps it exactly to zero, regardless of where its body was grabbed. Command bypasses snapping. Stored gaps are preserved until edited; a tiny gap may display as `00:00.00` because timeline labels round to hundredths.
 
 ### Editor roadmap (October 2026)

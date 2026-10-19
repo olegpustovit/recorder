@@ -556,26 +556,9 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
         model.edit("Split at Pauses") { $0.splitAtPauses(ranges) }
     }
 
-    /// T-604 wire: appends the selected clip's SOURCE range to `cursorHidden`, merged/sorted with
-    /// whatever ranges were already hidden.
     @objc func hideCursorInSelectedClip(_ sender: Any?) {
-        guard let i = model.selectedClip, model.project.clips.indices.contains(i) else { return }
-        let clip = model.project.clips[i]
-        let added = TimeRange(start: clip.sourceStart, end: clip.sourceEnd)
-        model.edit("Hide Cursor") { $0.cursorHidden = Self.mergedRanges($0.cursorHidden + [added]) }
-    }
-
-    private static func mergedRanges(_ ranges: [TimeRange]) -> [TimeRange] {
-        var merged: [TimeRange] = []
-        for r in ranges.sorted(by: { $0.start < $1.start }) {
-            if var last = merged.last, r.start <= last.end {
-                last.end = max(last.end, r.end)
-                merged[merged.count - 1] = last
-            } else {
-                merged.append(r)
-            }
-        }
-        return merged
+        guard let index = model.selectedClip else { return }
+        model.setClipCursorHidden(true, at: index)
     }
 
     /// View ▸ 1–6 shares the visible navigation's state without clearing timeline selection.

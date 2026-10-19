@@ -12,6 +12,7 @@ public struct Clip: Codable, Equatable, Sendable {
     /// Explicit fade lengths in output seconds; missing values mean Off (including older projects).
     public var fadeIn: Double? = nil
     public var fadeOut: Double? = nil
+    public var hideCursor: Bool? = nil
     public var isGap: Bool? = nil
     public var mediaStart: Double? = nil
     /// Separate the timeline clock from playback rate for an unlinked speed edit.

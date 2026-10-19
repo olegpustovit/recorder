@@ -92,6 +92,7 @@ public extension Project {
         for i in indices.sorted(by: >) where kept.contains(i) && kept.contains(i + 1) {
             let a = clips[i], b = clips[i + 1]
             guard !a.isEmpty, !b.isEmpty, abs(a.sourceEnd - b.sourceStart) < 1e-6, a.speed == b.speed, a.clockSpeed == b.clockSpeed,
+                  (a.hideCursor == true) == (b.hideCursor == true),
                   abs(a.mediaTime(atSource: a.sourceEnd) - b.mediaIn) < 1e-6 else { continue }
             clips[i].sourceEnd = b.sourceEnd; clips[i].fadeOut = b.fadeOut
             clips.remove(at: i + 1)
@@ -1411,7 +1412,8 @@ public extension Project {
             clips[0].sourceStart = leftBound
         } else if rightIndex == clips.count {
             clips[i].sourceEnd = rightBound
-        } else if clips[i].speed == clips[rightIndex].speed {
+        } else if clips[i].speed == clips[rightIndex].speed,
+                  (clips[i].hideCursor == true) == (clips[rightIndex].hideCursor == true) {
             clips[i].sourceEnd = clips[rightIndex].sourceEnd
             clips.remove(at: rightIndex)
         } else {
@@ -1424,6 +1426,7 @@ public extension Project {
         while i + 1 < clips.count {
             let a = clips[i], b = clips[i + 1]
             if !a.isEmpty, !b.isEmpty, a.speed == b.speed, a.timeScale == b.timeScale,
+               (a.hideCursor == true) == (b.hideCursor == true),
                abs(a.sourceEnd - b.sourceStart) < 1e-8,
                abs(a.mediaIn + a.mediaDuration - b.mediaIn) < 1e-8,
                (a.fadeOut ?? 0) == 0, (b.fadeIn ?? 0) == 0 {

@@ -796,6 +796,7 @@ enum SelfTest {
         // already round-trips) into the selected mask's `rect`, and the whole drag is exactly one
         // undo step. See "mask-overlay" below for the padding/letterbox-aware mapping itself.
         "clip-fades": { @MainActor _ in try ClipPanel.runFadesSelfTest() },
+        "clip-cursor": { @MainActor _ in try ClipPanel.runCursorSelfTest() },
         "command-scissors": { @MainActor _ in try TimelineToolbar.runCommandSplitSelfTest() },
         "highlight-manipulation": { @MainActor _ in try MaskRectOverlay.runManipulationSelfTest() },
         "mask-rect": { _ in
@@ -2099,8 +2100,8 @@ enum SelfTest {
                 model.selectedClip = 0
                 let beforeHide = model.project
                 controller.hideCursorInSelectedClip(nil)
-                guard model.project.cursorHidden == [TimeRange(start: 0, end: 30)] else {
-                    throw Fail(description: "Hide Cursor didn't append the clip's range: \(model.project.cursorHidden)")
+                guard model.project.clips[0].hideCursor == true, model.project.cursorHidden == beforeHide.cursorHidden else {
+                    throw Fail(description: "Hide Cursor didn't hide only the selected clip")
                 }
                 controller.performUndo(nil)
                 guard model.project == beforeHide else { throw Fail(description: "Hide Cursor wasn't exactly one undo step") }

@@ -45,6 +45,39 @@ import Testing
     #expect(p.source.pixelWidth == 2880)
 }
 
+@Test func clipCursorPersistenceAndEdits() throws {
+    let legacy = try JSONDecoder().decode(Clip.self, from: Data(#"{"sourceStart":0,"sourceEnd":4,"speed":1}"#.utf8))
+    #expect(legacy.hideCursor == nil)
+    var project = Project(source: Source(duration: 8), clips: [legacy])
+    project.clips[0].hideCursor = true
+    #expect(try JSONDecoder().decode(Project.self, from: JSONEncoder().encode(project)) == project)
+    let split = project.split(atOutput: 2)
+    #expect(split && project.clips.count == 2)
+    #expect(project.clips.allSatisfy { $0.hideCursor == true })
+    let copied = try #require(project.copySelection(clips: [0], blocks: []))
+    let result = project.pasteSelection(copied, atOutput: 4)
+    let pasted = try #require(result)
+    #expect(pasted.clips.allSatisfy { project.clips[$0].hideCursor == true })
+    project.clips[1].hideCursor = nil
+    let beforeJoin = project
+    let refused = project.joinClips([0, 1])
+    #expect(refused.isEmpty)
+    #expect(project == beforeJoin)
+    project.clips[1].hideCursor = true
+    let joined = project.joinClips([0, 1])
+    #expect(joined == [0])
+    #expect(project.clips[0].hideCursor == true)
+    #expect(project.checkInvariants() == nil)
+
+    var restored = Project(source: Source(duration: 8), clips: [Clip(sourceStart: 0, sourceEnd: 2), Clip(sourceStart: 4, sourceEnd: 8)])
+    restored.clips[0].hideCursor = true
+    restored.restoreCut(afterClip: 0)
+    #expect(restored.clips.count == 3)
+    #expect(restored.clips[0].hideCursor == true)
+    #expect(restored.clips[1].hideCursor != true && restored.clips[2].hideCursor != true)
+    #expect(restored.checkInvariants() == nil)
+}
+
 @Test func projectRejectsNewerVersion() throws {
     let json = """
     {"version":\(Project.currentVersion + 1),"source":{}}

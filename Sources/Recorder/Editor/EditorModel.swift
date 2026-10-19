@@ -257,6 +257,12 @@ import RecorderCore
         scheduleAutosave()
     }
 
+    func setClipCursorHidden(_ hidden: Bool, at index: Int) {
+        guard project.clips.indices.contains(index), !project.clips[index].isEmpty,
+              (project.clips[index].hideCursor == true) != hidden else { return }
+        edit(hidden ? "Hide clip cursor" : "Show clip cursor") { $0.clips[index].hideCursor = hidden ? true : nil }
+    }
+
     func undo() {
         guard !voiceover.isActive else { return }
         guard let previous = undoStack.popLast(), let name = undoNames.popLast() else { return }

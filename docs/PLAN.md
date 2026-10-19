@@ -231,6 +231,22 @@ Lanes run in worktrees `../recorder-voice-{e,t,c}` (branches `voice-*`), merged 
     Captions (word-highlight Caption style, T-629) consume the same words; no new layer.
   - Verify: `--selftest captions <mic.m4a>` on a 7 min take (ordered word timings to the end); `preview-frame` caption PNG.
 
+## Requested clip cursor control — 2026-10-19
+
+| Scope | Tasks | Done |
+|---|---|---|
+| Selected clip cursor visibility | T-659 | 0/1 |
+
+- [ ] **T-659 Hide cursor in the selected clip inspector**
+  - Do: add a Hide cursor toggle below Playback speed in the selected Clip panel. Persist optional `Clip.hideCursor`
+    (missing means visible), apply it at the shared preview/export frame-state boundary, and use the same edit from
+    Edit ▸ Hide Cursor in Selected Clip. One undo step per toggle; no changes to other cuts or project cursor settings.
+    Split/paste/move retain the flag; joins/restoration do not merge clips with different visibility. Existing global
+    hide/idle/range behavior remains effective. Update SPEC and publish a clean signed/notarized patch release.
+  - Verify: `make test`; `make app`; `--selftest clip-cursor`, `clip-fades`, `inspector-panels`, `menu-actions`,
+    `timeline-ops`, `timeline-clipboard`, `timeline-selection`; preview/export parity on a mixed visible/hidden fixture;
+    inspect 300/360-point Clip panel PNGs; verify the published universal DMG, signature, notarization, version and digest.
+
 ---
 
 ## Requested Nudge fixes — 2026-09-22
@@ -879,8 +895,8 @@ Core first (T-401…T-403, T-410…T-412 are pure + tested), then the view.
   - WAITING ON HUMAN (look only): behaviour half (Core `keyChipLabel`/`activeKeyChip` + tests) and render half (`FrameState.keyChip`, `Compositor`'s Core Text chip texture pass) both merged and verified (`parity` 0 on `/tmp/M6Fixture.recorder`, which has `keys.show = true` and two `.key` events); `Inspector/KeysTab.swift`'s "Show keyboard shortcuts" toggle already wired to `project.keys.show`. Human: look at a real chip on screen (position/size/fade against SPEC §6.6).
 - [x] **T-603 Speed up typing** — Edit ▸ Speed Up Typing: find runs of `.typing` events (gap < 1 s, length > 3 s), split clips around them, set 2×. Core fn `typingRanges(events:) -> [TimeRange]` + test.
   - DONE: Core `typingRanges(events:)` (pre-existing) + new `Project.speedUpTyping(_:factor:)` (`RecorderCore/TimelineOps.swift`, splits clips at each range's source-time edges and sets the enclosed clip(s) to `factor`×) with test `speedUpTypingKeepsInvariants`; `Edit ▸ Speed Up Typing` wired on `EditorWindowController`, verified headlessly (produces the expected 2× clip, `checkInvariants() == nil`, one undo step).
-- [~] **T-604 Cursor advanced** — loop position, rotate, remove shakes, always-arrow, hide-cursor ranges via Edit ▸ Hide Cursor in Selected Clip (adds the clip's source range to `cursorHidden`). Tests per stage in `CursorPath`.
-  - PARTIAL: Core pipeline stages (shake removal, loop, rotation, always-arrow) + 4 tests merged; `Edit ▸ Hide Cursor in Selected Clip` now wired (`EditorWindowController.hideCursorInSelectedClip`, appends the selected clip's source range to `cursorHidden`, merged/sorted; verified headlessly, one undo step) — Cursor-tab controls (loop/rotate/always-arrow/remove-shakes UI) still remain, that's inspector work outside T-311's file set.
+- [~] **T-604 Cursor advanced** — loop position, rotate, remove shakes, always-arrow, hide-cursor ranges. Edit ▸ Hide Cursor in Selected Clip uses the per-clip flag introduced by T-659; legacy `cursorHidden` ranges remain supported. Tests per stage in `CursorPath`.
+  - Core pipeline stages and Cursor-tab controls (shake removal, loop, rotation, always-arrow) are implemented. The original source-range menu implementation is superseded by T-659's per-clip flag and inspector toggle; historical `cursorHidden` values continue to load. Remaining [~] is the real-recording feel gate, not missing controls.
 - [x] **T-605 Presets** — save/apply = the styling subset of `Project` (`background, frame, cursor, animation, camera`) as JSON in `~/Library/Application Support/Recorder/Presets/`; export/import via file panels.
 - [x] **T-606 Import video** — drag a movie into the library → package with the file copied as `screen.mov`, empty `events.json`.
 - [~] **T-607 Command menu (⌘K)** — a searchable list over the existing `NSMenu` items (walk `NSApp.mainMenu`), performs the item's action. No separate command registry.
@@ -1087,3 +1103,5 @@ T-654…T-656 · 2026-10-16 · Voice workflow merged from lanes voice-e/t/c: era
 
 T-657 · 2026-10-16 · Box selection of audio clips, group audio move, Join Clips (⌘J) for video and audio. `make test` 134/134; debug app inspector-panels (box→move→join→undo), timeline-ops, command-scissors, menu-actions, audio-lanes, timeline-clipboard/selection/tracks/full-layers, media-import OK. HUMAN: box-drag and ⌘J feel in the live editor.
 T-658 · 2026-10-18 · Transcriber on SpeechAnalyzer/SpeechTranscriber (macOS 26+), SFSpeechRecognizer fallback. `captions` selftest on Soft Harbor (434 s): ~7.6 s, words to 431.8 s, ordered timings; caption preview-frame shows the current-word box.
+
+T-659 · 2026-10-19 · Added Hide cursor below Playback speed in the selected Clip inspector, optional per-clip JSON flag, shared menu/model undo edit and shared preview/export frame gating. Splits/paste retain the flag; join/restoration preserves differing visibility; global and legacy range hides remain supported. CLT make test passes 135/135; debug make app version 0.4.1, clip-cursor, clip-fades, inspector-panels, menu-actions, timeline-ops, timeline-clipboard and timeline-selection pass. Inspected 300/360-point panel renders and the full 320-point inspector. Synthetic fixture with an explicit cursor sprite verifies hiding changes the selected clip's pixels while its neighbor stays byte-identical; preview/export parity is exact at five visible/hidden times. Installer regressions, strict codesign, shell syntax and diff checks pass. Reference boards are absent; existing UI kit and user's panel followed. Signed/notarized patch publication and public-download verification pending; T-659 remains unchecked until those pass.
