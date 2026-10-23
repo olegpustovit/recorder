@@ -5,7 +5,7 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 ## What this is
 
 Recorder: a native macOS (15+, Apple Silicon and Intel) screen recorder + non-destructive video editor, modelled on Screen Studio.
-The repo is currently a **buildable skeleton plus a full spec and plan**. `docs/SPEC.md` is the source of truth for *what*:
+The repo contains the native app, core logic, tests and a detailed spec and plan. `docs/SPEC.md` is the source of truth for *what*:
 feature scope, ASCII mockups of every screen, acceptance criteria (`AC-*`), project file format, milestones M1–M6.
 `docs/PLAN.md` is the ordered task list **and the progress tracker** (79 tasks, `T-001`…`T-610`).
 
@@ -55,7 +55,7 @@ make test                  # all tests
 make test FILTER=timeMap   # a single test or suite (passed to --filter)
 make app                   # assemble + codesign build/Recorder.app
 make run                   # app + open it
-make install               # copy to /Applications/Recorder.app (kills a running instance first)
+make install               # signed local install, normal quit and targeted permission resets
 make cert                  # one-time: create the self-signed "Recorder Dev" signing identity
 make clean
 build/Recorder.app/Contents/MacOS/Recorder --selftest <name> [args]   # headless app checks (cases are added by plan tasks)
