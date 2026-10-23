@@ -3650,6 +3650,26 @@ enum SelfTest {
         "zoom-target-png": { args in try await ZoomTargetMapping.runPNGSelfTest(args) },
         // AC-TL-7: hover preview (see `PreviewView.hoverTime`).
         "hover-preview": { args in try await PreviewView.runHoverPreviewSelfTest(args) },
+        "audio-trim": { args in
+            // `audio-trim <package> [index]`: trims one audio clip's edges through the same Project ops the timeline uses and reports the result.
+            try await MainActor.run {
+                guard let path = args.first else { throw SelfTestArgError.usage("audio-trim <package> [index]") }
+                var project = try loadEditorModel(package: URL(fileURLWithPath: path)).project
+                let index = args.count > 1 ? (Int(args[1]) ?? 10) : 10
+                let clip = project.audioClips[index]
+                guard let id = UUID(uuidString: clip.id) else { throw SelfTestArgError.usage("clip id is not a UUID: \(clip.id)") }
+                let seg = project.audioSegments(clip); let range = (start: seg.first!.output.start, end: seg.last!.output.end)
+                print("clip \(index) link=\(String(describing: clip.link)) out=\(range.start)...\(range.end) invariants=\(project.checkInvariants() ?? "ok")")
+                var p1 = project; p1.resizeAudio(id, edge: .trailing, toOutput: range.end - 0.3)
+                let r1 = p1.audioClips.first { $0.id == clip.id }.map { c in (p1.audioSegments(c).first?.output.start, p1.audioSegments(c).last?.output.end) }
+                print("trailing -0.3: \(String(describing: r1)) changed=\(p1 != project)")
+                var p2 = project; p2.resizeAudio(id, edge: .leading, toOutput: range.start + 0.3)
+                let r2 = p2.audioClips.first { $0.id == clip.id }.map { c in (p2.audioSegments(c).first?.output.start, p2.audioSegments(c).last?.output.end) }
+                print("leading +0.3: \(String(describing: r2)) changed=\(p2 != project)")
+                project = p2
+            }
+        },
+        "preview-live": { args in try await PreviewView.runPreviewLiveSelfTest(args) },
         // T-504: live AVAudioMix rebuild, export volume/mute/denoise/click (see
         // `Render/AudioMixSelfTest.swift`).
         "audio-mix": { args in try await AudioMixSelfTest.run(args) },

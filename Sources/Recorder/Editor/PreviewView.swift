@@ -375,10 +375,22 @@ final class PreviewView: MTKView {
         if hoverTime != nil || abs(player.currentTime().seconds - model.playhead) > 1.0 / 120 { performSeek(to: model.playhead) }
         lastClickCheckSourceTime = model.timeMap.sourceTime(atOutput: model.playhead)
         model.isPlaying = true
-        player.rate = rate
-        cameraPlayer?.rate = rate
-        for decoder in layerPlayers.values { decoder.player.rate = rate }
-        startDisplayLink()
+        // Start every decoder (screen, camera, each layer lane) on one shared host time after prerolling. Starting them
+        // one by one let the screen run ahead while layer decoders were still buffering, so layers were missing for the
+        // first seconds of playback.
+        let players = [player] + (cameraPlayer.map { [$0] } ?? []) + layerPlayers.values.map(\.player)
+        let group = DispatchGroup()
+        for p in players where p.currentItem?.status == .readyToPlay {
+            p.automaticallyWaitsToMinimizeStalling = false
+            group.enter()
+            p.preroll(atRate: rate) { _ in group.leave() }
+        }
+        group.notify(queue: .main) { [weak self] in
+            guard let self, self.model.isPlaying, self.player === player else { return }
+            let host = CMTimeAdd(CMClockGetTime(CMClockGetHostTimeClock()), CMTime(seconds: 0.1, preferredTimescale: 600))
+            for p in players { p.setRate(rate, time: p.currentTime(), atHostTime: host) }
+            self.startDisplayLink()
+        }
     }
 
     private func pause() {
@@ -1418,6 +1430,30 @@ extension PreviewView {
     /// Drives the real `AVPlayer` seek path (not a mock) over a package with real media: `hoverTime`
     /// shows a different frame than `model.playhead` without moving it, and `nil` seeks back.
     @MainActor
+    /// `preview-live <package> <t> <out.png>`: renders a frame through the live editor preview (layer decoders, players)
+    /// instead of the offline compositor, and reports what each decoder lane is doing.
+    static func runPreviewLiveSelfTest(_ args: [String]) async throws {
+        struct Fail: Error, CustomStringConvertible { let description: String }
+        guard args.count >= 3, let t = Double(args[1]) else { throw Fail(description: "usage: preview-live <package> <t> <out.png>") }
+        let copy = FileManager.default.temporaryDirectory.appendingPathComponent("preview-live-" + UUID().uuidString + ".recorder")
+        try FileManager.default.copyItem(at: URL(fileURLWithPath: args[0]), to: copy)
+        defer { try? FileManager.default.removeItem(at: copy) }
+        let model = try loadEditorModel(package: copy)
+        defer { model.saveNow() }
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 960, height: 540), styleMask: [.borderless], backing: .buffered, defer: false)
+        let view = PreviewView(model: model)
+        window.contentView = view
+        print("invariants:", model.project.checkInvariants() ?? "ok")
+        let image = try await view.captureRenderedFrame(atOutput: t)
+        for (lane, decoder) in view.layerPlayers {
+            print("lane \(lane): status=\(String(describing: decoder.player.currentItem?.status.rawValue)) time=\(decoder.player.currentTime().seconds) textures=\(view.currentLayerTextures(at: t).keys.sorted())")
+        }
+        guard let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: args[2]) as CFURL, "public.png" as CFString, 1, nil) else { throw Fail(description: "no output") }
+        CGImageDestinationAddImage(dest, image, nil)
+        guard CGImageDestinationFinalize(dest) else { throw Fail(description: "PNG write failed") }
+        print("preview-live OK \(image.width)x\(image.height)")
+    }
+
     static func runHoverPreviewSelfTest(_ args: [String]) async throws {
         struct Fail: Error, CustomStringConvertible { let description: String }
         guard let packagePath = args.first else { throw Fail(description: "usage: hover-preview <package>") }

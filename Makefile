@@ -19,7 +19,8 @@ GALLERY_PNG ?= build/signal-ui-gallery.png
 
 .PHONY: build test app run gallery gallery-advanced gallery-png install uninstall clean cert
 build:
-	swift build -c $(CONFIG)
+	@# The Command Line Tools build system can fail with "Unknown error parsing property list"; prefer full Xcode when installed.
+	@d=/Applications/Xcode.app/Contents/Developer; if [ -z "$$DEVELOPER_DIR" ] && [ -d "$$d" ]; then export DEVELOPER_DIR="$$d"; fi; swift build -c $(CONFIG)
 
 # make test                 -> all tests
 # make test FILTER=timeMap  -> one test / suite
