@@ -1530,15 +1530,17 @@ final class TimelineView: NSView {
         guard !clips.isEmpty else { return [] }
         let eps = 1e-6
         var seams: [(Int, CGFloat)] = []
-        if clips[0].sourceStart > eps { seams.append((-1, x(forOutput: 0))) }
+        if !clips[0].isEmpty, clips[0].mediaIn > eps { seams.append((-1, x(forOutput: 0))) }
         var outEnd = 0.0
         for i in clips.indices {
             outEnd += clips[i].outputDuration
-            if i < clips.count - 1, clips[i + 1].sourceStart - clips[i].sourceEnd > eps {
+            if i < clips.count - 1, !clips[i].isEmpty, !clips[i + 1].isEmpty,
+               clips[i].speed == clips[i + 1].speed,
+               clips[i + 1].mediaIn - clips[i].mediaEnd > eps {
                 seams.append((i, x(forOutput: outEnd)))
             }
         }
-        if project.source.duration - clips[clips.count - 1].sourceEnd > eps { seams.append((clips.count - 1, x(forOutput: outEnd))) }
+        if let last = clips.last, !last.isEmpty, project.source.duration - last.mediaEnd > eps { seams.append((clips.count - 1, x(forOutput: outEnd))) }
         return seams
     }
 
@@ -2971,10 +2973,10 @@ final class TimelineView: NSView {
     private func removedDuration(afterClip i: Int, project: Project) -> Double {
         let clips = project.clips
         guard !clips.isEmpty else { return 0 }
-        if i == -1 { return clips[0].sourceStart }
-        if i == clips.count - 1 { return project.source.duration - clips[i].sourceEnd }
+        if i == -1 { return clips[0].mediaIn }
+        if i == clips.count - 1 { return max(0, project.source.duration - clips[i].mediaEnd) }
         guard clips.indices.contains(i), clips.indices.contains(i + 1) else { return 0 }
-        return clips[i + 1].sourceStart - clips[i].sourceEnd
+        return max(0, clips[i + 1].mediaIn - clips[i].mediaEnd)
     }
 
     /// One undo step (SPEC §7.4 `restoreCut`, already clamped/merging there).

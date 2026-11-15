@@ -1379,32 +1379,69 @@ public extension Project {
     /// clip at speed 1. No-op if there is no cut there.
     mutating func restoreCut(afterClip i: Int) {
         guard i >= -1 && i < clips.count else { return }
-        defer { settleConnected(); assert(checkInvariants() == nil) }
+        let before = self
+        defer {
+            settleConnected()
+            if checkInvariants() != nil { self = before }
+            assert(checkInvariants() == nil)
+        }
         let gapIndex = i + 1
         if clips.indices.contains(gapIndex), clips[gapIndex].isEmpty {
             let gap = clips[gapIndex]
             if gap.sourceEnd - gap.sourceStart < Self.minClipLength {
                 // A tiny gap can only be restored by extending available neighbouring media.
                 if i >= 0, !clips[i].isEmpty, clips[i].speed == gap.speed,
-                   clips[i].mediaIn + gap.sourceEnd - clips[i].sourceStart <= source.duration {
+                   clips[i].timeScale == gap.timeScale,
+                   clips[i].mediaEnd + gap.mediaDuration <= source.duration {
                     clips[i].sourceEnd = gap.sourceEnd
                     clips.remove(at: gapIndex)
                 } else if gapIndex + 1 < clips.count, !clips[gapIndex + 1].isEmpty,
                           clips[gapIndex + 1].speed == gap.speed,
-                          clips[gapIndex + 1].mediaIn >= gap.sourceEnd - gap.sourceStart {
-                    clips[gapIndex + 1].mediaStart = clips[gapIndex + 1].mediaIn - (gap.sourceEnd - gap.sourceStart)
+                          clips[gapIndex + 1].timeScale == gap.timeScale,
+                          clips[gapIndex + 1].mediaIn >= gap.mediaDuration {
+                    clips[gapIndex + 1].mediaStart = clips[gapIndex + 1].mediaIn - gap.mediaDuration
                     clips[gapIndex + 1].sourceStart = gap.sourceStart
+                    clips.remove(at: gapIndex)
+                } else if (i == -1 && gapIndex + 1 < clips.count && clips[gapIndex + 1].mediaIn == 0)
+                            || (gapIndex == clips.count - 1 && i >= 0 && clips[i].mediaEnd == source.duration) {
+                    // A moved edge can leave empty clock space with no missing footage to restore.
                     clips.remove(at: gapIndex)
                 }
                 return
             }
-            guard gap.mediaIn >= 0, gap.mediaIn + gap.mediaDuration <= source.duration + 1e-8 else { return }
+            guard gap.mediaIn >= 0, gap.mediaEnd <= source.duration + 1e-8 else { return }
             clips[gapIndex].isGap = nil
             mergeContiguousVideo()
             return
         }
-        let leftBound = i == -1 ? 0 : clips[i].sourceEnd
         let rightIndex = i + 1
+        guard (i == -1 || !clips[i].isEmpty),
+              (rightIndex == clips.count || !clips[rightIndex].isEmpty) else { return }
+        let mediaLower = i == -1 ? 0 : clips[i].mediaEnd
+        let mediaUpper = rightIndex < clips.count ? clips[rightIndex].mediaIn : source.duration
+        guard mediaLower >= 0, mediaUpper <= source.duration, mediaUpper > mediaLower + 1e-8 else { return }
+
+        // A moved clip's clock no longer identifies footage; insert through the shared ripple path.
+        if clips.contains(where: { $0.mediaIn != $0.sourceStart || $0.speed != $0.timeScale }) {
+            let output = clips.prefix(rightIndex).reduce(0) { $0 + $1.outputDuration }
+            let left = i >= 0 ? clips[i] : nil
+            let right = rightIndex < clips.count ? clips[rightIndex] : nil
+            let speed: Double
+            if let left, let right { speed = left.speed == right.speed ? left.speed : 1 }
+            else { speed = left?.speed ?? right?.speed ?? 1 }
+            var restored = Clip(sourceStart: 0, sourceEnd: (mediaUpper - mediaLower) / speed, speed: speed)
+            restored.mediaStart = mediaLower
+            restored.clockSpeed = 1
+            restored.hideCursor = left?.hideCursor ?? right?.hideCursor
+            // Sub-minimum footage must merge into a neighbour; the final invariant check rolls back otherwise.
+            restored.isGap = restored.mediaDuration < Self.minClipLength ? true : nil
+            let incoming = Project(source: source, clips: [restored], cameraClips: [], audioTracks: [], audioClips: [])
+            guard let pasted = pasteSelection(incoming, atOutput: output) else { return }
+            for index in pasted.clips { clips[index].isGap = nil }
+            mergeContiguousVideo()
+            return
+        }
+        let leftBound = i == -1 ? 0 : clips[i].sourceEnd
         let rightBound = rightIndex < clips.count ? clips[rightIndex].sourceStart : source.duration
         guard rightBound > leftBound else { return }
 

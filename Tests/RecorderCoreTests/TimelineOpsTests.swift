@@ -72,6 +72,63 @@ private struct LCG: RandomNumberGenerator {
     #expect(p == original)
 }
 
+@Test func restoreCutUsesMedia() throws {
+    for speed in [1.0, 2.0] {
+        var p = Project(source: Source(duration: 12), clips: [Clip(sourceStart: 0, sourceEnd: 12, speed: speed)])
+        let splitFirst = p.split(atOutput: 4 / speed)
+        let splitSecond = p.split(atOutput: 8 / speed)
+        let removed = p.removeClip(1)
+        #expect(splitFirst && splitSecond && removed)
+        let copied = try #require(p.copySelection(clips: [0], blocks: []))
+        let pasted = p.pasteSelection(copied, atOutput: 8 / speed)
+        #expect(pasted != nil)
+        #expect(p.clips[0].sourceEnd == p.clips[1].sourceStart)
+        #expect(p.clips[1].mediaIn == 8)
+
+        p.restoreCut(afterClip: 0)
+
+        #expect(p.checkInvariants() == nil)
+        #expect(abs(TimeMap(p.clips).outputDuration - 16 / speed) < 1e-8)
+        for media in stride(from: 0.5, to: 12, by: 1) {
+            let output = media / speed
+            let i = try #require(p.clipIndex(atOutput: output))
+            #expect(abs(p.clips[i].mediaTime(atSource: TimeMap(p.clips).sourceTime(atOutput: output)) - media) < 1e-8)
+        }
+        let copiedIndex = try #require(p.clipIndex(atOutput: 13 / speed))
+        #expect(abs(p.clips[copiedIndex].mediaTime(atSource: TimeMap(p.clips).sourceTime(atOutput: 13 / speed)) - 1) < 1e-8)
+    }
+
+    var trimmed = Clip(sourceStart: 0, sourceEnd: 3, speed: 2)
+    trimmed.mediaStart = 2
+    trimmed.clockSpeed = 1
+    var p = Project(source: Source(duration: 10), clips: [trimmed])
+    p.restoreCut(afterClip: -1)
+    p.restoreCut(afterClip: p.clips.count - 1)
+    #expect(p.checkInvariants() == nil)
+    #expect(p.clips.first?.mediaIn == 0)
+    let last = try #require(p.clips.last)
+    #expect(abs(last.mediaTime(atSource: last.sourceEnd) - 10) < 1e-8)
+    #expect(abs(TimeMap(p.clips).outputDuration - 5) < 1e-8)
+}
+
+@Test func noRestoreAcrossReorder() {
+    for gap in [0.0, 2.0] {
+        for speed in [1.0, 2.0] {
+            var left = Clip(sourceStart: 0, sourceEnd: 4)
+            left.mediaStart = 6
+            left.clockSpeed = 1
+            var right = Clip(sourceStart: 4 + gap, sourceEnd: 4 + gap + 4 / speed, speed: speed)
+            right.mediaStart = 0
+            right.clockSpeed = 1
+            var p = Project(source: Source(duration: 10), clips: [left, right])
+            let before = p
+            p.restoreCut(afterClip: 0)
+            #expect(p == before)
+            #expect(p.checkInvariants() == nil)
+        }
+    }
+}
+
 @Test func randomOpsKeepInvariants() {
     var rng = LCG(state: 1)
     var p = Project(source: Source(duration: 60), clips: [Clip(sourceStart: 0, sourceEnd: 60, speed: 1)])

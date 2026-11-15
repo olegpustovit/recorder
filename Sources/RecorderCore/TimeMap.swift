@@ -21,6 +21,7 @@ public struct Clip: Codable, Equatable, Sendable {
     public var color: BlockColor? = nil
     public var timeScale: Double { clockSpeed ?? speed }
     public var mediaDuration: Double { (sourceEnd - sourceStart) * (speed / timeScale) }
+    public var mediaEnd: Double { mediaIn + mediaDuration }
     public func mediaTime(atSource time: Double) -> Double { mediaIn + (time - sourceStart) * (speed / timeScale) }
     public var mediaIn: Double { mediaStart ?? sourceStart }
     public var isEmpty: Bool { isGap == true }

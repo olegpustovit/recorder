@@ -251,6 +251,173 @@ Lanes run in worktrees `../recorder-voice-{e,t,c}` (branches `voice-*`), merged 
     architectures, version, strict signature, app/DMG tickets and Gatekeeper checks pass; its clip-cursor,
     menu-actions and mixed visible/hidden parity checks pass (maxDelta=0). Hardware gates remain as disclosed.
 
+
+## Requested free editing (multi-track) — 2026-11-15
+
+Proposal, audit and interactive prototype: https://artifacts.microapps.space/a/s3ft3gkc1k51 (the prototype is the
+behavioural reference for every HUMAN step below). Video lane keeps today's flow; clips reorder, copy with ⌥, move as a
+group, and lift onto free Video tracks with the same look.
+
+**Decisions (locked 2026-11-15; change here, not in code):**
+1. Lifted recording clips look exactly as on the Video lane (zoom, smoothed cursor, crop, frame) — not raw footage.
+2. Dropping onto a magnetic Video lane **inserts** (later clips move right). No overwrite mode.
+3. Copies own their effects (zooms/masks are duplicated, never shared).
+4. The Video lane's **Magnet/Free** switch *is* `Project.rippleDelete` (one flag, no new key): Magnet = delete closes
+   gaps + drag reorders; Free = delete leaves gaps + drag places at a time. The toolbar ripple button stays in sync.
+5. `⌥` while dragging = **copy** (Finder/Final Cut). "Act on one clip, ignore links" moves to the link toggle (⌘L);
+   `dragIgnoresLinks = event.modifierFlags.contains(.option)` in `TimelineView.mouseDown` goes away.
+6. Lane order: `+ New track` drop row (always present) → Video N … Video 2 → Video → Camera/Zoom/… → audio.
+7. Phases ship separately; phase 1 needs no file-format change.
+
+**Facts the plan relies on (verified in code 2026-11-15):** clips already separate the timeline clock
+(`sourceStart/End`) from media (`mediaStart`, `clockSpeed`; `TimeMap.swift`); `useOutputClock()` rebases a project onto
+output time (`TimelineOps.swift`); cursor, keys and camera-path events are sampled on the *media* clock per clip
+(`makeFrameState`, `EditorModel.rebuildPathsIfNeeded`); the composition inserts each clip's `mediaIn`
+(`FrameSource.swift`); `placeClip(moving:)` already carries zooms/layouts/masks/texts/keys/windowShots/camera and
+linked audio with a clip via `editLinkedLayers`; `liftClip` and `deleteClips` already exist; `freeLayerTrack` already
+pushes colliding layers up a track and caps video layer lanes at 4; the timeline already previews drags through
+`dragProject`. So no clock rewrite is needed — reorder = permute clips, keep each clip's media, re-lay the clock.
+
+### Phase 1 — Free editing on the Video lane (no format change)
+
+| Scope | Tasks | Done |
+|---|---|---|
+| Phase 1 | T-701, T-701b, T-702…T-705 | 1/6 |
+| Phase 2 | T-711…T-714 | 0/4 |
+| Phase 3 | T-721…T-723 | 0/3 |
+
+- [x] **T-701 Core: media continuity instead of clock continuity**
+  - Add `Clip.mediaEnd` (`mediaIn + mediaDuration`). Every "are these two clips continuous / what was cut here"
+    decision must compare media, not clock: `mergeContiguousVideo` (already does both — keep), `joinClips` (already
+    media-checked — keep), `restoreCut(afterClip:)` (the ripple-removed branch uses clock bounds `leftBound…rightBound`
+    as footage — compute the removed footage as `clips[i].mediaEnd … clips[i+1].mediaIn` and refuse when that range is
+    empty or negative, i.e. the neighbours aren't in recording order), `restoreAllCuts`, and the ✂ bubble placement in
+    `TimelineView` (only where `a.mediaEnd < b.mediaIn` at equal speed).
+  - Tests (`TimelineOpsTests`): `restoreCutUsesMedia` (cut, rebase clock via a move, restore → original footage);
+    `noRestoreAcrossReorder` (reversed neighbours → restore is a no-op, invariants hold).
+  - Verify: `make test FILTER=TimelineOps`.
+  - Verified 2026-11-15: 18/18 targeted and 137/137 full Core tests. This machine now has Xcode/SDK 27.2;
+    `make test` required `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` and a `TESTFLAGS` override
+    selecting `--build-system native` plus that platform's Testing framework/rpaths. Default swiftbuild cannot
+    load Testing macros; the CLT native build cannot load SwiftUI macros. No Makefile changes made for this task.
+- [ ] **T-701b Media-order audit fixes (artifact A8)**
+  - Audit finding (2026-11-15): `regenerateAutoZooms`, `speedUpTyping`, and `splitAtPausesAsync` pass recorded-media
+    times to edited-clock arrays/operations. Map ranges through every kept clip, preserving copies and rates.
+    `splitAudioAtPauses` splits only the first repeated-media occurrence; `erasePauses` deletes by media range
+    globally instead of the touched output occurrence. Fix both shared operations. `remapWindowEvents` chooses the
+    first matching clip for repeated media: normalize cursor/events for each clip's own window selection.
+  - Cursor frame sampling, camera-follow path construction, camera composition and transcript segment slicing
+    already map per clip/audio segment; retain that behavior.
+  - Verify: Core regressions for reversed/mixed-speed ranges, repeated-media auto zooms, erasing only the second
+    audio copy, and repeated media with different window selections; `make test`; native affected editing selftests.
+- [ ] **T-702 Core: `reorderClips`**
+  - `mutating func reorderClips(_ indices: Set<Int>, to index: Int, propagate: Bool = true) -> Set<Int>` (returns the
+    moved clips' new indices; `index` counts positions in the original array, like an insertion caret).
+  - How: `before = self`; `useOutputClock()`; split `clips` into `moving` (selected, original order) and `rest`
+    (everything else, gaps included); `rest.insert(contentsOf: moving, at: index − selected-before-index)`; walk the
+    new array assigning a fresh clock (`sourceStart = t; sourceEnd = t + old clock length; t = sourceEnd`), keeping
+    `mediaStart/speed/clockSpeed/fades/hideCursor/color` untouched; record `(oldRange, delta)` for every clip whose
+    start changed. Then shift linked content **simultaneously**: add
+    `private mutating func shiftLinked(_ moves: [(range: ClosedRange<Double>, delta: Double)])` that, for each array
+    `editLinkedLayers` touches (plus camera clips and screen/camera audio), first slices blocks at every clip boundary
+    (reuse the slice helper inside `applyLinkedEdit`; a zoom spanning two clips becomes two zooms that each follow their
+    footage), then adds the delta of the range containing each piece. Connected layers/unlinked audio whose `start`
+    lies in a moved range move with it (same rule as `placeClip(moving:)`). When `propagate == false` only clips move.
+    Finish with `settleConnected()`; `checkInvariants() != nil` → `self = before`, return original indices.
+  - Copy (`⌥`): no new op — `copySelection(clips:blocks:)` + `pasteSelection(_:atOutput:)` at the caret's output time
+    (paste already inserts and duplicates effects with new ids = decision 3).
+  - Tests: `reorderRoundTrip` (move then move back = original, compare `Project`), `reorderCarriesZoom` (zoom inside
+    the moved clip keeps its offset), `reorderSplitsSpanningZoom`, `reorderKeepsLinkedAudioMedia` (mic clip media
+    in-points unchanged relative to the video), `reorderKeepsPlaybackRates` (mixed 1×/2× clips: every `mediaDuration`
+    unchanged), `reorderPreservesExportDuration`, `reorderInvariants` (1 000 random reorders, fixed seed, AC-TL-1 style).
+  - Verify: `make test FILTER=reorder`.
+- [ ] **T-703 Timeline: lift-and-follow drag with live reflow**
+  - `TimelineView` `DragKind.moveClip` gets two behaviours by `project.rippleDelete`: Magnet → on every
+    `mouseDragged` compute the caret index (pointer x vs. midpoints of the *other* clips), build
+    `trial = model.project; trial.reorderClips(selection, to: caret)` (or the paste path when `⌥` is held), set
+    `dragProject = trial` and draw lanes from `dragProject` (the pattern layer drags already use) so neighbours open a
+    slot live; Free → today's `moveClips(_:byOutput:)` path unchanged.
+  - Draw the dragged clip(s) as a floating block under the pointer (same fill, 1 px white outline, shadow, `y` follows
+    the mouse) and the landing slot as the block at 45 % opacity with an inset accent outline. Neighbour motion uses
+    the existing 0.18 s "moved by another edit" block animation; nothing animates while the user drags *that* block.
+  - Commit on `mouseUp` with one `model.edit("Move Clips") { $0 = trial }`; `Esc` mid-drag restores (AC-TL-6). A drop
+    that changes nothing makes no undo entry. Auto-scroll when the pointer is within 40 pt of either edge.
+  - Remove `dragIgnoresLinks` (decision 5); update the SPEC §7.2 hit table row "clips don't reorder".
+  - Implement the artifact's `⌘D` gesture: selected Video clips duplicate immediately after themselves through
+    copy/paste insertion; free-track items duplicate at the next free spot. Copies own their effect ids.
+  - Verify: new `--selftest timeline-reorder` (synthetic `synthMouse` drags: reorder, ⌥ copy, group of two, Esc
+    cancel, ⌘D insertion/free-track placement, exactly one undo step each); all existing `timeline-*` selftests;
+    HUMAN: drag feel against the prototype.
+  - Existing `timeline-ops` failure observed 2026-11-15: its + menu fixture omits the already-added "Video Track"
+    item; update the fixture when verifying these timeline changes. Not evidence of a passing native timeline gate.
+- [ ] **T-704 Timeline: lane selection + group moves**
+  - Header click / ⌘A lane select already ships (`selectLane`). Make a drag that starts on any selected Video clip move
+    the whole selection: Magnet → `reorderClips(selection, …)` (lands as one block in timeline order); Free →
+    `moveClips(selection, byOutput:)` (already group-aware). Blocks in other lanes keep today's same-lane rule.
+  - Verify: extend `--selftest timeline-selection` (header click selects N, drag moves N, one undo).
+- [ ] **T-705 Timeline: lane order, drop row, Magnet/Free switch**
+  - `lanes`: replace the drag-only spare layer lane (`if mediaDragActive { layerTracks.insert(max + 1) }`) with a
+    permanent 26 pt `+ New track` row at the top; order layer lanes above Video (decision 6). Fixtures use
+    `laneMidY`, so order changes don't break them — re-check `timeline-tracks`, `timeline-full-layers`, `timeline-png`.
+  - Video header gets a small `magnet` / `free` toggle bound to `project.rippleDelete` via `model.edit("Magnetic
+    Video")`; switching Free → Magnet keeps spaces as gap clips (already the gap representation), ⌫ closes them.
+  - Verify: `--selftest timeline-tracks`, `timeline-png` (inspect PNG); HUMAN: header + drop row against the prototype.
+
+### Phase 2 — Recording clips on Video tracks (format v4 only when used)
+
+- [ ] **T-711 Measure two decodes of `screen.mov`**
+  - Fixture: 4K HEVC 60 s recording with the middle clip duplicated as a full-canvas layer. Measure preview fps and
+    export time on Apple Silicon and Intel (`PerfSelfTest` pattern). Record numbers in SPEC §9. If Intel drops frames,
+    the fallback is decoding the layer copy at half resolution (preview only; export stays full).
+  - Verify: `--selftest timeline-render-perf --dual-screen`.
+- [ ] **T-712 Core: recording layers, `liftClips`, `insertLayers`, versioning**
+  - `LayerBlock.Kind.recording` (file `"screen.mov"`, `mediaStart`, new `mediaRate: Double?` for sped-up clips,
+    `rect` = full canvas, `backdrop .none`, fades nil) and `LayerBlock.scene: SceneEffects?` where
+    `struct SceneEffects: Codable, Equatable { var zooms: [Zoom]; var masks: [Mask]; var hideCursor: Bool? }` with times
+    relative to the layer start. Allow `"screen.mov"` in layer media validation (`mediaIsValid` duration =
+    `source.duration`). Counts toward the 4 video-layer-lane cap in `freeLayerTrack`.
+  - `liftClips(_ indices: Set<Int>, toTrack: Int, atOutput: Double, copy: Bool) -> [UUID]`: per clip (timeline order,
+    keeping relative offsets) build the layer, move zooms/masks inside the clip's clock range into `scene` (sliced at
+    the clip edges, re-based to 0), relink its screen-linked audio with `linkAudio(_, to: .layer, layer:)`, place with
+    `freeLayerTrack(…, preferred: toTrack)` (collision → next track up, decision "nothing is overwritten"), then remove
+    the clip with the existing `deleteClips` (ripple per `rippleDelete`). `copy` skips the removal and duplicates ids.
+  - `insertLayers(_ ids: [UUID], intoVideoAt index: Int, copy: Bool) -> Set<Int>`: inverse for `.recording` layers —
+    build `Clip`s from `mediaStart/mediaRate`, insert through T-702's clock re-lay, restore `scene` effects at the new
+    clock positions and relink audio to `.screen`. Imported image/video layers can't enter Video until T-722.
+  - Versioning: `currentVersion = 4`, but `save` writes `4` only when a `.recording` layer exists, else `3`, so projects
+    that don't use the feature still open in older builds. Older builds already refuse a newer version with an alert.
+  - Tests: `liftInsertRoundTrip` (lift then insert at the same index = original), `liftCarriesZoomsAndAudio`,
+    `liftCollisionPushesUp`, `liftCopyLeavesSource`, `v3DecodesUnchanged`, `savesV3WithoutRecordingLayers`.
+  - Verify: `make test FILTER=lift`.
+- [ ] **T-713 Render: recording layers through the screen pass**
+  - `FrameSource.makeComposition`: a `.recording` layer inserts from the already-open screen asset (keep-alive rule
+    in that file applies) into its layer track at `mediaStart … + duration × mediaRate`, scaled for `mediaRate`.
+  - `EditorModel.rebuildPathsIfNeeded`: one `CameraPath(zooms: scene.zooms, cursor:, spring:, duration:)` per
+    recording layer, cached by layer id + scene hash (ponytail: full re-simulation per edit, like the main path).
+  - `makeFrameState`: for a `.recording` layer sample cursor at its media time (`cursorPath.sample(atSource:)` is
+    already media-time) and view from its CameraPath; add `view`, `prevView`, `cursor` to `FrameState.Layer`.
+  - `Compositor.drawLayer`: for `.recording`, call the existing `drawScreen` → `drawMasks` → `drawCursor` sequence
+    with `rectPx` = the layer rect in pixels (default rect = the main screen rect, so a full-canvas lift is identical).
+  - Verify: `--selftest layer-recording-parity` (preview vs export maxDelta 0) and `lift-identity` (render before and
+    after lifting a clip at the same time: maxDelta 0) — the "looks the same on any lane" promise.
+- [ ] **T-714 Timeline: vertical drag, drop row, ⌥↑/⌥↓**
+  - Extend T-703's drag: pointer over a layer lane or the `+ New track` row → `trial.liftClips(…)`; layer item over
+    Video → `trial.insertLayers(…)`; free target shows the floating block snapped to edges/playhead. The new-track row
+    shows a placeholder (no lane is created until drop, so nothing jumps under the pointer). `⌥↑`/`⌥↓` move the
+    selection one lane at the same time. Carried zooms draw dimmed in the Zoom lane under their layer.
+  - Verify: `--selftest timeline-lift` (lift, drop back, new track, collision push-up, one undo each);
+    HUMAN: lift/drop feel and preview look against the prototype.
+
+### Phase 3 — Polish (each independent)
+
+- [ ] **T-721 Edit carried effects** — selecting a lifted recording shows its `scene.zooms` editable in the Zoom lane
+  (offset to the layer) through the generic timed-block ops. Verify: `make test FILTER=sceneEffects`; `timeline-lift`.
+- [ ] **T-722 Imported video/images on the Video lane** — `Clip.file: String?` (nil = `screen.mov`); composition
+  inserts per-clip assets; such clips have no cursor/zoom/events. Bumps the "uses v4" check. Verify:
+  `make test FILTER=clipFile`; `--selftest media-import`.
+- [ ] **T-723 Docs** — SPEC §5 (v4 keys, version rule), §7.1 anatomy mockup, §7.2 gestures (from the prototype), §7.3
+  keys (⌥ copy, ⌥↑/⌥↓, ⌘D on clips), cheat sheet. Verify: `--selftest menu-actions`.
+
 ---
 
 ## Requested Nudge fixes — 2026-09-22
@@ -1113,3 +1280,5 @@ T-659 · 2026-10-19 · Added Hide cursor below Playback speed in the selected Cl
 T-659 · 2026-10-19 · Published v0.4.1 from 88bf5af; CI 39308484407 and Release 39308486851 succeed, both with 135/135 Core tests. Assembled universal release passes clip-cursor before publication alongside existing permission/device/waveform/background/export smoke checks. Independently downloaded the public 8,886,782-byte DMG: SHA-256 303467938116baff9c898d577f847f91aece6bf02011b056166e1f992e238472 matches GitHub's asset digest; checksum, app/DMG stapled tickets, Gatekeeper Notarized Developer ID assessments, strict app signature, x86_64 + arm64 and bundle version 0.4.1 pass. Mounted read-only app passes clip-cursor, menu-actions and five-time visible/hidden preview/export parity with maxDelta=0; detached afterward. make gallery/gallery-png pass and the rendered gallery was inspected. Task marked complete (1/1); public notes describe the toggle and preserve hardware/permission/latency/VoiceOver/performance limits and older-version compatibility caveat. No installed app replacement or TCC changes.
 
 Documentation review · 2026-10-23 · Shortened the entry README, retained installation/repair details in INSTALLATION.md, reconciled the permission summary with the signed-v0.3.3 evidence above and corrected stale skeleton/install wording in agent guides. Checked relative links and shell syntax on Linux; no native build, capture, export or permission pass is claimed. Native rendering recapture was excluded by the user for unsupported hardware. No functional acceptance boxes changed.
+
+T-701 · 2026-11-15 · Added Clip.mediaEnd; restore and cut bubbles use footage bounds, refusing reversed neighbours. Rebased restoration reuses clipboard insertion to preserve later footage/effects; head/tail, playback rates and tiny moved edge gaps covered. Targeted make test FILTER=TimelineOps passes 18/18; full make test passes 137/137 using installed Xcode native engine/platform Testing flags (default swiftbuild/CLT macro failures recorded above). Native timeline-ops remains failing at the pre-existing Video Track menu fixture mismatch; no UI acceptance claimed. Artifact audits add T-701b for media-order/copy bugs and explicit ⌘D implementation to T-703. Unrelated worktree edits preserved.
