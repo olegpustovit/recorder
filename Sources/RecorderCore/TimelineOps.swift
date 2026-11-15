@@ -2390,18 +2390,25 @@ public extension Project {
     /// overlaps its neighbour.
     mutating func resizeZoom(_ id: UUID, edge: Edge, to s: Double) { resizeBlock(id, in: \.zooms, edge: edge, to: s) }
 
-    // MARK: - Carried zooms (T-721): a recording layer's `scene.zooms`, in layer-local source seconds
-    // (output offset = local / mediaRate). Same generic block ops as the main Zoom lane.
+    // MARK: - Carried zooms (T-721): a recording layer's `scene.zooms`. `recordingScene` maps local `t` to source
+    // `origin + t * rate`, and playback maps layer output offset `o` to the same `origin + o * rate`, so
+    // local time == output seconds since `layer.start` (lift stores them on the output clock). No conversion is needed;
+    // only the length depends on the scene's clip bounds.
 
-    /// Zoom times map to output as `layer.start + local / sceneRate`.
-    func sceneRate(layerID: String) -> Double { layers.first { $0.id == layerID }?.mediaRate ?? 1 }
+    /// Length (local == output seconds) a carried zoom may span in `layer`: the layer, further capped by the context clip's source end.
+    func sceneZoomLength(_ layer: LayerBlock) -> Double {
+        let length = layer.end - layer.start
+        guard let clip = layer.scene?.cameraContext?.clip else { return length }
+        let rate = (layer.mediaRate ?? 1) * clip.timeScale / clip.speed
+        return min(length, (clip.sourceEnd - clip.sourceTime(atMedia: layer.mediaStart)) / rate)
+    }
 
     /// Runs a generic block op on the layer's scene zooms; `nil` if the layer isn't a recording.
     @discardableResult
     private mutating func editSceneZooms<R>(layerID: String, _ body: (inout [Zoom], Double) -> R) -> R? {
         guard let i = layers.firstIndex(where: { $0.id == layerID && $0.kind == .recording }) else { return nil }
         var scene = layers[i].scene ?? SceneEffects()
-        let result = body(&scene.zooms, (layers[i].end - layers[i].start) * (layers[i].mediaRate ?? 1))
+        let result = body(&scene.zooms, sceneZoomLength(layers[i]))
         layers[i].scene = scene
         return result
     }

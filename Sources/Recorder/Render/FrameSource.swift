@@ -253,10 +253,12 @@ private func packageMediaURL(_ file: String, package: URL) throws -> URL {
 }
 
 /// One-frame, 1 s movie of an image (same decode as `Compositor.layerImage`: upright, sRGB) so imported stills flow through the video path.
-/// shortcut: cached in the temp folder per file+mtime and capped at 2048 px, never pruned; upgrade to a texture path in Compositor if memory matters.
+/// shortcut: cached in the temp folder per full path+mtime+size and capped at 2048 px, never pruned; upgrade to a texture path in Compositor if memory matters.
 private func stillMovie(of image: URL) async throws -> URL {
     let mtime = (try? image.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate?.timeIntervalSince1970) ?? 0
-    let out = FileManager.default.temporaryDirectory.appendingPathComponent("recorder-still-\(image.lastPathComponent)-\(Int(mtime)).mov")
+    let size = (try? image.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+    let pathHash = image.standardizedFileURL.path.utf8.reduce(UInt64(14695981039346656037)) { ($0 ^ UInt64($1)) &* 1099511628211 } // FNV-1a: stable across launches, unlike hashValue
+    let out = FileManager.default.temporaryDirectory.appendingPathComponent("recorder-still-\(pathHash)-\(Int(mtime))-\(size).mov")
     if FileManager.default.fileExists(atPath: out.path) { return out }
     guard let source = CGImageSourceCreateWithURL(image as CFURL, nil),
           let picture = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceThumbnailMaxPixelSize: 2048] as CFDictionary)

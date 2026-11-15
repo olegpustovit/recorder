@@ -104,18 +104,39 @@ private func historyCamera(_ project: Project) -> CameraPath {
     var layer = LayerBlock(kind: .recording, start: 2, end: 6, file: "screen.mov", rect: NormRect(), mediaRate: 2, scene: SceneEffects())
     layer.id = "L"
     p.layers = [layer]
-    #expect(p.sceneRate(layerID: "L") == 2)
-    // Layer spans 4 output s at 2x = 8 local s.
-    let a0 = p.addSceneZoom(layerID: "L", atLocal: 1, length: 2), b0 = p.addSceneZoom(layerID: "L", atLocal: 5, length: 2)
+    // Local zoom time is output seconds since layer.start; the layer spans 4.
+    let a0 = p.addSceneZoom(layerID: "L", atLocal: 1, length: 2), b0 = p.addSceneZoom(layerID: "L", atLocal: 3.2, length: 0.6)
     let a = try #require(a0), b = try #require(b0)
     #expect(p.addSceneZoom(layerID: "L", atLocal: 1.5) == nil)          // inside a
-    #expect(p.layers[0].scene!.zooms.map(\.start) == [1, 5])
-    p.moveSceneZoom(layerID: "L", b, toStart: 7)                         // clamped to the layer end
-    #expect(p.layers[0].scene!.zooms[1].end == 8)
+    #expect(p.layers[0].scene!.zooms.map(\.start) == [1, 3.2])
+    p.moveSceneZoom(layerID: "L", b, toStart: 3.9)                         // clamped to the layer end
+    #expect(p.layers[0].scene!.zooms[1].end == 4)
     p.resizeSceneZoom(layerID: "L", a, edge: .trailing, to: 100)         // clamped by neighbour
     #expect(p.layers[0].scene!.zooms[0].end == p.layers[0].scene!.zooms[1].start)
     p.removeSceneZoom(layerID: "L", a)
     #expect(p.layers[0].scene!.zooms.map(\.id) == [b.uuidString])
     #expect(p.zooms.isEmpty)                                             // Main untouched
     #expect(p.addSceneZoom(layerID: "nope", atLocal: 0) == nil)
+}
+
+/// A carried zoom added at layer-output offset X must render (per `recordingScene`) at output X, for a sped-up lifted layer.
+@Test(arguments: [1.0, 1.5]) func sceneZoomRendersWhereAdded(mediaRate: Double) throws {
+    var p = sceneHistoryFixture(canonical: false)
+    let lifted = p.liftClips([1], toTrack: 0, atOutput: 5, copy: true)
+    let id = try #require(lifted.first)
+    let found = p.layers.firstIndex { $0.id == id.uuidString }
+    var i = try #require(found)
+    p.layers[i].mediaRate = (p.layers[i].mediaRate ?? 1) * mediaRate; p.layers[i].end = p.layers[i].start + 1.5
+    i = p.layers.firstIndex { $0.id == id.uuidString }!
+    p.layers[i].scene?.zooms = []
+    let layer = p.layers[i]
+    let x = 0.5
+    let added = p.addSceneZoom(layerID: layer.id, atLocal: x, length: 0.5)
+    let zid = try #require(added)
+    let scene = p.recordingScene(for: p.layers[i])
+    let zoom = try #require(scene.project.zooms.first { $0.id == zid.uuidString })
+    // Playback maps layer output offset o to source origin + o * rate.
+    let rendered = (zoom.start - scene.sourceStart) / scene.sourceRate
+    #expect(abs(rendered - x) < 1e-9)
+    #expect(p.sceneZoomLength(p.layers[i]) <= 1.5 + 1e-9)
 }

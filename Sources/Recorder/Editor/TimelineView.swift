@@ -1170,16 +1170,16 @@ final class TimelineView: NSView {
 
     private func zoomLaneBlocks(_ project: Project) -> [Zoom] { sceneZoomLayer?.scene?.zooms ?? project.zooms }
 
-    /// Zoom-lane time at output `t`: layer-local seconds for carried zooms, source time for Main's.
+    /// Zoom-lane time at output `t`: layer output seconds for carried zooms (see `sceneZoomLength`), source time for Main's.
     private func zoomTime(atOutput t: Double) -> Double {
         guard let model else { return 0 }
-        if let layer = sceneZoomLayer, let origin = model.timeMap.outputTime(atSource: layer.start) { return (t - origin) * (layer.mediaRate ?? 1) }
+        if let layer = sceneZoomLayer, let origin = model.timeMap.outputTime(atSource: layer.start) { return t - origin }
         return model.timeMap.sourceTime(atOutput: t)
     }
 
     private func zoomOutput(atTime s: Double) -> Double? {
         guard let model else { return nil }
-        if let layer = sceneZoomLayer { return model.timeMap.outputTime(atSource: layer.start).map { $0 + s / (layer.mediaRate ?? 1) } }
+        if let layer = sceneZoomLayer { return model.timeMap.outputTime(atSource: layer.start).map { $0 + s } }
         return model.timeMap.outputTime(atSource: s)
     }
 
@@ -2418,8 +2418,9 @@ final class TimelineView: NSView {
         if edge == nil, layer.kind == .recording, laneRow(.clip).contains(point) {
             let clips = project.insertLayers([id], intoVideoAt: videoInsertIndex(project, atOutput: max(0, geometry.output(forX: geometryX(point)))), copy: NSEvent.modifierFlags.contains(.option))
             if !clips.isEmpty, project.checkInvariants(mediaDurations: mediaDurations) == nil {
-                model.update { $0 = project }
+                layerDropTrial = project // trial-only like the new-track drop; mouse-up commits it
                 layerDropClips = clips
+                if let original = dragProject, model.project != original { model.update { $0 = original } }
                 needsDisplay = true
                 return
             }
