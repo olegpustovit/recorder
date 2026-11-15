@@ -14,6 +14,8 @@ public struct Clip: Codable, Equatable, Sendable {
     public var fadeOut: Double? = nil
     public var hideCursor: Bool? = nil
     public var isGap: Bool? = nil
+    /// Imported media (package-relative) replacing `screen.mov` for this clip; such clips have no cursor, zoom or recorded events.
+    public var file: String? = nil
     public var mediaStart: Double? = nil
     /// Separate the timeline clock from playback rate for an unlinked speed edit.
     public var clockSpeed: Double? = nil
@@ -41,7 +43,7 @@ public struct TimeMap: Sendable {
 
     /// Every kept occurrence of recorded footage, in editing-clock order (copies included).
     public func sourceRanges(forMedia ranges: [TimeRange]) -> [TimeRange] {
-        clips.filter { !$0.isEmpty }.flatMap { clip in
+        clips.filter { !$0.isEmpty && $0.file == nil }.flatMap { clip in
             ranges.compactMap { range -> TimeRange? in
                 let start = max(range.start, clip.mediaIn), end = min(range.end, clip.mediaEnd)
                 guard end > start else { return nil }

@@ -73,12 +73,17 @@ struct FrameState {
 @MainActor
 func makeFrameState(model: EditorModel, outputTime: Double, screen: FrameState.Texture?, camera: FrameState.Texture?, size: CGSize, layerTextures: [Int: FrameState.Texture] = [:], layerTransforms: [String: CGAffineTransform] = [:]) -> FrameState {
     let sourceTime = model.timeMap.sourceTime(atOutput: outputTime)
-    let view = model.cameraPath.sample(atSource: sourceTime)
     let clip = model.project.clipIndex(atOutput: outputTime).map { model.project.clips[$0] }
-    let prevView = model.cameraPath.sample(atSource: sourceTime - (clip?.timeScale ?? 1) / 60)
+    let view: ViewTransform = clip?.file != nil ? .identity : model.cameraPath.sample(atSource: sourceTime)
+    let prevView: ViewTransform = clip?.file != nil ? .identity : model.cameraPath.sample(atSource: sourceTime - (clip?.timeScale ?? 1) / 60)
     let mediaTime = clip.map { $0.mediaTime(atSource: sourceTime) } ?? sourceTime
     var cursor = model.cursorSample(atSource: sourceTime, clip: clip)
-    if clip?.hideCursor == true { cursor.alpha = 0 }
+    if clip?.hideCursor == true || clip?.file != nil { cursor.alpha = 0 }
+    // Imported clip (T-722): no zoom, and the decoded frame's own size drives aspect-fit with no crop.
+    var project = model.project
+    if clip?.file != nil, let screen {
+        project.source.pixelWidth = screen.luma.width; project.source.pixelHeight = screen.luma.height; project.crop = NormRect()
+    }
     let (layoutKind, layoutAmount) = layoutMix(layouts: model.project.layouts, atSource: sourceTime)
     // T-602: the active key chip, if the Keys tab's "Show keyboard shortcuts" is on and a `.key`
     // event is within `activeKeyChip`'s hold window (`RecorderCore/KeyChips.swift`, already merged).
@@ -109,7 +114,7 @@ func makeFrameState(model: EditorModel, outputTime: Double, screen: FrameState.T
                            }
                            return layer
                        },
-                       project: model.project)
+                       project: project)
 }
 
 /// `project.json` + `events.json` (if present — a fresh/recovered package may not have one yet) →

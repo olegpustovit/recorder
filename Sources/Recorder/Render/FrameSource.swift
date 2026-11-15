@@ -2,6 +2,7 @@ import AVFoundation
 import CoreVideo
 import Metal
 import RecorderCore
+import UniformTypeIdentifiers
 
 enum FrameSourceError: Error {
     case missingScreenTrack, trackCreationFailed
@@ -80,6 +81,7 @@ func makeComposition(package: URL, project: Project, micURL: URL? = nil) async t
     }
 
     let timescale: CMTimeScale = 600
+    var fileAssets: [AVURLAsset] = []
     var cursor = CMTime.zero
     var outputSeconds = 0.0
     for clip in project.clips {
@@ -91,7 +93,18 @@ func makeComposition(package: URL, project: Project, micURL: URL? = nil) async t
         let mediaDuration = clip.isEmpty ? min(project.source.duration, 1.0 / 30) : clip.mediaDuration
         let range = CMTimeRange(start: CMTime(seconds: clip.isEmpty ? 0 : clip.mediaIn, preferredTimescale: timescale),
                                 end: CMTime(seconds: (clip.isEmpty ? 0 : clip.mediaIn) + mediaDuration, preferredTimescale: timescale))
-        if project.windowCount > 1 && !clip.isEmpty {
+        if let file = clip.file {
+            // Imported clip: its own asset (images become a held one-frame movie), stretched to the clip's output length.
+            let url = try packageMediaURL(file, package: package)
+            let isImage = UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true
+            let asset = AVURLAsset(url: isImage ? try await stillMovie(of: url) : url)
+            fileAssets.append(asset)
+            guard let source = try await asset.loadTracks(withMediaType: .video).first else { throw FrameSourceError.invalidMediaPath(file) }
+            let piece = isImage ? CMTimeRange(start: .zero, duration: try await asset.load(.duration))
+                : CMTimeRange(start: CMTime(seconds: clip.mediaIn, preferredTimescale: timescale), duration: CMTime(seconds: clip.mediaDuration, preferredTimescale: timescale))
+            try screenTrack.insertTimeRange(piece, of: source, at: cursor)
+            screenTrack.scaleTimeRange(CMTimeRange(start: cursor, duration: piece.duration), toDuration: outputDuration)
+        } else if project.windowCount > 1 && !clip.isEmpty {
             // One piece per shot boundary inside the clip; the last piece absorbs rounding so the clip stays exact.
             let edges = project.windowShots.flatMap { [$0.start, $0.end] }
             var lo = clip.sourceStart
@@ -226,8 +239,53 @@ func makeComposition(package: URL, project: Project, micURL: URL? = nil) async t
     if duration > composition.duration {
         composition.insertEmptyTimeRange(CMTimeRange(start: composition.duration, end: duration))
     }
-    withExtendedLifetime((screenAssetKeepAlive, cameraAssetKeepAlive, mediaAssets, windowAssetsKeepAlive)) {}
+    withExtendedLifetime((screenAssetKeepAlive, cameraAssetKeepAlive, mediaAssets, windowAssetsKeepAlive, fileAssets)) {}
     return (composition, makeAudioMix(project: project, audioTracks: audioTracks), audioTracks, cameraTrack, layerTracks, layerTransforms)
+}
+
+/// Package-relative `media/…` file, refusing traversal and symlinks out of the package.
+private func packageMediaURL(_ file: String, package: URL) throws -> URL {
+    let url = package.appendingPathComponent(file).standardizedFileURL.resolvingSymlinksInPath()
+    guard file.hasPrefix("media/"), !file.split(separator: "/").contains(".."),
+          url.path.hasPrefix(package.standardizedFileURL.resolvingSymlinksInPath().path + "/"),
+          FileManager.default.fileExists(atPath: url.path) else { throw FrameSourceError.invalidMediaPath(file) }
+    return url
+}
+
+/// One-frame, 1 s movie of an image (same decode as `Compositor.layerImage`: upright, sRGB) so imported stills flow through the video path.
+/// shortcut: cached in the temp folder per file+mtime and capped at 2048 px, never pruned; upgrade to a texture path in Compositor if memory matters.
+private func stillMovie(of image: URL) async throws -> URL {
+    let mtime = (try? image.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate?.timeIntervalSince1970) ?? 0
+    let out = FileManager.default.temporaryDirectory.appendingPathComponent("recorder-still-\(image.lastPathComponent)-\(Int(mtime)).mov")
+    if FileManager.default.fileExists(atPath: out.path) { return out }
+    guard let source = CGImageSourceCreateWithURL(image as CFURL, nil),
+          let picture = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceThumbnailMaxPixelSize: 2048] as CFDictionary)
+    else { throw FrameSourceError.invalidMediaPath(image.lastPathComponent) }
+    let (w, h) = (picture.width & ~1, picture.height & ~1) // H.264 needs even dimensions
+    var buffer: CVPixelBuffer?
+    CVPixelBufferCreate(nil, w, h, kCVPixelFormatType_32BGRA, nil, &buffer)
+    guard let buffer else { throw FrameSourceError.trackCreationFailed }
+    CVPixelBufferLockBaseAddress(buffer, [])
+    let context = CGContext(data: CVPixelBufferGetBaseAddress(buffer), width: w, height: h, bitsPerComponent: 8, bytesPerRow: CVPixelBufferGetBytesPerRow(buffer), space: VideoColor.space,
+                            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
+    context?.draw(picture, in: CGRect(x: 0, y: 0, width: w, height: h))
+    CVPixelBufferUnlockBaseAddress(buffer, [])
+    let temp = out.deletingLastPathComponent().appendingPathComponent(UUID().uuidString + ".mov")
+    let writer = try AVAssetWriter(outputURL: temp, fileType: .mov)
+    let input = AVAssetWriterInput(mediaType: .video, outputSettings: [AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: w, AVVideoHeightKey: h, AVVideoColorPropertiesKey: VideoColor.properties])
+    let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: nil)
+    writer.add(input)
+    guard writer.startWriting() else { throw writer.error ?? FrameSourceError.trackCreationFailed }
+    writer.startSession(atSourceTime: .zero)
+    while !input.isReadyForMoreMediaData { try await Task.sleep(nanoseconds: 1_000_000) }
+    adaptor.append(buffer, withPresentationTime: .zero)
+    input.markAsFinished()
+    writer.endSession(atSourceTime: CMTime(seconds: 1, preferredTimescale: 600))
+    await writer.finishWriting()
+    guard writer.status == .completed else { throw writer.error ?? FrameSourceError.trackCreationFailed }
+    try? FileManager.default.removeItem(at: out)
+    try FileManager.default.moveItem(at: temp, to: out)
+    return out
 }
 
 /// Gain, fades and track mixing can refresh on the existing player's tracks without rebuilding media.

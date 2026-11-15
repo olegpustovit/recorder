@@ -3146,6 +3146,22 @@ enum SelfTest {
             rejected = false
             do { _ = try await trappedModel.importMedia(png, atOutput: 1) } catch { rejected = true }
             try check(rejected && trappedModel.project == original && trappedModel.undoStepCount == 0 && (try FileManager.default.contentsOfDirectory(atPath: outside.path)).isEmpty, "escaped media directory")
+            // T-722: imported image and video go onto the Video lane as file clips and compose.
+            var trial = model.project
+            let imageID = UUID(uuidString: trial.layers.first { $0.kind == .image }!.id)!, videoID = UUID(uuidString: trial.layers.first { $0.kind == .video }!.id)!
+            try check(!trial.insertLayers([imageID], intoVideoAt: 1, copy: false).isEmpty && !trial.insertLayers([videoID], intoVideoAt: 2, copy: false).isEmpty, "insert imports into Video")
+            try check(trial.clips.map { $0.file != nil } == [false, true, true] && trial.checkInvariants() == nil, "file clips on Video")
+            try check(!trial.layers.contains { $0.id == imageID.uuidString || $0.id == videoID.uuidString }, "layers moved into Video")
+            try await synthesizeGradientMovie(at: package.appendingPathComponent("screen.mov"), width: 640, height: 360, fps: 5, frameCount: 100)
+            let (inserted, _, _, _, _, _) = try await makeComposition(package: package, project: trial)
+            try check(abs(inserted.duration.seconds - TimeMap(trial.clips).outputDuration) < 0.05, "file clip composition duration")
+            let generator = AVAssetImageGenerator(asset: inserted); generator.requestedTimeToleranceBefore = .zero; generator.requestedTimeToleranceAfter = .zero
+            let still = try await generator.image(at: CMTime(seconds: 20 + 1, preferredTimescale: 600)).image
+            let pixels = CGContext(data: nil, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4, space: VideoColor.space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+            pixels.draw(still, in: CGRect(x: -10, y: -still.height + 10, width: still.width, height: still.height)) // top-left: light background
+            let top = pixels.data!.assumingMemoryBound(to: UInt8.self)
+            try check(abs(Int(top[0]) - 209) < 12 && abs(Int(top[1]) - 227) < 12 && abs(Int(top[2]) - 240) < 12, "image clip frame colour \(top[0]),\(top[1]),\(top[2])")
+            _ = try await generator.image(at: CMTime(seconds: TimeMap(trial.clips).outputDuration - 0.2, preferredTimescale: 600))
             try await TimelineView.runLayerUISelfTest(model: model)
             try JSONEncoder().encode(events).write(to: package.appendingPathComponent("events.json"))
             model.saveNow()

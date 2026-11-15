@@ -864,7 +864,7 @@ public struct Project: Codable, Equatable, Sendable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         var saved = self
-        saved.version = layers.contains { $0.kind == .recording } ? 4 : 3
+        saved.version = layers.contains { $0.kind == .recording } || clips.contains { $0.file != nil } ? 4 : 3
         try encoder.encode(saved).write(to: url, options: .atomic)
     }
 }

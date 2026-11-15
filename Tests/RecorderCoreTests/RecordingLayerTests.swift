@@ -159,8 +159,8 @@ private func recordingFixture(speeds: [Double] = [1, 1, 1], withAudio: Bool = tr
     #expect(invalidTrack.isEmpty && invalidTime.isEmpty && invalidSelection.isEmpty && full == baseline)
     let missing = full.insertLayers([UUID()], intoVideoAt: 1, copy: false)
     #expect(missing.isEmpty && full == baseline)
-    let imageInsertion = project.insertLayers([UUID(uuidString: existing.id)!], intoVideoAt: 0, copy: false)
-    #expect(imageInsertion.isEmpty && project.layers.contains { $0.id == existing.id })
+    let unknown = project.insertLayers([UUID(uuidString: existing.id)!, UUID()], intoVideoAt: 0, copy: false)
+    #expect(unknown.isEmpty && project.layers.contains { $0.id == existing.id })
 }
 
 @Test func liftCopyLeavesSource() throws {

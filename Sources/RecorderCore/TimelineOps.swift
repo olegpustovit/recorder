@@ -108,7 +108,7 @@ public extension Project {
     /// Carry recording footage off the magnetic lane without baking its editable screen effects.
     mutating func liftClips(_ indices: Set<Int>, toTrack: Int, atOutput: Double, copy: Bool) -> [UUID] {
         guard toTrack >= 0, toTrack < Int.max, atOutput.isFinite, atOutput >= 0, !indices.isEmpty,
-              indices.allSatisfy({ clips.indices.contains($0) && !clips[$0].isEmpty }), checkInvariants() == nil,
+              indices.allSatisfy({ clips.indices.contains($0) && !clips[$0].isEmpty && clips[$0].file == nil }), checkInvariants() == nil,
               source.duration.isFinite, source.duration > 0,
               clips.allSatisfy({ $0.sourceStart.isFinite && $0.sourceEnd.isFinite && $0.speed.isFinite && $0.timeScale.isFinite && $0.timeScale > 0 && $0.mediaIn.isFinite }) else { return [] }
         let before = self
@@ -233,7 +233,7 @@ public extension Project {
     mutating func insertLayers(_ ids: [UUID], intoVideoAt index: Int, copy: Bool) -> Set<Int> {
         let keys = Set(ids.map(\.uuidString))
         guard !keys.isEmpty, keys.count == ids.count, (0...clips.count).contains(index),
-              keys.allSatisfy({ key in layers.contains { $0.id == key && $0.kind == .recording } }), checkInvariants() == nil else { return [] }
+              keys.allSatisfy({ key in layers.contains { $0.id == key } }), checkInvariants() == nil else { return [] }
         let before = self
         let padding = layers.filter { keys.contains($0.id) }.compactMap { $0.scene?.padding }
         let ownedTail = clips.last.map { $0.isEmpty && padding.contains($0) } ?? false
@@ -246,6 +246,7 @@ public extension Project {
             let duration = layer.end - layer.start
             var clip = Clip(sourceStart: time, sourceEnd: time + duration, speed: layer.mediaRate ?? 1)
             clip.mediaStart = layer.mediaStart; clip.clockSpeed = 1; clip.hideCursor = layer.scene?.hideCursor
+            if layer.kind != .recording { clip.file = layer.file }
             clip.fadeIn = layer.fadeIn; clip.fadeOut = layer.fadeOut; clip.color = layer.color
             incoming.clips.append(clip)
             func placed<Block: TimedBlock>(_ blocks: [Block]) -> [Block] {
@@ -393,7 +394,7 @@ public extension Project {
         var kept = indices.filter { clips.indices.contains($0) }, joined = false
         for i in indices.sorted(by: >) where kept.contains(i) && kept.contains(i + 1) {
             let a = clips[i], b = clips[i + 1]
-            guard !a.isEmpty, !b.isEmpty, abs(a.sourceEnd - b.sourceStart) < 1e-6, a.speed == b.speed, a.clockSpeed == b.clockSpeed,
+            guard !a.isEmpty, !b.isEmpty, abs(a.sourceEnd - b.sourceStart) < 1e-6, a.speed == b.speed, a.clockSpeed == b.clockSpeed, a.file == b.file,
                   (a.hideCursor == true) == (b.hideCursor == true),
                   abs(a.mediaTime(atSource: a.sourceEnd) - b.mediaIn) < 1e-6 else { continue }
             clips[i].sourceEnd = b.sourceEnd; clips[i].fadeOut = b.fadeOut
