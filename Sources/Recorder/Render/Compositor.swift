@@ -889,6 +889,7 @@ extension Compositor {
         try check(near(pixel(bytes, 80, 90), SIMD3(255, 127, 127)) && near(pixel(bytes, 240, 90), SIMD3(255, 255, 255)), "PNG premultiplied alpha / transparent pixels")
         layer.file = "media/orientation.png"; project.layers = [layer]
         bytes = try await render(project)
+        try writePNG(bytes: bytes, width: width, height: height, to: URL(fileURLWithPath: "/tmp/recorder-layers-orientation-proof.png"))
         try check(near(pixel(bytes, 160, 30), SIMD3(255, 0, 0)) && near(pixel(bytes, 160, 150), SIMD3(0, 255, 0)), "Image orientation")
         layer.file = "media/red.png"; layer.rect = NormRect(x: 0.8, y: 0.05, w: 0.1, h: 0.1)
         layer.backdrop = .dim; layer.fadeIn = 0.3; project.layers = [layer]

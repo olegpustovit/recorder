@@ -3873,8 +3873,8 @@ enum SelfTest {
                 context.setFillColor(CGColor(colorSpace: VideoColor.space, components: [1, 0, 0, 0.5])!); context.fill(CGRect(x: 0, y: 0, width: 32, height: 64))
             }
             try image("media/orientation.png", width: 64, height: 64) { context in
-                context.setFillColor(CGColor(colorSpace: VideoColor.space, components: [1, 0, 0, 1])!); context.fill(CGRect(x: 0, y: 32, width: 64, height: 32))
-                context.setFillColor(CGColor(colorSpace: VideoColor.space, components: [0, 1, 0, 1])!); context.fill(CGRect(x: 0, y: 0, width: 64, height: 32))
+                context.setFillColor(CGColor(colorSpace: VideoColor.space, components: [1, 0, 0, 1])!); context.fill(CGRect(x: 0, y: 0, width: 64, height: 32))
+                context.setFillColor(CGColor(colorSpace: VideoColor.space, components: [0, 1, 0, 1])!); context.fill(CGRect(x: 0, y: 32, width: 64, height: 32))
             }
             var project = Project(title: "Layers Fixture", source: Source(pixelWidth: 640, pixelHeight: 360, scale: 1, duration: 9, hasCamera: true), clips: [Clip(sourceStart: 0, sourceEnd: 9)])
             project.background = Background(kind: .color, color: "#1F2428")

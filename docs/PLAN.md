@@ -286,7 +286,7 @@ older builds ignore those points and cannot preserve their phase. Recording laye
 
 | Scope | Tasks | Done |
 |---|---|---|
-| Phase 1 | T-701, T-701b, T-702, T-702b, T-703…T-705, T-705b, T-705c | 8/9 |
+| Phase 1 | T-701, T-701b, T-702, T-702b, T-703…T-705, T-705b, T-705c | 9/9 |
 | Phase 2 | T-711…T-714 | 0/4 |
 | Phase 3 | T-721…T-723 | 0/3 |
 
@@ -445,11 +445,15 @@ older builds ignore those points and cannot preserve their phase. Recording laye
     and `timeline-tracks` pass. Both images inspected. Native ordering clamps the 850 pt window to 834 pt on this
     screen, resets native controls, and moves the document bar without invalidating its layout. The shared root
     layout now invalidates the bar after positioning it; existing clipping/alignment/clickability assertions stay.
-- [ ] **T-705c Correct full-canvas image orientation**
+- [x] **T-705c Correct full-canvas image orientation**
   - Observed during image-default verification: `--selftest make-layers-fixture` fails the existing compositor
     "Image orientation" check. Diagnose the fixture and shared image/render path; preserve transparency, crop,
     color and preview/export parity. Fix the cause without loosening the pixel assertion.
   - Verify: `make-layers-fixture`, `media-import`, parity on the generated layers fixture; inspect the orientation proof.
+  - Verified 2026-11-15: the fixture's top-left drawing context had red/green bands reversed relative to its existing
+    assertion. Corrected only the fixture bands, kept renderer and pixel assertions, and wrote an orientation proof.
+    Native build, generated layers checks (including live video layers), `media-import`, and parity all pass;
+    maxDelta=0 over 32 times. Inspected `/tmp/recorder-layers-orientation-proof.png` (red above green).
 
 ### Phase 2 — Recording clips on Video tracks (format v4 only when used)
 
@@ -1386,3 +1390,5 @@ T-705 · 2026-11-15 · Implemented permanent26pt New track strip, descending Vid
 T-705 follow-up · 2026-11-15 · User reported image should fill canvas; changed shared new-image import default to Full while preserving videos and existing placements. File/clipboard/new-track imports verified; full154 Core pass, media-import/tracks pass, corrected settled review image inspected, parity maxDelta0 over11 times. Review copy retains user track/timing edits. User explicitly waived further HUMAN reviews; T705 completed using automated checks and agent visual judgment. Titlebar failure remains T705b; independent extra layers-render check exposed orientation assertion, recorded as T705c.
 
 T-705b · 2026-11-15 · Fixed native window-control alignment after screen-constrained resize by invalidating the document bar layout after every root positioning. Geometry proved native850→834pt clamp moved bar but reset controls16pt from top; fix restores24pt. Native debug build, scratch assembled settled1100×700/1300×850 captures, menu-actions and timeline-tracks pass; both PNGs inspected. No test assertions weakened; no Core logic changed.
+
+T-705c · 2026-11-15 · Corrected reversed red/green bands in orientation fixture under its top-left CTM; production image rendering unchanged, pixel assertion retained. Native build, make-layers-fixture (compositor+livevideo), media-import pass; layers parity maxDelta0 over32 times. Added and inspected rendered orientation proof; Phase1 now9/9.
