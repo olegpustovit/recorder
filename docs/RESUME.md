@@ -50,7 +50,6 @@ also unmeasured. The benchmark refuses occluded-window results before generating
 
 **Roadmap done:** T-713, T-714, T-721, T-722, T-723 complete and verified 2026-11-15. Only T-711 remains `[~]`: run
 `--selftest timeline-render-perf --dual-screen` on an unlocked, visible session (Apple Silicon + Intel) and record results in SPEC §9.
-complete while those tasks or required measurements remain outstanding.
 
 ## T-712 behavior to preserve
 
