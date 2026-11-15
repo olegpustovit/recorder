@@ -3,8 +3,8 @@
 This file is **both the plan and the progress tracker**. `docs/SPEC.md` says *what* (mockups, behaviour, `AC-*`);
 this file says *in what order, in which file, with what code, and how to prove it*.
 
-**Free-editing roadmap (2026-11-15):** T-701…T-723 done except T-711 `[~]` (needs live, unlocked-screen
-fps/export measurements on Apple Silicon and Intel). See [RESUME.md](RESUME.md).
+**Free-editing roadmap (2026-11-15):** T-701…T-723 done (T-711 measured on Apple Silicon; Intel dropped
+by the user). See [RESUME.md](RESUME.md).
 
 ## 0. Protocol (read every session)
 
@@ -290,7 +290,7 @@ older builds ignore those points and cannot preserve their phase. Recording laye
 | Scope | Tasks | Done |
 |---|---|---|
 | Phase 1 | T-701, T-701b, T-702, T-702b, T-703…T-705, T-705b, T-705c | 9/9 |
-| Phase 2 | T-711…T-714 | 3/4 (T-711 `[~]` hardware) |
+| Phase 2 | T-711…T-714 | 4/4 |
 | Phase 3 | T-721…T-723 | 3/3 |
 
 - [x] **T-701 Core: media continuity instead of clock continuity**
@@ -460,7 +460,7 @@ older builds ignore those points and cannot preserve their phase. Recording laye
 
 ### Phase 2 — Recording clips on Video tracks (format v4 only when used)
 
-- [~] **T-711 Measure two decodes of `screen.mov`**
+- [x] **T-711 Measure two decodes of `screen.mov`**
   - Fixture: 4K HEVC 60 s recording with the middle clip duplicated as a full-canvas layer. Measure preview fps and
     export time on Apple Silicon and Intel (`PerfSelfTest` pattern). Record numbers in SPEC §9. If Intel drops frames,
     the fallback is decoding the layer copy at half resolution (preview only; export stays full).
@@ -478,8 +478,8 @@ older builds ignore those points and cannot preserve their phase. Recording laye
   - Apple Silicon measured 2026-11-15 (benchmark window floated above other apps; export counter now ignores
     0-sample marker buffers): preview 59.85 fps, distinct PTS 58.95/s main + 57.27/s layer, export 69.3 s for 60 s
     2160p60, `--selftest timeline-render-perf --dual-screen` OK. Numbers in SPEC §9.
-  - BLOCKED: Intel numbers need an Intel Mac; none is available to the agent. Remains `[~]` until someone runs the
-    same command natively on Intel.
+  - Intel dropped by the user 2026-11-15 (no Intel hardware); closed on the Apple Silicon result. Intel stays
+    unmeasured; rerun the same command natively on Intel if Intel preview complaints appear.
 - [x] **T-712 Core: recording layers, `liftClips`, `insertLayers`, versioning**
   - `LayerBlock.Kind.recording` (file `"screen.mov"`, `mediaStart`, new `mediaRate: Double?` for sped-up clips,
     `rect` = full canvas, `backdrop .none`, clip fades retained, otherwise nil) and `LayerBlock.scene: SceneEffects?` where
@@ -1450,3 +1450,5 @@ T-723 · 2026-11-15 · SPEC §5 v4 keys + version rule, §7.1 anatomy, §7.2 fre
 Free-editing merge · 2026-11-15 · Combined T-713/714/721/722/723 verified on dev: native build, make test 167/167, selftests lift-identity + layer-recording-parity (maxDelta 0), timeline-lift/-reorder/-selection/-tracks/-ops/-full-layers, media-import, make-layers-fixture, menu-actions all OK. Review fixes: carried-zoom mapping, lift trial revert, image cache key.
 
 T-711 · 2026-11-15 · Apple Silicon measured: preview 59.85 fps presented, 58.95/57.27 distinct PTS/s (main/layer), dual-decode 4K60 export 69.3 s for 60 s; selftest OK after floating the benchmark window and counting only non-empty sample buffers. Intel BLOCKED (no hardware); task stays [~].
+
+T-711 close · 2026-11-15 · User chose to drop the Intel measurement; T-711 closed on the Apple Silicon result.

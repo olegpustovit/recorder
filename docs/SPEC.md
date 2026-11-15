@@ -970,8 +970,8 @@ times a verified 60-second 2160p60 HEVC export. Synthetic moving content is ligh
 Measured 2026-11-15 on native Apple M1 / MacBookAir10,1 (debug build, 2560×1440 drawable): preview presented
 59.85 fps over the 20 s overlap; distinct displayed PTS 58.95/s main and 57.27/s layer copy, no backwards PTS;
 60 s 2160p60 HEVC export with the dual decode took 69.3 s (≈52 fps), 3600 frames verified. Answer for Apple
-Silicon: two decodes of `screen.mov` hold real time; no proxy needed. Intel: still unmeasured (no Intel hardware
-available); run the same command natively on an Intel Mac before deciding the half-resolution preview fallback.
+Silicon: two decodes of `screen.mov` hold real time; no proxy needed. Intel: dropped by the user (no Intel hardware);
+unmeasured, and the half-resolution preview fallback is not built. Rerun natively on Intel if needed.
 
 
 ### Recording/editor polish (2026-09-19)
