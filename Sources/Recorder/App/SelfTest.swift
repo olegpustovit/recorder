@@ -3663,7 +3663,8 @@ enum SelfTest {
                   abs(camera.timeMapping.source.start.seconds - 5) < 0.01,
                   abs(camera.timeMapping.target.start.seconds - 2) < 0.01 else { throw Fail.composition }
         },
-        "timeline-render-perf": { @MainActor _ in
+        "timeline-render-perf": { @MainActor args in
+            if args.contains("--dual-screen") { try await PerfSelfTest.runDualScreenPerf(); return }
             struct Fail: Error, CustomStringConvertible { let description: String }
             let (model, view, px, py, cleanup) = try makeTimelineOpsFixture()
             defer { model.saveNow(); cleanup() }
@@ -4224,6 +4225,11 @@ enum SelfTest {
                 print("SELFTEST \(name) failed: \(error)")
                 exit(1)
             }
+        }
+        // Presented-frame performance needs AppKit's real event processing, not only a headless run loop.
+        if name == "timeline-render-perf", args.contains("--dual-screen") {
+            NSApplication.shared.setActivationPolicy(.accessory)
+            NSApplication.shared.run()
         }
         // Pump the main run loop (instead of a plain semaphore wait) so cases that hop back to
         // `DispatchQueue.main` (autosave, folder watching, …) can actually run; `exit()` above ends the process.

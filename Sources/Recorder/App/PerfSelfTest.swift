@@ -1,3 +1,4 @@
+import AppKit
 import AVFoundation
 import CoreMedia
 import CoreVideo
@@ -12,6 +13,153 @@ import ScreenCaptureKit
 /// AC-REC-4, AC-APP-3, §6.8.
 enum PerfSelfTest {
     struct Fail: Error, CustomStringConvertible { let description: String }
+
+    /// T-711: real simultaneous 4K decodes; fixture creation and output inspection are not timed as export.
+    @MainActor
+    static func runDualScreenPerf() async throws {
+        func hardware(_ key: String) -> String {
+            var count = 0
+            guard sysctlbyname(key, nil, &count, nil, 0) == 0, count > 0 else { return "unavailable" }
+            var bytes = [CChar](repeating: 0, count: count)
+            guard sysctlbyname(key, &bytes, &count, nil, 0) == 0 else { return "unavailable" }
+            return String(cString: bytes)
+        }
+        #if arch(arm64)
+        let architecture = "arm64"
+        #else
+        let architecture = "x86_64"
+        #endif
+        var translated: Int32 = 0, translatedSize = MemoryLayout<Int32>.size
+        _ = sysctlbyname("sysctl.proc_translated", &translated, &translatedSize, nil, 0)
+        guard translated != 1 else { throw Fail(description: "Run the native architecture; Rosetta is not Intel hardware evidence") }
+        let hardwareName = hardware("hw.model"), cpuName = hardware("machdep.cpu.brand_string")
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 720), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.title = "Recorder — native dual 4K60 decoder benchmark"
+        window.isReleasedWhenClosed = false; window.center(); window.orderFrontRegardless()
+        defer { window.close() }
+        let visibilityDeadline = Date().addingTimeInterval(3)
+        while !window.occlusionState.contains(.visible), Date() < visibilityDeadline {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        print("dual-screen visibility: ordered=\(window.isVisible) occlusion=\(window.occlusionState.rawValue) frame=\(window.frame)")
+        guard window.isVisible, window.occlusionState.contains(.visible) else {
+            throw Fail(description: "Preview measurement requires an unlocked active GUI session. Launch the benchmark app through LaunchServices after unlocking.")
+        }
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("recorder-dual-screen-" + UUID().uuidString)
+        let package = root.appendingPathComponent("Dual-screen.recorder")
+        try FileManager.default.createDirectory(at: package.appendingPathComponent("media"), withIntermediateDirectories: true)
+        print("dual-screen: hardware=\(hardwareName) cpu=\(cpuName) native=\(architecture) Rosetta=false")
+        print("dual-screen: retained fixture/output/report at \(root.path)")
+        print("dual-screen: synthesizing 3840x2160 HEVC 60fps, 3600 moving frames (excluded from export timing)")
+        let synthesisStart = Date()
+        try await synthesizeMovingMovie(at: package.appendingPathComponent("screen.mov"), width: 3840, height: 2160, fps: 60, frameCount: 3600)
+        let synthesisSeconds = Date().timeIntervalSince(synthesisStart)
+        try FileManager.default.linkItem(at: package.appendingPathComponent("screen.mov"), to: package.appendingPathComponent("media/screen-copy.mov"))
+        var project = Project(title: "Dual-screen 4K60", source: Source(pixelWidth: 3840, pixelHeight: 2160, scale: 1, duration: 60),
+                              clips: [Clip(sourceStart: 0, sourceEnd: 20), Clip(sourceStart: 20, sourceEnd: 40), Clip(sourceStart: 40, sourceEnd: 60)])
+        project.layers = [LayerBlock(kind: .video, start: 20, end: 40, file: "media/screen-copy.mov", mediaStart: 20,
+                                    rect: NormRect(), backdrop: .none, fadeIn: nil, fadeOut: nil)]
+        guard project.checkInvariants(mediaDurations: ["media/screen-copy.mov": 60]) == nil else { throw Fail(description: "Invalid dual-screen fixture") }
+        try project.save(to: package.appendingPathComponent("project.json"))
+        let model = try loadEditorModel(package: package)
+        var samples: [PreviewView.PresentedSample] = []
+        var playbackWall = 0.0, playbackStart = 0.0, playbackEnd = 0.0
+        do {
+            let preview = PreviewView(model: model)
+            window.contentView = preview
+            defer {
+                preview.onPresentedFrameForTest = nil
+                if model.isPlaying { preview.togglePlayPause() }
+                window.contentView = nil; window.orderOut(nil)
+            }
+            var collecting = false
+            preview.onPresentedFrameForTest = { sample in
+                if collecting, sample.outputTime >= 20, sample.outputTime < 40, sample.hostTime > 0 { samples.append(sample) }
+            }
+            _ = try await preview.captureRenderedFrame(atOutput: 20)
+            preview.framebufferOnly = true
+            guard window.isVisible, window.occlusionState.contains(.visible) else { throw Fail(description: "Preview window is not visible; presentation performance cannot be measured") }
+            collecting = true
+            playbackStart = preview.debugCurrentTime
+            let start = Date(), deadline = Date().addingTimeInterval(60)
+            preview.togglePlayPause()
+            while preview.debugCurrentTime < 40 {
+                guard Date() < deadline, preview.debugPlayerStatus != "failed" else { throw Fail(description: "Dual-screen preview stalled before completing the 20-second overlap") }
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            playbackEnd = preview.debugCurrentTime
+            playbackWall = Date().timeIntervalSince(start)
+            preview.togglePlayPause()
+            try await Task.sleep(for: .milliseconds(200))
+            collecting = false
+        }
+        guard samples.count > 1, let first = samples.first, let last = samples.last,
+              last.outputTime - first.outputTime > 19 else { throw Fail(description: "No complete presented-frame observation of the overlap") }
+        let presentedInterval = last.hostTime - first.hostTime
+        guard presentedInterval > 0 else { throw Fail(description: "Invalid drawable presentation interval") }
+        let presentedFPS = Double(samples.count - 1) / presentedInterval
+        func decodeStats(_ timestamps: [Double?]) -> [String: Any] {
+            let frames = timestamps.compactMap { $0 }.map { Int64(($0 * 60).rounded()) }
+            var repeats = 0, skipped = 0, backwards = 0
+            for (a, b) in zip(frames, frames.dropFirst()) {
+                if b == a { repeats += 1 }
+                else if b > a { skipped += Int(max(0, b - a - 1)) }
+                else { backwards += 1 }
+            }
+            let unique = Set(frames).count
+            return ["distinctSamplePTS": unique, "distinctPTSPerSecond": Double(unique) / presentedInterval,
+                    "repeatedPresentedPTS": repeats, "sampledPTSSkips": skipped, "backwardsPTS": backwards,
+                    "presentationsWithoutPTS": timestamps.count - frames.count,
+                    "firstPTS": frames.first.map { Double($0) / 60 } ?? -1,
+                    "lastPTS": frames.last.map { Double($0) / 60 } ?? -1]
+        }
+        let screenStats = decodeStats(samples.map(\.screenPTS)), layerStats = decodeStats(samples.map { $0.layerPTS[0] })
+        guard (screenStats["distinctSamplePTS"] as? Int ?? 0) > 1, (layerStats["distinctSamplePTS"] as? Int ?? 0) > 1 else {
+            throw Fail(description: "Both decoders must deliver distinct samples; redraws alone do not prove playback")
+        }
+        print("dual-screen preview: drawable=\(Int(first.size.width))x\(Int(first.size.height)) presented=\(samples.count) fps=\(presentedFPS) presentationInterval=\(presentedInterval)s")
+        print("dual-screen playback: output=\(playbackStart)…\(playbackEnd)s wall=\(playbackWall)s; sampled interval=\(first.outputTime)…\(last.outputTime)s")
+        print("dual-screen main decoded/display PTS: \(screenStats)")
+        print("dual-screen layer decoded/display PTS: \(layerStats)")
+        print("dual-screen: sampled PTS skips/repeats describe displayed samples, not private decoder-internal counters")
+
+        let settings = ExportSettings(shortEdge: 2160, fps: 60, quality: .high, codec: .hevc)
+        let output = root.appendingPathComponent("dual-screen-2160p60.mp4")
+        let exporter = Exporter(model: model, settings: settings, destination: output)
+        var exportedFrames = 0
+        exporter.progress = { _, frame, _ in
+            exportedFrames = frame
+            if frame % 600 == 0 { print("dual-screen export: \(frame)/3600 frames") }
+        }
+        let exportStart = Date()
+        try await exporter.run()
+        let exportWall = Date().timeIntervalSince(exportStart)
+        let asset = AVURLAsset(url: output)
+        let duration = try await asset.load(.duration).seconds
+        guard let track = try await asset.loadTracks(withMediaType: .video).first else { throw Fail(description: "Export has no video") }
+        let size = try await track.load(.naturalSize)
+        let codec = try await track.load(.formatDescriptions).first.map { CMFormatDescriptionGetMediaSubType($0) }
+        let reader = try AVAssetReader(asset: asset), trackOutput = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
+        reader.add(trackOutput)
+        guard reader.startReading() else { throw Fail(description: "Cannot inspect exported samples") }
+        var countedFrames = 0
+        while trackOutput.copyNextSampleBuffer() != nil { countedFrames += 1 }
+        guard reader.status == .completed, exportedFrames == 3600, countedFrames == 3600, abs(duration - 60) < 1.0 / 60,
+              size.width == 3840, size.height == 2160, codec == kCMVideoCodecType_HEVC else {
+            throw Fail(description: "Export validation failed: reported=\(exportedFrames) counted=\(countedFrames) duration=\(duration) size=\(size) codec=\(String(describing: codec))")
+        }
+        let report: [String: Any] = ["hardware": hardwareName, "cpu": cpuName, "nativeArchitecture": architecture,
+            "fixtureSynthesisSeconds": synthesisSeconds, "sourceWidth": 3840, "sourceHeight": 2160, "sourceFPS": 60,
+            "previewDrawableWidth": first.size.width, "previewDrawableHeight": first.size.height,
+            "previewPresentedFrames": samples.count, "previewPresentedFPS": presentedFPS, "previewPresentationSeconds": presentedInterval,
+            "playbackWallSeconds": playbackWall, "playbackStart": playbackStart, "playbackEnd": playbackEnd,
+            "mainDecoder": screenStats, "layerDecoder": layerStats, "exportWallSeconds": exportWall,
+            "exportFrameCount": countedFrames, "exportDuration": duration,
+            "limitation": "This report covers the named native hardware; the other hardware tier needs a separate run. PTS statistics count sampled displayed frames, not internal decoder events."]
+        try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: root.appendingPathComponent("report.json"), options: .atomic)
+        print("dual-screen export: 3840x2160 HEVC high60fps frames=\(countedFrames) duration=\(duration)s wall=\(exportWall)s speed=\(Double(countedFrames) / exportWall)fps")
+        print("dual-screen report: \(root.appendingPathComponent("report.json").path); other hardware needs a separate native run")
+    }
 
     // MARK: - export-perf (AC-EXP-1, AC-EXP-2)
 
@@ -145,8 +293,11 @@ enum PerfSelfTest {
             }
             CVPixelBufferUnlockBaseAddress(pixelBuffer, [])
 
-            adaptor.append(pixelBuffer, withPresentationTime: CMTime(value: Int64(frame), timescale: fps))
+            guard adaptor.append(pixelBuffer, withPresentationTime: CMTime(value: Int64(frame), timescale: fps)) else {
+                throw Fail(description: "fixture append failed at frame \(frame): \(writer.error?.localizedDescription ?? "?")")
+            }
             frame += 1
+            if frame % 600 == 0 { print("performance fixture: \(frame)/\(frameCount) frames") }
         }
         input.markAsFinished()
         await writer.finishWriting()

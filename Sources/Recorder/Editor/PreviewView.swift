@@ -28,6 +28,11 @@ final class PreviewView: MTKView {
     private var lastScreenPixelBuffer: CVPixelBuffer?
     private var statusObservation: NSKeyValueObservation?
     private var displayLink: CADisplayLink?
+    typealias PresentedSample = (outputTime: Double, screenPTS: Double?, layerPTS: [Int: Double], size: CGSize, hostTime: Double)
+    /// Opt-in benchmark seam: decoded sample timestamps attached to an actually presented drawable.
+    var onPresentedFrameForTest: ((PresentedSample) -> Void)?
+    private var lastScreenPTS: Double?
+    private var lastLayerPTS: [Int: Double] = [:]
 
     // T-502: camera.mov decode. `AVPlayerItemVideoOutput` has no per-track selection, so the camera
     // gets its own player over an `isolateTrack`-built single-track composition, kept in lockstep
@@ -809,6 +814,13 @@ final class PreviewView: MTKView {
 
         compositor.render(state, to: drawable.texture, commandBuffer: commandBuffer, viewport: viewportRect)
         capture?(drawable.texture, commandBuffer)
+        if let callback = onPresentedFrameForTest {
+            let screenPTS = lastScreenPTS, layerPTS = lastLayerPTS, size = drawableSize
+            drawable.addPresentedHandler { presented in
+                let hostTime = presented.presentedTime
+                Task { @MainActor in callback((displayTime, screenPTS, layerPTS, size, hostTime)) }
+            }
+        }
         commandBuffer.present(drawable)
         commandBuffer.commit()
         return true
@@ -892,8 +904,10 @@ final class PreviewView: MTKView {
     private func currentScreenPixelBuffer() -> CVPixelBuffer? {
         guard let output = screenOutput else { return lastScreenPixelBuffer }
         let time = output.itemTime(forHostTime: CACurrentMediaTime())
-        if let buffer = output.copyPixelBuffer(forItemTime: time, itemTimeForDisplay: nil) {
+        var pts = CMTime.invalid
+        if let buffer = output.copyPixelBuffer(forItemTime: time, itemTimeForDisplay: &pts) {
             lastScreenPixelBuffer = buffer
+            if onPresentedFrameForTest != nil { lastScreenPTS = pts.isNumeric ? pts.seconds : nil }
         }
         return lastScreenPixelBuffer
     }
@@ -912,8 +926,12 @@ final class PreviewView: MTKView {
         for layer in model.project.layerStates(atOutput: time) where layer.block.kind == .video {
             let lane = layer.block.track
             guard var decoder = layerPlayers[lane] else { continue }
-            if decoder.block != layer.block.id { decoder.last = nil; decoder.block = layer.block.id }
-            if let buffer = decoder.output.copyPixelBuffer(forItemTime: CMTime(seconds: time, preferredTimescale: 600), itemTimeForDisplay: nil) { decoder.last = buffer }
+            if decoder.block != layer.block.id { decoder.last = nil; decoder.block = layer.block.id; lastLayerPTS[lane] = nil }
+            var pts = CMTime.invalid
+            if let buffer = decoder.output.copyPixelBuffer(forItemTime: CMTime(seconds: time, preferredTimescale: 600), itemTimeForDisplay: &pts) {
+                decoder.last = buffer
+                if onPresentedFrameForTest != nil { lastLayerPTS[lane] = pts.isNumeric ? pts.seconds : nil }
+            }
             if let buffer = decoder.last { textures[lane] = textureCache.texture(from: buffer) }
             layerPlayers[lane] = decoder
         }

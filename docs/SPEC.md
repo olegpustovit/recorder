@@ -926,6 +926,13 @@ Open questions to verify during M1 (do not guess — test and record the answer 
    helpers. `CaptureTarget.filter` excludes every Finder window at that level when "Hide desktop icons" is on,
    which matches (a). Still to eyeball in a real recording: (b) icons actually vanish, (c) the wallpaper stays.
 
+T-711 dual-screen performance measurement (2026-11-15): `--selftest timeline-render-perf --dual-screen` now
+measures real presented frames and distinct decoded-display timestamps for two simultaneous 4K60 streams, then
+times a verified 60-second 2160p60 HEVC export. Synthetic moving content is lighter than some real recordings.
+Local hardware is native Apple M1 / MacBookAir10,1; the console is locked, so visibility preflight correctly refuses
+live playback measurement. Preview FPS and dual-screen export time remain unmeasured on both Apple Silicon and
+Intel. No Intel half-resolution fallback decision or performance acceptance is inferred from this implementation.
+
 
 ### Recording/editor polish (2026-09-19)
 

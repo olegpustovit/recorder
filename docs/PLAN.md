@@ -457,11 +457,21 @@ older builds ignore those points and cannot preserve their phase. Recording laye
 
 ### Phase 2 — Recording clips on Video tracks (format v4 only when used)
 
-- [ ] **T-711 Measure two decodes of `screen.mov`**
+- [~] **T-711 Measure two decodes of `screen.mov`**
   - Fixture: 4K HEVC 60 s recording with the middle clip duplicated as a full-canvas layer. Measure preview fps and
     export time on Apple Silicon and Intel (`PerfSelfTest` pattern). Record numbers in SPEC §9. If Intel drops frames,
     the fallback is decoding the layer copy at half resolution (preview only; export stays full).
   - Verify: `--selftest timeline-render-perf --dual-screen`.
+  - Implemented 2026-11-15: a separate live benchmark branch with native AppKit event processing, visible-window
+    preflight, real Metal presentation timestamps and distinct main/layer decoded-display timestamps. Generates
+    3600 moving 4K HEVC frames, references identical screen bytes through `media/` until recording layers exist,
+    and validates a real 2160p60 HEVC export's codec/dimensions/duration/3600 compressed samples. Original timeline
+    drawing diagnostic remains available without the flag. Preview uses ordinary framebuffer-only drawables.
+  - Measurement pending: this Mac is native arm64 Apple M1 (MacBookAir10,1), but the console session is locked
+    (`CGSSessionScreenIsLocked=1`). Both direct and LaunchServices attempts found the benchmark window genuinely
+    occluded; the command correctly refuses to claim playback results. Two full 3600-frame fixtures were generated
+    before moving visibility preflight ahead of synthesis. No preview FPS or dual-screen export time measured;
+    Intel hardware also unavailable. No wake/unlock action or review prompt requested; continue software tasks.
 - [ ] **T-712 Core: recording layers, `liftClips`, `insertLayers`, versioning**
   - `LayerBlock.Kind.recording` (file `"screen.mov"`, `mediaStart`, new `mediaRate: Double?` for sped-up clips,
     `rect` = full canvas, `backdrop .none`, fades nil) and `LayerBlock.scene: SceneEffects?` where
@@ -1392,3 +1402,5 @@ T-705 follow-up · 2026-11-15 · User reported image should fill canvas; changed
 T-705b · 2026-11-15 · Fixed native window-control alignment after screen-constrained resize by invalidating the document bar layout after every root positioning. Geometry proved native850→834pt clamp moved bar but reset controls16pt from top; fix restores24pt. Native debug build, scratch assembled settled1100×700/1300×850 captures, menu-actions and timeline-tracks pass; both PNGs inspected. No test assertions weakened; no Core logic changed.
 
 T-705c · 2026-11-15 · Corrected reversed red/green bands in orientation fixture under its top-left CTM; production image rendering unchanged, pixel assertion retained. Native build, make-layers-fixture (compositor+livevideo), media-import pass; layers parity maxDelta0 over32 times. Added and inspected rendered orientation proof; Phase1 now9/9.
+
+T-711 · 2026-11-15 · Added opt-in native dual4K60 benchmark with actual presented timestamps and sampled main/layer PTS, standard framebuffer-only playback, full2160p60HEVC export validation/reporting and native event-loop dispatch. Native build and ordinary menu-actions/tracks pass. Two3600-frame moving fixtures generated; actual playback attempts correctly refused occluded windows. Final LaunchServices preflight plus read-onlyCGSession confirmed lockedconsole; no wake/unlock attempted. Task remains[~]: noASpreviewFPS/dualexporttime orIntelresult claimed. User requested no further prompts, so continuing software tasks while hardware/visible-session evidence remains outstanding.
