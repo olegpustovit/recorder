@@ -2324,6 +2324,11 @@ final class TimelineView: NSView {
         let cmd = event.modifierFlags.contains(.command)
         let shift = event.modifierFlags.contains(.shift)
         let chars = event.charactersIgnoringModifiers
+        let key = chars?.lowercased() ?? ""
+        let editsProject = event.keyCode == 51 || event.keyCode == 117
+            || (cmd && ["x", "v", "d", "j", "z", "l"].contains(key))
+            || (!cmd && (key == "c" || (!shift && ["z", "t"].contains(key))))
+        if case .moveClip = dragKind, editsProject { clearClipDrag() }
         if cmd, chars?.lowercased() == "a" { // ⌘A: every block in the selected block's lane, else every clip
             selectLane(model?.selection.first.flatMap { lane(ofBlock: $0) } ?? .clip)
             return
@@ -2767,9 +2772,13 @@ final class TimelineView: NSView {
             return
         }
         if case .moveClip = dragKind {
+            guard let model, let source = clipDragSource, model.project == source else {
+                clearClipDrag()
+                return
+            }
             let point = convert(event.locationInWindow, from: nil)
             if clipDragActive { updateClipDrag(point: point, modifiers: event.modifierFlags) }
-            if clipDragActive, let trial = dragProject, let model {
+            if clipDragActive, let trial = dragProject {
                 if trial != model.project { model.edit("Move Clips") { $0 = trial } }
                 model.selectedClips = clipDragLanding
             } else if clipDragOptionBlade, event.modifierFlags.contains(.option) {
@@ -2840,7 +2849,7 @@ final class TimelineView: NSView {
     private func cancelActiveDrag() {
         switch dragKind {
         case .moveClip:
-            model?.selectedClips = dragSelection
+            if model?.project == clipDragSource { model?.selectedClips = dragSelection }
             clearClipDrag()
             return
         case .trimClip(let index, _, _, _, _, _): model?.selectedClip = index

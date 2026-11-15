@@ -767,6 +767,8 @@ time-based placement. Floating clips follow the pointer, with a white outline an
 stays unchanged until drop; Escape discards the trial, unchanged drops add no undo, and each successful drop is one
 undo step. Holding the pointer within 40 pt of an edge scrolls until moved away or released. `⌘D` duplicates each
 selected Video clip immediately after itself, with independent effects; layers duplicate at their end on a free track.
+Editing shortcuts cancel a pending Video drag. A drop or Escape discards its preview if other project edits occurred,
+preserving the newer edit and current selection.
 
 Recorded click, typing and silence times map through each kept occurrence of footage, including reordered and copied
 clips at different rates. Regenerating zooms preserves continuous effects across harmless splits; copies own separate

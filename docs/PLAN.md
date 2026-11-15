@@ -286,7 +286,7 @@ older builds ignore those points and cannot preserve their phase. Recording laye
 
 | Scope | Tasks | Done |
 |---|---|---|
-| Phase 1 | T-701, T-701b, T-702, T-702b, T-703…T-705 | 5/7 |
+| Phase 1 | T-701, T-701b, T-702, T-702b, T-703…T-705 | 6/7 |
 | Phase 2 | T-711…T-714 | 0/4 |
 | Phase 3 | T-721…T-723 | 0/3 |
 
@@ -396,11 +396,18 @@ older builds ignore those points and cannot preserve their phase. Recording laye
     for horizontal dragging, ⌥ copy toggling and Escape; this closes T-703's HUMAN check, not later vertical lifts.
   - Long debug-timeline diagnostic: 1800 s / 200 zooms / 60 edge updates mean 17.13 ms, max 19.74 ms,
     zoom commit 8560.27 ms. This excludes preview decode/presentation and is not AC-TL-3 or a hardware gate pass.
-- [ ] **T-704 Timeline: lane selection + group moves**
+- [x] **T-704 Timeline: lane selection + group moves**
   - Header click / ⌘A lane select already ships (`selectLane`). Make a drag that starts on any selected Video clip move
     the whole selection: Magnet → `reorderClips(selection, …)` (lands as one block in timeline order); Free →
     `moveClips(selection, byOutput:)` (already group-aware). Blocks in other lanes keep today's same-lane rule.
   - Verify: extend `--selftest timeline-selection` (header click selects N, drag moves N, one undo).
+  - Verified 2026-11-15: extended native check clicks the actual Video header and uses ⌘A over a fixture with
+    leading/internal/trailing gaps, selects both real clips, grabs the second selected clip and checks both modes.
+    Magnet lands the ordered group together; Free preserves the internal spacing; each drop has one exact undo.
+    Block-lane ⌘A remains separate. A keyboard edit cancels the older trial, and mouse-up rejects a trial whose
+    source project has changed, preserving intervening menu/external edits and current selection on drop or Escape.
+    `make test` 154/154 plus `timeline-selection`, `timeline-reorder`, `timeline-ops` pass with T-701's Xcode native
+    flags; reassembled debug app also passes `timeline-selection`. No new visual/HUMAN gate or hardware claim.
 - [ ] **T-705 Timeline: lane order, drop row, Magnet/Free switch**
   - `lanes`: replace the drag-only spare layer lane (`if mediaDragActive { layerTracks.insert(max + 1) }`) with a
     permanent 26 pt `+ New track` row at the top; order layer lanes above Video (decision 6). Fixtures use
@@ -1336,3 +1343,5 @@ T-702 · 2026-11-15 · Added group reorderClips with original-array carets, stab
 T-702b · 2026-11-15 · Added optional validated media-time audio-envelope points, captured before slicing/clock changes and evaluated through the shared volume-ramp path; explicit fades reset points, gain/mute retain them, compatible joins preserve them. Preview audio-only refresh and timeline ramp outlines include stored envelopes. Eleven targeted reorder/envelope tests pass; final full make test 154/154 and native audio-mix-abutting, clip-fades, menu-actions pass. Regressions compare gains at matching media samples through uniform/mixed/fractional rates, reordered/roundtripped cuts inside fades, copy/trim/rate edits, mixed-clock audio move, split/join and JSON; malformed/nonfinite metadata rejected, floating segment boundaries coalesced. Xcode native/platform Testing flags as T-701. Version-3 additive metadata documented; old builds ignore phase preservation on rewrite. No hardware/listening/performance acceptance or release claimed; unrelated edits preserved.
 
 T-703 · 2026-11-15 · Integrated trial-only magnetic reordering and Free placement with pointer-following ghosts, 45% landing slots, identity-aware 0.18s neighbor motion, continuous40pt edge scroll, release-time Option copying and one-edit commit; no-op/Escape leave no undo. Option-click still blades after release; sticky blade stays immediate. Added Video ⌘D per selected clip and retained layer collision-aware duplication. New trial tracks/headers/layer mapping render correctly; layout height growth preserves drag and stale source-selection outlines are suppressed. All154 Core tests and all9 current timeline-* selftests pass (new reorder also passes from assembled app); gallery and drag/collision/timeline renders inspected. User confirmed horizontal feel is right in local review fixture. Recorded debug long-timeline timing above without presentation/hardware claim. Existing Video Track/header-selection baseline is retained in this commit; unrelated config changes remain untouched. No vertical lift/recording-layer/performance acceptance or release claimed.
+
+T-704 · 2026-11-15 · Verified existing header/Command-A Video group selection with real synthetic header clicks, gaps and grabbing the second selected clip in both Magnet/Free; order, retained spacing, complete selection and one exact undo are asserted. Added stale-trial protection: editing shortcuts cancel clip drag, and drop never overwrites an intervening external/menu edit or restores stale selection. Extended timeline-selection also checks keyboard/drop/Escape interruptions and block-lane Command-A isolation. Full make test154/154 and native timeline-selection/reorder/ops pass; make -o build app CONFIG=debug reuses verified native build and assembled app selection case passes. Xcode native/platform Testing overrides as T-701. No hardware/performance/release acceptance claimed; unrelated config edits preserved.

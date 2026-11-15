@@ -3468,6 +3468,7 @@ enum SelfTest {
         },
         "timeline-reorder": { @MainActor args in try await runTimelineReorderSelfTest(args) },
         "timeline-selection": { @MainActor args in
+            try runLaneGroupSelectionSelfTest()
             struct Fail: Error { let message: String }
             let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("recorder-selection-\(UUID().uuidString)")
             try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
@@ -4300,6 +4301,81 @@ private func makeTimelineOpsFixture(hasCamera: Bool = false) throws -> (model: E
 /// Drives a `TimelineView` + `EditorModel` over synthetic projects, headless: fires real
 /// `NSEvent`s at the view exactly as AppKit would, asserting the invariants named in CLAUDE.md /
 /// the plan's Verify step.
+@MainActor
+private func runLaneGroupSelectionSelfTest() throws {
+    struct Fail: Error, CustomStringConvertible { let description: String }
+    func check(_ condition: Bool, _ message: String) throws { if !condition { throw Fail(description: message) } }
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent("lane-group-" + UUID().uuidString)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: folder) }
+    for magnetic in [false, true] {
+        var project = Project(source: Source(duration: 10), clips: (0..<5).map { i in
+            var clip = Clip(sourceStart: Double(i) * 2, sourceEnd: Double(i + 1) * 2)
+            clip.mediaStart = clip.sourceStart; clip.clockSpeed = 1
+            if i % 2 == 0 { clip.isGap = true }
+            return clip
+        }, zooms: [Zoom(start: 2.5, end: 3.5), Zoom(start: 6.5, end: 7.5)])
+        project.rippleDelete = magnetic
+        let model = EditorModel(packageURL: folder, project: project, events: EventLog())
+        defer { model.saveNow() }
+        let view = TimelineView(frame: CGRect(x: 0, y: 0, width: 900, height: 260))
+        view.model = model; view.geometry.pxPerSecond = 40
+        @MainActor func point(_ t: Double) -> CGPoint {
+            view.convert(CGPoint(x: view.gutterWidth + view.geometry.x(forOutput: t), y: view.laneMidY(.clip)), to: nil)
+        }
+        let header = view.convert(CGPoint(x: view.gutterWidth / 2, y: view.laneMidY(.clip)), to: nil)
+        model.selection = [UUID(uuidString: project.zooms[0].id)!]
+        view.mouseDown(with: synthMouse(.leftMouseDown, header))
+        view.mouseUp(with: synthMouse(.leftMouseUp, header))
+        try check(model.selectedClips == [1, 3] && model.selection.isEmpty && model.undoStepCount == 0, "Video header selects both clips, excludes gaps and clears block selection")
+        model.selectedClips = []
+        view.keyDown(with: synthKey("a", keyCode: 0, modifiers: .command))
+        try check(model.selectedClips == [1, 3] && model.selection.isEmpty, "Command-A selects Video lane")
+        let destination = magnetic ? 0.25 : 8.0
+        @MainActor func startDrag() {
+            view.mouseDown(with: synthMouse(.leftMouseDown, point(7)))
+            view.mouseDragged(with: synthMouse(.leftMouseDragged, point(destination), modifiers: .command))
+        }
+        startDrag()
+        guard let trial = view.debugClipDragProject else { throw Fail(description: "header group trial missing") }
+        try check(model.project == project && model.selectedClips == [1, 3], "grabbing second selected clip retains whole header selection")
+        let clips = trial.clips.filter { !$0.isEmpty }
+        try check(clips.map(\.sourceStart) == (magnetic ? [0, 2] : [3, 7]) && clips.map(\.mediaIn) == [2, 6], "header group placement, order and Free spacing")
+        view.mouseUp(with: synthMouse(.leftMouseUp, point(destination), modifiers: .command))
+        try check(model.project == trial && model.undoStepCount == 1 && model.selectedClips.count == 2 && model.project.checkInvariants() == nil, "group drop has one valid undo")
+        model.undo()
+        try check(model.project == project, "header group undo is exact")
+        model.selectedClips = [1, 3]
+        startDrag()
+        view.keyDown(with: synthKey("d", keyCode: 2, modifiers: .command))
+        let duplicated = model.project
+        view.mouseUp(with: synthMouse(.leftMouseUp, point(destination)))
+        try check(model.project == duplicated && duplicated.clips.filter({ !$0.isEmpty }).count == 4 && model.undoStepCount == 1, "keyboard edit survives old group trial")
+        model.undo()
+        model.selectedClips = [1, 3]
+        startDrag()
+        model.edit("External edit") { $0.title = "Changed during drag" }
+        model.selectedClips = []
+        let external = model.project
+        view.mouseUp(with: synthMouse(.leftMouseUp, point(destination)))
+        try check(model.project == external && model.selectedClips.isEmpty && model.undoStepCount == 1, "external edit and selection survive old group trial")
+        model.undo()
+        try check(model.project == project, "external edit undo")
+        model.selectedClips = [1, 3]
+        startDrag()
+        model.edit("External edit before Escape") { $0.title = "Changed before Escape" }
+        model.selectedClips = []
+        let beforeEscape = model.project
+        view.keyDown(with: synthKey("\u{1b}", keyCode: 53))
+        try check(model.project == beforeEscape && model.selectedClips.isEmpty && model.undoStepCount == 1,
+                  "Escape preserves external edit and selection")
+        model.undo()
+        model.selection = Set(project.zooms.compactMap { UUID(uuidString: $0.id) })
+        view.keyDown(with: synthKey("a", keyCode: 0, modifiers: .command))
+        try check(model.selectedClips.isEmpty && model.selection.count == 2, "Command-A keeps block-lane selection separate from Video")
+    }
+}
+
 @MainActor
 private func runTimelineReorderSelfTest(_ args: [String]) async throws {
     struct Fail: Error, CustomStringConvertible { let description: String }
