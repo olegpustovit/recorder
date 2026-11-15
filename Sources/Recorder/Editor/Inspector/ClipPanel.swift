@@ -11,29 +11,38 @@ struct ClipPanel: View {
     private static let presets: [Double] = [0.5, 1, 1.5, 2, 4, 8]
 
     private var clip: Clip? { model.project.clips[safeIndex: clipIndex] }
+    /// A joined clip (⌘J) is edited as one: speed is the group's multiplier, fades sit on its outer pieces.
+    private var pieces: ClosedRange<Int> { model.project.clipGroup(containing: clipIndex) }
+    private var isJoined: Bool { pieces.count > 1 }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            InspectorSelectionHeader(title: "Clip") { deselect() }
+            InspectorSelectionHeader(title: isJoined ? "Joined clip · \(pieces.count) pieces" : "Clip") { deselect() }
 
             if let clip {
                 Text("Playback speed").font(Font(Theme.headingFont(22)))
-                presetPicker(current: clip.speed)
+                presetPicker(current: model.project.displayedSpeed(clipIndex))
 
-                LabeledSlider(title: "Custom", value: speedBinding, range: 0.25...16, defaultValue: 1,
+                LabeledSlider(title: "Custom", value: speedBinding,
+                              range: isJoined ? model.project.groupSpeedRange(clipIndex) : 0.25...16, defaultValue: 1,
                               format: { String(format: "%.2f×", $0) }, onEditingChanged: gesture("Speed"))
+                if isJoined {
+                    Text("Multiplies each piece's own speed, keeping their differences.")
+                        .font(Font(Theme.captionFont)).foregroundStyle(Theme.textSecondaryColor)
+                }
 
                 Divider().padding(.vertical, 4)
                 Toggle("Hide cursor", isOn: cursorHiddenBinding)
                     .foregroundStyle(Theme.textPrimaryColor)
-                Text("Applies to this video clip only.")
+                Text(isJoined ? "Applies to every piece of this joined clip." : "Applies to this video clip only.")
                     .font(Font(Theme.captionFont)).foregroundStyle(Theme.textSecondaryColor)
 
                 Divider().padding(.vertical, 4)
                 Text("Video fades").font(Font(Theme.headingFont(22)))
                 ForEach([true, false], id: \.self) { incoming in
                     LabeledSlider(title: incoming ? "Fade in" : "Fade out",
-                                  value: fadeBinding(incoming: incoming), range: 0...max(0.01, clip.outputDuration),
+                                  value: fadeBinding(incoming: incoming),
+                                  range: 0...max(0.01, model.project.clips[incoming ? pieces.lowerBound : pieces.upperBound].outputDuration),
                                   defaultValue: 0, format: { $0 == 0 ? "Off" : String(format: "%.2f s", $0) },
                                   onEditingChanged: gesture(incoming ? "Fade in" : "Fade out"))
                 }
@@ -45,7 +54,7 @@ struct ClipPanel: View {
                         .font(Font(Theme.bodyFont))
                         .foregroundStyle(Theme.textSecondaryColor)
                     Spacer()
-                    Text("\(timecode(clip.sourceEnd - clip.sourceStart)) → \(timecode(clip.outputDuration))")
+                    Text("\(timecode(model.project.clips[pieces].reduce(0) { $0 + $1.sourceEnd - $1.sourceStart })) → \(timecode(model.project.clips[pieces].reduce(0) { $0 + $1.outputDuration }))")
                         .font(Font(Theme.timecodeFont(11)))
                         .foregroundStyle(Theme.textPrimaryColor)
                 }
@@ -61,7 +70,7 @@ struct ClipPanel: View {
         HStack(spacing: 4) {
             ForEach(Self.presets, id: \.self) { preset in
                 Button(formatSpeed(preset) + "×") {
-                    model.edit("Speed") { $0.setSpeed(clipIndex, preset) }
+                    model.edit("Speed") { $0.setDisplayedSpeed(clipIndex, preset) }
                 }
                 .buttonStyle(TechButtonStyle(kind: current == preset ? .primary : .secondary, compact: true))
             }
@@ -71,26 +80,28 @@ struct ClipPanel: View {
     // MARK: - Bindings
 
     var cursorHiddenBinding: Binding<Bool> {
-        Binding(get: { clip?.hideCursor == true },
+        Binding(get: { clip != nil && model.project.clips[pieces].allSatisfy { $0.isEmpty || $0.hideCursor == true } },
                 set: { model.setClipCursorHidden($0, at: clipIndex) })
     }
 
     func fadeBinding(incoming: Bool) -> Binding<Double> {
-        Binding(get: { (incoming ? clip?.fadeIn : clip?.fadeOut) ?? 0 }, set: { value in
+        // A joined clip fades in on its first piece and out on its last.
+        let target = incoming ? pieces.lowerBound : pieces.upperBound
+        return Binding(get: { (incoming ? model.project.clips[safeIndex: target]?.fadeIn : model.project.clips[safeIndex: target]?.fadeOut) ?? 0 }, set: { value in
             model.update { project in
-                guard project.clips.indices.contains(clipIndex) else { return }
-                let duration = project.clips[clipIndex].outputDuration
+                guard project.clips.indices.contains(target) else { return }
+                let duration = project.clips[target].outputDuration
                 let seconds = value.isFinite ? min(max(0, value), duration) : 0
-                if incoming { project.clips[clipIndex].fadeIn = seconds > 0 ? seconds : nil }
-                else { project.clips[clipIndex].fadeOut = seconds > 0 ? seconds : nil }
+                if incoming { project.clips[target].fadeIn = seconds > 0 ? seconds : nil }
+                else { project.clips[target].fadeOut = seconds > 0 ? seconds : nil }
             }
         })
     }
 
-    private var speedBinding: Binding<Double> {
+    var speedBinding: Binding<Double> {
         Binding(
-            get: { clip?.speed ?? 1 },
-            set: { newValue in model.update { $0.setSpeed(clipIndex, newValue) } })
+            get: { model.project.displayedSpeed(clipIndex) },
+            set: { newValue in model.update { $0.setDisplayedSpeed(clipIndex, newValue) } })
     }
 
     private func gesture(_ name: String) -> (Bool) -> Void {
@@ -98,12 +109,13 @@ struct ClipPanel: View {
     }
 
     private func removeClip() {
-        model.edit("Remove clip") { $0.deleteClips([clipIndex]) }
+        let removed = Set(pieces)
+        model.edit("Remove clip") { $0.deleteClips(removed) }
         deselect()
     }
 
     private func deselect() {
-        model.selectedClip = nil
+        model.selectedClips = []
     }
 
     private func formatSpeed(_ speed: Double) -> String {
@@ -213,5 +225,22 @@ extension ClipPanel {
         guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw Fail() }
         view.cacheDisplay(in: view.bounds, to: bitmap)
         try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/recorder-clip-fades.png"))
+
+        // A joined clip edits as one: speed multiplies every piece, cursor covers all, fades sit on the outer pieces.
+        var joined = Project(source: Source(duration: 30), clips: [Clip(sourceStart: 0, sourceEnd: 30)])
+        _ = joined.split(atOutput: 10); _ = joined.split(atOutput: 20); joined.setSpeed(1, 2)
+        _ = joined.joinClips([0, 2])
+        let group = EditorModel(packageURL: url, project: joined, events: EventLog())
+        group.selectedClips = [1]
+        guard group.selectedClips == [0, 1, 2] else { throw Fail() }
+        let groupPanel = ClipPanel(model: group, clipIndex: 0)
+        group.beginGesture(); groupPanel.speedBinding.wrappedValue = 2; group.commitGesture("Speed")
+        guard group.project.clips.map(\.speed) == [2, 4, 2], groupPanel.speedBinding.wrappedValue == 2, group.undoStepCount == 1 else { throw Fail() }
+        groupPanel.cursorHiddenBinding.wrappedValue = true
+        guard group.project.clips.allSatisfy({ $0.hideCursor == true }), groupPanel.cursorHiddenBinding.wrappedValue else { throw Fail() }
+        groupPanel.fadeBinding(incoming: false).wrappedValue = 0.5
+        guard group.project.clips[2].fadeOut == 0.5, group.project.clips[0].fadeOut == nil else { throw Fail() }
+        group.undo(); group.undo()
+        guard group.project.clips.map(\.speed) == [1, 2, 1] else { throw Fail() }
     }
 }

@@ -302,10 +302,12 @@ import RecorderCore
         scheduleAutosave()
     }
 
+    /// A joined clip (⌘J) hides or shows the cursor on every piece.
     func setClipCursorHidden(_ hidden: Bool, at index: Int) {
-        guard project.clips.indices.contains(index), !project.clips[index].isEmpty,
-              (project.clips[index].hideCursor == true) != hidden else { return }
-        edit(hidden ? "Hide clip cursor" : "Show clip cursor") { $0.clips[index].hideCursor = hidden ? true : nil }
+        guard project.clips.indices.contains(index) else { return }
+        let pieces = project.clipGroup(containing: index).filter { !project.clips[$0].isEmpty }
+        guard pieces.contains(where: { (project.clips[$0].hideCursor == true) != hidden }) else { return }
+        edit(hidden ? "Hide clip cursor" : "Show clip cursor") { for i in pieces { $0.clips[i].hideCursor = hidden ? true : nil } }
     }
 
     func undo() {

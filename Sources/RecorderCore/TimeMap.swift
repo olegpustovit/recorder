@@ -23,6 +23,9 @@ public struct Clip: Codable, Equatable, Sendable {
     public var color: BlockColor? = nil
     /// Join Clips (⌘J): neighbouring clips sharing this id show and edit as one clip; each keeps its own speed and cuts.
     public var group: String? = nil
+    /// The joined clip's speed (Join Clips): a multiplier already applied on top of each member's own speed, kept so
+    /// the inspector shows it. Same on every member; nil = 1×.
+    public var groupSpeed: Double? = nil
     public var timeScale: Double { clockSpeed ?? speed }
     public var mediaDuration: Double { (sourceEnd - sourceStart) * (speed / timeScale) }
     public var mediaEnd: Double { mediaIn + mediaDuration }

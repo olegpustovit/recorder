@@ -1094,7 +1094,7 @@ final class TimelineView: NSView {
             let pieces = run.map(animatedRect)
             let rect = pieces.dropFirst().reduce(pieces[0]) { $0.union($1) }
             guard rect.width > 0.5, run.count > 1 || !clip.isEmpty else { continue }
-            let label = run.count > 1 ? "Clip \(i + 1)  ·  \(run.count) joined" : "Clip \(i + 1)  ·  \(formatSpeed(clip.speed))×"
+            let label = "Clip \(i + 1)  ·  " + (run.count > 1 ? "\(run.count) joined  ·  " : "") + "\(formatSpeed(project.displayedSpeed(i)))×"
             let landing = clipDragActive && clipDragLanding.contains(i)
             NSGraphicsContext.saveGraphicsState()
             if landing { NSGraphicsContext.current?.cgContext.setAlpha(0.45) }
@@ -2089,7 +2089,7 @@ final class TimelineView: NSView {
 
     private func speedSubmenu(index: Int) -> NSMenu {
         let menu = NSMenu()
-        let current = model?.project.clips[index].speed
+        let current = model?.project.displayedSpeed(index)
         for preset in [0.5, 1, 1.5, 2, 4, 8] {
             let item = actionItem("\(formatSpeed(preset))\u{00D7}", action: #selector(menuSetSpeed(_:)),
                                    represented: SpeedTarget(index: index, speed: preset))
@@ -2154,7 +2154,7 @@ final class TimelineView: NSView {
 
     @objc private func menuSetSpeed(_ sender: NSMenuItem) {
         guard let target = sender.representedObject as? SpeedTarget else { return }
-        model?.edit("Speed") { $0.setSpeed(target.index, target.speed) }
+        model?.edit("Speed") { $0.setDisplayedSpeed(target.index, target.speed) }
     }
 
     /// `Speed ▸ Custom…`: an `NSAlert` with a text field (0.25...16), mirroring the "Custom Size"
@@ -2162,7 +2162,7 @@ final class TimelineView: NSView {
     @objc private func menuCustomSpeed(_ sender: NSMenuItem) {
         guard let target = sender.representedObject as? SpeedTarget, let model,
               model.project.clips.indices.contains(target.index) else { return }
-        let field = NSTextField(string: String(format: "%.2f", model.project.clips[target.index].speed))
+        let field = NSTextField(string: String(format: "%.2f", model.project.displayedSpeed(target.index)))
         field.frame = NSRect(x: 0, y: 0, width: 80, height: 24)
         let alert = NSAlert()
         alert.messageText = "Custom Speed"
@@ -2171,7 +2171,7 @@ final class TimelineView: NSView {
         alert.addButton(withTitle: "Set")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn, let value = Double(field.stringValue) else { return }
-        model.edit("Speed") { $0.setSpeed(target.index, value) }
+        model.edit("Speed") { $0.setDisplayedSpeed(target.index, value) }
     }
 
     /// SPEC §7.2 "Context menus": `Empty clip-track area: Restore All Cuts`.

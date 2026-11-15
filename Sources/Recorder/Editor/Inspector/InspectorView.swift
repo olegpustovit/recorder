@@ -29,6 +29,9 @@ struct InspectorView: View {
 
     private var selection: Selection? {
         guard !model.inspectorShowsProject else { return nil }
+        // A joined clip (⌘J) is several pieces but one clip: it gets the clip panel.
+        if model.selection.isEmpty, let first = model.selectedClips.min(),
+           Set(model.project.clipGroup(containing: first)) == model.selectedClips { return .clip(first) }
         if selectionCount > 1 { return .multiple(selectionCount) }
         if let i = model.selectedClip, model.project.clips.indices.contains(i) { return .clip(i) }
         if model.selection.count == 1, let id = model.selection.first {

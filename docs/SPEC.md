@@ -482,6 +482,8 @@ Rules:
 - **Clip `group`**: optional string. Neighbouring clips with the same `group` show, select, move and trim as one clip
   (Join Clips ⌘J); each keeps its own `speed`, cuts and fades. Absent = not grouped. Older builds ignore it, so no
   version bump. A paste gets a fresh id so a copy never merges into the group it came from.
+- **Clip `groupSpeed`**: optional, same on every member of a group; nil = 1×. The joined clip's speed as shown in the
+  inspector — already multiplied into each member's `speed`/`clockSpeed`, so playback never reads it.
 - **Clip `file`** (v4): optional. `nil` = `screen.mov` (the default, and what every existing clip means). A string names an imported `media/` file that this clip plays instead; such clips have no cursor or zoom.
 - **Recording layer** (v4): `kind: "recording"` is a lifted clip (§7.2 Free editing). `file` is `"screen.mov"`, `mediaStart` is the in-point into it, `mediaRate` as for audio (default 1), `rect` is the full output canvas, and `scene` holds the carried effects: `{ "zooms": [...], "masks": [...], "hideCursor": false }`, with times **relative to the layer's `start`** (not the timeline clock). `scene` is `null` for image and video layers. Its cursor and zooms are drawn through the same screen pass as the Main footage.
 - `audioTracks`/`audioClips`/`layers` are additive version-3 keys; no version bump for them. The v4 kind and clip file above are the only additions that need one. When `audioClips` is absent, derive
@@ -1112,5 +1114,9 @@ PLAN T-640…T-650.
   last selected clip becomes one clip on the timeline (one block, faint inner seams, label "Clip N · k joined") that
   selects, moves and trims (outer edges only) as one, while each piece keeps its speed and cuts. **Ungroup Clips**
   (⇧⌘J) splits it back.
+  Selecting a joined clip opens the normal clip inspector: **Playback speed** is a multiplier on top of the pieces'
+  own speeds (new group = 1×; 2× doubles every piece, keeping their ratios; the range stops where any piece would leave
+  0.25–16×). The group grows or shrinks like one linked clip and later clips follow. Hide cursor covers every piece;
+  Fade in/out sit on the first/last piece; Remove deletes the whole group. The timeline label shows the group speed.
 - **Transcription engine:** macOS 26+ uses `SpeechAnalyzer` + `SpeechTranscriber` (long-form, always on-device, model
   installed by the system on first use per language); macOS 15 uses `SFSpeechRecognizer` with on-device required.

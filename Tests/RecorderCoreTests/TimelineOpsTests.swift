@@ -742,3 +742,25 @@ private func audioEnvelopeGain(_ project: Project, _ audio: AudioClip, media: Do
     _ = p.joinClips([0, 1])
     #expect(p.ungroupClips([1]) && p == before && !p.ungroupClips([0]))
 }
+
+@Test func groupSpeedScalesMembers() {
+    var p = Project(source: Source(duration: 30), clips: [Clip(sourceStart: 0, sourceEnd: 30, speed: 1)])
+    _ = p.split(atOutput: 10); _ = p.split(atOutput: 20)
+    p.setSpeed(1, 2) // outputs 10 + 5 + 10
+    _ = p.split(atOutput: 22) // clip 3 (output 22–25) stays outside the group and follows it
+    _ = p.joinClips([0, 2])
+    #expect(p.clips[0].groupSpeed == nil && p.clipGroup(containing: 0) == 0...2)
+    p.setGroupSpeed(1, 2)
+    #expect(p.clips[0...2].map(\.speed) == [2, 4, 2] && p.clips[0...2].allSatisfy { $0.groupSpeed == 2 })
+    #expect(abs(TimeMap(p.clips).outputDuration - (11 + 3)) < 1e-9) // group 22 s → 11 s; clip 3 keeps its 3 s
+    #expect(p.clips[3].group == nil && p.clips[3].speed == 1 && p.checkInvariants() == nil)
+    // Range keeps every member within 0.25…16×: the 2× pieces floor it at 0.25, the 4× piece caps it at 8×.
+    #expect(p.groupSpeedRange(0) == 0.25...8)
+    p.setGroupSpeed(0, 100)
+    #expect(p.clips[1].speed == 16 && p.clips[0].groupSpeed == 8)
+    p.setGroupSpeed(0, 1)
+    #expect(p.clips[0...2].map(\.speed) == [1, 2, 1] && p.clips[0].groupSpeed == nil)
+    #expect(abs(TimeMap(p.clips).outputDuration - 25) < 1e-9)
+    p.ungroupClips([0])
+    #expect(p.clips.allSatisfy { $0.group == nil && $0.groupSpeed == nil })
+}

@@ -408,8 +408,49 @@ public extension Project {
         let run = clipGroup(containing: first).lowerBound...clipGroup(containing: last).upperBound
         guard run.count > 1, !clips[first].isEmpty, !clips[last].isEmpty, Set(run.map { clips[$0].group }).count > 1 || clips[first].group == nil else { return joined ? kept : [] }
         let id = UUID().uuidString
-        for i in run { clips[i].group = id }
+        // The pieces' current speeds become the new group's 1× baseline.
+        for i in run { clips[i].group = id; clips[i].groupSpeed = nil }
         return Set(run)
+    }
+
+    /// The speed the timeline and inspector show for clip `index`: its group's multiplier when joined, else its own.
+    func displayedSpeed(_ index: Int) -> Double {
+        guard clips.indices.contains(index) else { return 1 }
+        return clipGroup(containing: index).count > 1 ? clips[index].groupSpeed ?? 1 : clips[index].speed
+    }
+
+    /// Sets what `displayedSpeed` shows: the group's speed for a joined clip, else the clip's own.
+    mutating func setDisplayedSpeed(_ index: Int, _ speed: Double) {
+        if clipGroup(containing: index).count > 1 { setGroupSpeed(index, speed) } else { setSpeed(index, speed) }
+    }
+
+    /// The group speeds `setGroupSpeed` accepts: every member must stay within 0.25…16×.
+    func groupSpeedRange(_ index: Int) -> ClosedRange<Double> {
+        let run = clipGroup(containing: index), current = clips[run.lowerBound].groupSpeed ?? 1
+        let lo = run.map { 0.25 / clips[$0].speed * current }.max() ?? 0.25
+        let hi = run.map { 16 / clips[$0].speed * current }.min() ?? 16
+        return lo...max(lo, hi)
+    }
+
+    /// A joined clip's playback speed: scales every member (gaps included) by `speed / current`, so their relative
+    /// speeds stay. The group grows or shrinks like one linked clip and later clips follow.
+    // ponytail: always the linked (ripple) speed path, even with Link Layers off; fitting into free space like an
+    // unlinked single clip needs the members re-laid out together.
+    mutating func setGroupSpeed(_ index: Int, _ speed: Double) {
+        let run = clipGroup(containing: index)
+        guard run.count > 1, speed.isFinite else { return }
+        let range = groupSpeedRange(index), current = clips[run.lowerBound].groupSpeed ?? 1
+        let requested = min(range.upperBound, max(range.lowerBound, speed)), ratio = requested / current
+        guard abs(ratio - 1) > 1e-9 else { return }
+        let before = self
+        preserveAudioEnvelopes(in: clips[run.lowerBound].sourceStart...clips[run.upperBound].sourceEnd)
+        for j in run {
+            clips[j].clockSpeed = clips[j].timeScale * ratio
+            clips[j].speed *= ratio
+            clips[j].groupSpeed = abs(requested - 1) < 1e-9 ? nil : requested
+        }
+        settleConnected()
+        if checkInvariants() != nil { self = before }
     }
 
     /// The neighbouring clips that show as one clip with `index` (just `index` when it isn't grouped).
@@ -425,7 +466,7 @@ public extension Project {
     @discardableResult
     mutating func ungroupClips(_ indices: Set<Int>) -> Bool {
         let members = indices.flatMap { clipGroup(containing: $0) }.filter { clips[$0].group != nil }
-        for i in members { clips[i].group = nil }
+        for i in members { clips[i].group = nil; clips[i].groupSpeed = nil }
         return !members.isEmpty
     }
 
