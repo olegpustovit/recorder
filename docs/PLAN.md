@@ -560,7 +560,7 @@ older builds ignore those points and cannot preserve their phase. Recording laye
   multiplier (`Clip.groupSpeed`, `setGroupSpeed`/`groupSpeedRange`, `displayedSpeed`), cursor/fades/remove act on the
   group; right-click Speed and the timeline label use the group speed. Verify: `make test FILTER=groupSpeed`;
   `--selftest clip-fades`.
-- [x] **T-734 Insert preview when dropping onto Video** · SPEC §7.2 — dragging a lifted recording over the Video lane
+- [~] **T-734 Insert preview when dropping onto Video** · SPEC §7.2 — dragging a lifted recording over the Video lane
   draws the trial insert (landing clip faded + outlined) and ripples neighbours apart/back. Verify: `--selftest timeline-lift`.
 
 ---
