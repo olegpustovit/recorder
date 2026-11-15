@@ -703,13 +703,25 @@ The x-axis is **output time** (what the viewer sees) — removed segments take n
 
 ### 7.1 Anatomy
 
+The ruler is followed by a permanent 26 pt **+ New track** strip, then free **Video N…Video 2** lanes (highest first),
+the main **Video** lane, Camera/effects and audio. Hovering the strip allocates nothing; an existing layer shows a
+placeholder until drop, and dropping a media file imports it onto the next highest track. An explicit + click reveals
+an empty track for the session. Restore bubbles above Video keep click priority over the preceding layer.
+
+The Video header has a compact **Magnet / Free** button (M/F with compact headers). It edits only `rippleDelete`,
+stays synchronized with the toolbar ripple control and undo, and retains explicit gap clips when switching modes.
+Magnet reorders clips and closes deleted spans; Free places clips at a time and leaves deleted spans as gaps.
+
 ```
   ✂ Split   ➕ Zoom  │ ↶ ↷ │                                                 −  ────●────  +    ⤢ Fit      toolbar 32 pt
  ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
  │ 0:00      0:05      0:10      0:15      0:20      0:25      0:30      0:35      0:40      0:45   │ ruler 22 pt: adaptive ticks
  │  ┊    ┊    ┊    ┊    ┊    ┊    ▼ 00:12.40                                                         │  (1f…1m), click/drag = scrub
  ├────────────────────────────────┃─────────────────────────────────────────────────────────────────┤
- │ ╭─────────────────────────────╮┃╭───────────────────────╮ ✂ ╭─────────────────────────────────╮  │ CLIP track 44 pt (clip colour)
+ │ + New track                    ┃ Drop media here for a new track                                 │ permanent strip 26 pt
+ │ Video N … Video 2              ┃ Free media layers, highest track first                          │ 36 pt per visible lane
+ ├────────────────────────────────┃─────────────────────────────────────────────────────────────────┤
+ │ ╭─────────────────────────────╮┃╭───────────────────────╮ ✂ ╭─────────────────────────────────╮  │ VIDEO track 32 pt; Magnet / Free
  │ │ ▁▂▃▅▃▂▁▁▂▅▇▅▃▂▁  waveform   │┃│ ▂▃▅▃▁   2×  ⏩        │   │ ▁▁▂▃▂▁▁▁▂▃▅▃▂                  │  │  ✂ bubble = a cut/trim exists
  │ ╰─────────────────────────────╯┃╰───────────────────────╯   ╰─────────────────────────────────╯  │  here; click it to restore
  ├────────────────────────────────┃─────────────────────────────────────────────────────────────────┤
@@ -1013,7 +1025,9 @@ PLAN T-640…T-650.
   muted). Project audio muted while recording. Takes go to `voice/<id>.m4a`; a new take replaces the old one in that range.
 - **Layers.** `Project.layers`: image or video blocks on Layer lanes, Card/Full/Corner/Free placement, Dim/Blur
   backdrop, Fade/Scale/Slide motion, fades, optional in front of camera. A video layer's sound is a `layer`-linked clip.
-  Imported media is copied into `media/`. Idle spans from `events.json` appear as slots on Layer 1.
+  Imported media is copied into `media/`. New images fill the output canvas by default; Card/Corner/Free remain
+  available in the inspector. Video imports retain Card placement. Moving an existing layer keeps its placement.
+  Idle spans from `events.json` appear as slots on Layer 1.
 - **Render order.** background → screen → cursor → backdrop → layers → camera → front layers → text → keys. Preview and
   export share it (parity maxDelta 0).
 

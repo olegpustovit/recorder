@@ -1054,8 +1054,8 @@ enum SelfTest {
                     TimelineView.gutter + CGFloat(view.geometry.x(forOutput: output))
                 }
                 expect(CGPoint(x: x(model.playhead), y: 10), .playhead, "playhead")
-                expect(CGPoint(x: x(5), y: 40), .clipBody(0), "clipBody")
-                expect(CGPoint(x: x(15), y: 40), .clipEdge(0, .trailing), "clipEdge")
+                expect(CGPoint(x: x(5), y: view.laneMidY(.clip)), .clipBody(0), "clipBody")
+                expect(CGPoint(x: x(15), y: view.laneMidY(.clip)), .clipEdge(0, .trailing), "clipEdge")
                 expect(CGPoint(x: x(7), y: view.laneMidY(.zoom)), .blockBody(zoom0ID), "zoomBody")
                 expect(CGPoint(x: x(7.5), y: view.laneMidY(.keys)), .blockBody(layout0ID), "layoutBody")
                 // mask [20, 26) source, inside the 2× clip1 -> output [17.5, 20.5); mask
@@ -1085,9 +1085,13 @@ enum SelfTest {
                 model.undo()
                 if model.project.zooms[0].color != nil { errors.append("Color undo") }
                 expect(CGPoint(x: x(3), y: 10), .ruler, "ruler")
-                expect(CGPoint(x: x(25), y: 18), .ruler, "mixed-speed seam has no restore bubble")
-                model.edit("Equal-speed seam fixture") { $0.clips[2].speed = $0.clips[1].speed }
-                expect(CGPoint(x: x(25), y: 18), .cutBubble(afterClip: 1), "equal-speed cutBubble")
+                let seam = CGPoint(x: x(25), y: view.laneMidY(.clip) - TimelineView.clipHeight / 2 - 4)
+                if case .cutBubble = view.hitTest(at: seam) { errors.append("mixed-speed seam has a restore bubble") }
+                model.edit("Equal-speed seam fixture") { project in
+                    project.clips[2].speed = project.clips[1].speed
+                    project.layers = [LayerBlock(kind: .image, start: 29, end: 35, file: "media/seam.png", rect: NormRect())]
+                }
+                expect(seam, .cutBubble(afterClip: 1), "equal-speed cutBubble precedes covering layer")
                 model.undo()
                 if case .emptyLane(.zoom, _) = view.hitTest(at: CGPoint(x: x(40), y: view.laneMidY(.zoom))) {} else {
                     errors.append("emptyLane: got \(view.hitTest(at: CGPoint(x: x(40), y: view.laneMidY(.zoom))))")
@@ -3100,6 +3104,8 @@ enum SelfTest {
                 try check(files.contains { (try? Data(contentsOf: $0)) == data }, "copied bytes differ")
             }
             try check(model.project.layers[0].start == 0.25 && model.project.layers[0].end == 4.75, "image fills idle slot")
+            try check(model.project.layers.filter { $0.kind == .image }.allSatisfy { $0.rect == NormRect() }, "new images fill the canvas")
+            try check(model.project.layers.filter { $0.kind == .video }.allSatisfy { $0.rect != NormRect() }, "video imports retain Card placement")
             let linked = model.project.audioClips.first { $0.link == .layer }
             try check(linked?.layer == model.project.layers.first { $0.file == linked?.file }?.id && model.project.audioTracks.allSatisfy { $0.name.hasPrefix("Audio ") }, "video sound linked / extra audio lanes")
             let before = model.project, steps = model.undoStepCount
@@ -3120,6 +3126,7 @@ enum SelfTest {
                 try await Task.sleep(for: .milliseconds(20))
             }
             try check(model.undoStepCount == steps + 1 && model.project.layers.count == 4, "clipboard image not imported")
+            try check(model.project.layers.filter { $0.kind == .image }.allSatisfy { $0.rect == NormRect() }, "clipboard image fills the canvas")
             model.undo(); try check(model.project == before, "clipboard import undo")
             pasteboard.releaseGlobally()
             model.beginGesture()
@@ -3541,6 +3548,7 @@ enum SelfTest {
             }
         },
         "timeline-tracks": { @MainActor _ in
+            try await runTimelineHeaderSelfTest()
             enum Fail: Error { case tracks, composition, rendering, undo }
             let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("recorder-tracks-\(UUID().uuidString)")
             try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
@@ -3555,7 +3563,7 @@ enum SelfTest {
                 let view = TimelineView(frame: CGRect(x: 0, y: 0, width: 900, height: 190))
                 view.model = model
                 view.geometry.pxPerSecond = 50
-                @MainActor func point(_ t: Double, _ y: Double) -> CGPoint { CGPoint(x: TimelineView.gutter + t * 50, y: 190 - y) }
+                @MainActor func point(_ t: Double, _ y: Double) -> CGPoint { view.convert(CGPoint(x: TimelineView.gutter + t * 50, y: y), to: nil) }
                 view.toggleLinkedVideoEdits()
                 view.toggleRippleDelete()
                 view.toggleSplitModeSticky()
@@ -3568,10 +3576,10 @@ enum SelfTest {
                 view.keyDown(with: synthKey("", keyCode: 51))
                 guard model.project.cameraClips.count == 1 else { throw Fail.tracks }
                 view.toggleSplitModeSticky()
-                view.mouseDown(with: synthMouse(.leftMouseDown, point(5, 40)))
+                view.mouseDown(with: synthMouse(.leftMouseDown, point(5, view.laneMidY(.clip))))
                 view.selectTool()
-                view.mouseDown(with: synthMouse(.leftMouseDown, point(2, 40)))
-                view.mouseUp(with: synthMouse(.leftMouseUp, point(2, 40)))
+                view.mouseDown(with: synthMouse(.leftMouseDown, point(2, view.laneMidY(.clip))))
+                view.mouseUp(with: synthMouse(.leftMouseUp, point(2, view.laneMidY(.clip))))
                 view.keyDown(with: synthKey("", keyCode: 51))
                 guard model.project.clips[0].isEmpty, model.timeMap.outputDuration == 12 else { throw Fail.tracks }
                 let edited = model.project
@@ -3602,7 +3610,7 @@ enum SelfTest {
                 guard model.project.clips.count == 2, model.project.cameraClips.count == 2,
                       model.project.keystrokeClips.count == 2 else { throw Fail.tracks }
                 let before = model.project, undoCount = model.undoStepCount
-                @MainActor func point(_ t: Double) -> CGPoint { CGPoint(x: TimelineView.gutter + t * 50, y: 190 - view.laneMidY(.clip)) }
+                @MainActor func point(_ t: Double) -> CGPoint { view.convert(CGPoint(x: TimelineView.gutter + t * 50, y: view.laneMidY(.clip)), to: nil) }
                 view.mouseDown(with: synthMouse(.leftMouseDown, point(8)))
                 view.mouseDragged(with: synthMouse(.leftMouseDragged, point(10), modifiers: .command))
                 view.mouseDragged(with: synthMouse(.leftMouseDragged, point(11), modifiers: .command))
@@ -4815,8 +4823,8 @@ private func runSplitSelfTest(model: EditorModel, view: TimelineView, px: (Doubl
     // `Esc` exits sticky split mode: the next click goes back to plain hit-testing (selects, no split).
     view.cancelOperation(nil)
     let beforeEsc = model.project
-    view.mouseDown(with: synthMouse(.leftMouseDown, CGPoint(x: px(2), y: py(40))))
-    view.mouseUp(with: synthMouse(.leftMouseUp, CGPoint(x: px(2), y: py(40))))
+    view.mouseDown(with: synthMouse(.leftMouseDown, CGPoint(x: px(2), y: py(view.laneMidY(.clip)))))
+    view.mouseUp(with: synthMouse(.leftMouseUp, CGPoint(x: px(2), y: py(view.laneMidY(.clip)))))
     guard model.project == beforeEsc else { throw TimelineOpsFail(description: "Esc didn't exit split mode — click still split") }
 
     // Unsnapped: far from every candidate (playhead 10, clip edges 0/10/20), the split lands at
@@ -4843,8 +4851,8 @@ private func runSplitSelfTest(model: EditorModel, view: TimelineView, px: (Doubl
     guard model.project.clips.count == 2 else { throw TimelineOpsFail(description: "⌥-held click should split") }
     view.flagsChanged(with: synthFlags([]))
     let beforeReleased = model.project
-    view.mouseDown(with: synthMouse(.leftMouseDown, CGPoint(x: px(2), y: py(40))))
-    view.mouseUp(with: synthMouse(.leftMouseUp, CGPoint(x: px(2), y: py(40))))
+    view.mouseDown(with: synthMouse(.leftMouseDown, CGPoint(x: px(2), y: py(view.laneMidY(.clip)))))
+    view.mouseUp(with: synthMouse(.leftMouseUp, CGPoint(x: px(2), y: py(view.laneMidY(.clip)))))
     guard model.project == beforeReleased else { throw TimelineOpsFail(description: "click after releasing ⌥ should not split") }
 }
 
@@ -4857,13 +4865,13 @@ private func runTrimRemoveRestoreSpeedSelfTest(model: EditorModel, view: Timelin
     // Trailing-edge trim: drag clip 0's right edge from output 20 to output 15.
     let beforeTrim = model.project
     let undoBeforeTrim = model.undoStepCount
-    view.mouseDown(with: synthMouse(.leftMouseDown, CGPoint(x: px(20) - 3, y: py(40))))
-    view.mouseDragged(with: synthMouse(.leftMouseDragged, CGPoint(x: px(15), y: py(40))))
+    view.mouseDown(with: synthMouse(.leftMouseDown, CGPoint(x: px(20) - 3, y: py(view.laneMidY(.clip)))))
+    view.mouseDragged(with: synthMouse(.leftMouseDragged, CGPoint(x: px(15), y: py(view.laneMidY(.clip)))))
     guard model.project.clips[0].sourceEnd == 15 else {
         throw TimelineOpsFail(description: "trim didn't track the mouse: sourceEnd \(model.project.clips[0].sourceEnd)")
     }
     guard model.undoStepCount == undoBeforeTrim else { throw TimelineOpsFail(description: "an in-progress trim shouldn't push an undo step yet") }
-    view.mouseUp(with: synthMouse(.leftMouseUp, CGPoint(x: px(15), y: py(40))))
+    view.mouseUp(with: synthMouse(.leftMouseUp, CGPoint(x: px(15), y: py(view.laneMidY(.clip)))))
     guard model.project.checkInvariants() == nil else { throw TimelineOpsFail(description: "invariants broken after trim") }
     guard model.undoStepCount == undoBeforeTrim + 1 else { throw TimelineOpsFail(description: "trim should push exactly one undo step") }
     model.undo()
@@ -4885,19 +4893,19 @@ private func runTrimRemoveRestoreSpeedSelfTest(model: EditorModel, view: Timelin
     // and pushes no undo step at all (it was never completed).
     let beforeEscDrag = model.project
     let undoBeforeEscDrag = model.undoStepCount
-    view.mouseDown(with: synthMouse(.leftMouseDown, CGPoint(x: px(0) + 3, y: py(40))))
-    view.mouseDragged(with: synthMouse(.leftMouseDragged, CGPoint(x: px(5), y: py(40))))
+    view.mouseDown(with: synthMouse(.leftMouseDown, CGPoint(x: px(0) + 3, y: py(view.laneMidY(.clip)))))
+    view.mouseDragged(with: synthMouse(.leftMouseDragged, CGPoint(x: px(5), y: py(view.laneMidY(.clip)))))
     guard model.project.clips.first(where: { !$0.isEmpty })?.sourceStart == 5, model.timeMap.outputDuration == 20 else { throw TimelineOpsFail(description: "trim must leave a gap without changing duration") }
     view.cancelOperation(nil)
     guard model.project == beforeEscDrag else { throw TimelineOpsFail(description: "Esc mid-drag didn't restore the pre-drag project") }
     guard model.undoStepCount == undoBeforeEscDrag else { throw TimelineOpsFail(description: "a cancelled drag pushed an undo step") }
-    view.mouseUp(with: synthMouse(.leftMouseUp, CGPoint(x: px(5), y: py(40)))) // the real mouse-up AppKit would still deliver; must be a no-op
+    view.mouseUp(with: synthMouse(.leftMouseUp, CGPoint(x: px(5), y: py(view.laneMidY(.clip))))) // the real mouse-up AppKit would still deliver; must be a no-op
 
     // Remove: split into two clips first (direct setup, not part of what's under test here), then
     // select + `⌫` removes one — the last remaining clip can never be removed (SPEC §7.4).
     model.edit("setup") { $0.clips = [Clip(sourceStart: 0, sourceEnd: 10, speed: 1), Clip(sourceStart: 10, sourceEnd: 20, speed: 1)] }
-    view.mouseDown(with: synthMouse(.leftMouseDown, CGPoint(x: px(2), y: py(40))))
-    view.mouseUp(with: synthMouse(.leftMouseUp, CGPoint(x: px(2), y: py(40))))
+    view.mouseDown(with: synthMouse(.leftMouseDown, CGPoint(x: px(2), y: py(view.laneMidY(.clip)))))
+    view.mouseUp(with: synthMouse(.leftMouseUp, CGPoint(x: px(2), y: py(view.laneMidY(.clip)))))
     view.toggleRippleDelete() // Explicitly exercise gap-preserving deletion; ripple is the default.
     let undoBeforeRemove = model.undoStepCount
     view.keyDown(with: synthKey("", keyCode: 51)) // ⌫
@@ -4907,7 +4915,7 @@ private func runTrimRemoveRestoreSpeedSelfTest(model: EditorModel, view: Timelin
 
     // Speed: the real context menu (right-click on the clip), invoking the "2×" item's actual
     // target/action — not a shortcut around it.
-    guard let menu = view.menu(for: synthMouse(.rightMouseDown, CGPoint(x: px(15), y: py(40)))),
+    guard let menu = view.menu(for: synthMouse(.rightMouseDown, CGPoint(x: px(15), y: py(view.laneMidY(.clip))))),
           let speedItem = menu.items.first(where: { $0.title == "Speed" })?.submenu,
           let twoX = speedItem.items.first(where: { $0.title.hasPrefix("2") }) else {
         throw TimelineOpsFail(description: "no clip context menu / Speed submenu / 2× item")
@@ -5248,4 +5256,153 @@ private func runMaskBlockSelfTest(model: EditorModel, view: TimelineView, px: (D
           children.contains(where: { $0.accessibilityLabel() == "Highlight, opacity 50%, 0.0 to 3.0 seconds" }) else {
         throw TimelineOpsFail(description: "no Mask accessibility element for the highlight-kind block")
     }
+}
+
+@MainActor
+private final class TimelineHeaderDraggingInfo: NSObject, NSDraggingInfo {
+    let draggingPasteboard: NSPasteboard
+    let draggingLocation: NSPoint
+    weak var draggingDestinationWindow: NSWindow?
+    var draggingSourceOperationMask: NSDragOperation { .copy }
+    var draggedImageLocation: NSPoint { draggingLocation }
+    var draggedImage: NSImage? { nil }
+    var draggingSource: Any? { nil }
+    var draggingSequenceNumber: Int { 1 }
+    var draggingFormation: NSDraggingFormation = .none
+    var animatesToDestination = false
+    var numberOfValidItemsForDrop = 1
+    var springLoadingHighlight: NSSpringLoadingHighlight { .none }
+
+    init(pasteboard: NSPasteboard, location: NSPoint, window: NSWindow) {
+        draggingPasteboard = pasteboard; draggingLocation = location; draggingDestinationWindow = window
+    }
+    func slideDraggedImage(to screenPoint: NSPoint) {}
+    override func namesOfPromisedFilesDropped(atDestination dropDestination: URL) -> [String]? { nil }
+    func resetSpringLoading() {}
+    func enumerateDraggingItems(options enumOpts: NSDraggingItemEnumerationOptions, for view: NSView?, classes classArray: [AnyClass],
+                                searchOptions: [NSPasteboard.ReadingOptionKey: Any],
+                                using block: @escaping (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void) {}
+}
+
+@MainActor
+private func runTimelineHeaderSelfTest() async throws {
+    struct Fail: Error, CustomStringConvertible { let description: String }
+    func check(_ condition: Bool, _ message: String) throws { if !condition { throw Fail(description: message) } }
+    func descendants(_ view: NSView) -> [NSView] { view.subviews.flatMap { [$0] + descendants($0) } }
+    _ = NSApplication.shared
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("timeline-header-" + UUID().uuidString)
+    let package = root.appendingPathComponent("Header.recorder")
+    try FileManager.default.createDirectory(at: package.appendingPathComponent("media"), withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let image = root.appendingPathComponent("diagram.png")
+    guard let context = CGContext(data: nil, width: 160, height: 90, bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
+          let destination = CGImageDestinationCreateWithURL(image as CFURL, UTType.png.identifier as CFString, 1, nil) else {
+        throw Fail(description: "header PNG fixture")
+    }
+    context.setFillColor(CGColor(red: 0.4, green: 0.7, blue: 0.9, alpha: 1)); context.fill(CGRect(x: 0, y: 0, width: 160, height: 90))
+    CGImageDestinationAddImage(destination, context.makeImage()!, nil)
+    try check(CGImageDestinationFinalize(destination), "header PNG write")
+    try FileManager.default.copyItem(at: image, to: package.appendingPathComponent("media/base.png"))
+    var gap = Clip(sourceStart: 4, sourceEnd: 6); gap.isGap = true
+    var project = Project(source: Source(duration: 12, hasCamera: true), clips: [Clip(sourceStart: 0, sourceEnd: 4), gap, Clip(sourceStart: 6, sourceEnd: 12)])
+    project.layers = [LayerBlock(kind: .image, start: 1, end: 3, file: "media/base.png", track: 0, rect: NormRect(), fadeIn: nil, fadeOut: nil),
+                      LayerBlock(kind: .image, start: 7, end: 9, file: "media/base.png", track: 2, rect: NormRect(), fadeIn: nil, fadeOut: nil)]
+    let model = EditorModel(packageURL: package, project: project, events: EventLog())
+    defer { model.saveNow() }
+    let view = TimelineView(frame: .zero); view.model = model
+    let toolbar = TimelineToolbar(frame: .zero); toolbar.timelineView = view
+    let container = TimelineContainerView(toolbar: toolbar, timeline: view)
+    let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 1000, height: 360), styleMask: [.borderless], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false; window.contentView = container
+    defer { window.close() }
+    container.layoutSubtreeIfNeeded(); view.geometry.pxPerSecond = 40
+    guard let ripple = descendants(toolbar).compactMap({ $0 as? NSButton }).first(where: { $0.toolTip?.hasPrefix("Ripple Delete") == true }) else {
+        throw Fail(description: "toolbar ripple control missing")
+    }
+    func settle() async throws {
+        try await Task.sleep(for: .milliseconds(30))
+        container.layoutSubtreeIfNeeded(); view.layoutSubtreeIfNeeded()
+    }
+    try await settle()
+    try check(view.newTrackDropRect.height == 26 && view.newTrackDropRect.minY == TimelineView.rulerHeight, "permanent 26pt row")
+    try check(Array(view.lanes.prefix(3)) == [.layer(2), .layer(0), .clip], "video layers precede main in descending order")
+    try check(view.newTrackDropRect.maxY < view.laneMidY(.layer(2)) && view.laneMidY(.clip) < view.laneMidY(.camera), "new row/layers/video/camera geometry")
+    try check(view.debugMagneticVideoButton.title == "Magnet" && ripple.state == .on, "initial header/toolbar mode")
+    view.debugMagneticVideoButton.performClick(nil)
+    try await settle()
+    var expected = project; expected.rippleDelete = false
+    try check(model.project == expected && model.undoStepCount == 1, "header Free changes only flag in one undo")
+    try check(view.debugMagneticVideoButton.title == "Free" && ripple.state == .off, "header changes toolbar")
+    view.debugMagneticVideoButton.performClick(nil)
+    try await settle()
+    try check(model.project == project && model.undoStepCount == 2 && ripple.state == .on, "Magnet preserves explicit gaps")
+    model.undo(); try await settle()
+    try check(model.project == expected && view.debugMagneticVideoButton.title == "Free" && ripple.state == .off, "undo synchronizes both controls")
+    model.undo(); try await settle()
+    try check(model.project == project && model.undoStepCount == 0, "header roundtrip undo")
+    ripple.performClick(nil); try await settle()
+    try check(model.project == expected && view.debugMagneticVideoButton.title == "Free" && model.undoStepCount == 1, "toolbar changes header in one undo")
+    model.undo(); try await settle()
+    view.toggleCompactTrackHeaders(); container.layoutSubtreeIfNeeded(); view.layoutSubtreeIfNeeded()
+    try check(!view.debugMagneticVideoButton.isHidden && view.debugMagneticVideoButton.title == "M" && view.debugMagneticVideoButton.accessibilityLabel() == "Magnetic Video", "compact mode accessible control")
+    try check(view.debugNewTrackButton.title == "+" && view.debugNewTrackButton.accessibilityLabel() == "New video track", "compact new-track control")
+    view.toggleCompactTrackHeaders(); container.layoutSubtreeIfNeeded(); view.layoutSubtreeIfNeeded()
+
+    let pasteboard = NSPasteboard.withUniqueName(); defer { pasteboard.releaseGlobally() }
+    pasteboard.writeObjects([image as NSURL])
+    let dropPoint = view.convert(CGPoint(x: view.gutterWidth + 8 * view.geometry.pxPerSecond, y: view.newTrackDropRect.midY), to: nil)
+    let info = TimelineHeaderDraggingInfo(pasteboard: pasteboard, location: dropPoint, window: window)
+    let lanes = view.lanes, shown = view.revealedLanes, mids = view.lanes.map(view.laneMidY)
+    try check(view.draggingEntered(info) == .copy && view.draggingUpdated(info) == .copy, "external media hover accepted")
+    try check(model.project == project && model.undoStepCount == 0 && view.lanes == lanes && view.revealedLanes == shown && view.lanes.map(view.laneMidY) == mids, "hover allocates no track or geometry")
+    view.draggingExited(info)
+    try check(model.project == project && view.lanes == lanes, "external exit leaves project and lanes")
+
+    let layerID = project.layers[0].id
+    let start = view.convert(CGPoint(x: view.gutterWidth + 2 * view.geometry.pxPerSecond, y: view.laneMidY(.layer(0))), to: nil)
+    let target = view.convert(CGPoint(x: view.gutterWidth + 2 * view.geometry.pxPerSecond, y: view.newTrackDropRect.midY), to: nil)
+    view.mouseDown(with: synthMouse(.leftMouseDown, start, modifiers: .command))
+    view.mouseDragged(with: synthMouse(.leftMouseDragged, target, modifiers: .command))
+    try check(view.debugNewTrackLayerTrial?.layers.first { $0.id == layerID }?.track == 3, "internal new-track trial")
+    try check(model.project == project && view.lanes == lanes && model.undoStepCount == 0, "internal hover defers lane allocation")
+    view.cancelOperation(nil)
+    try check(model.project == project && view.debugNewTrackLayerTrial == nil && model.undoStepCount == 0, "internal new-track Escape")
+    view.mouseDown(with: synthMouse(.leftMouseDown, start, modifiers: .command))
+    view.mouseDragged(with: synthMouse(.leftMouseDragged, target, modifiers: .command))
+    view.keyDown(with: synthKey("d", keyCode: 2, modifiers: .command))
+    let keyboardEdit = model.project
+    view.mouseUp(with: synthMouse(.leftMouseUp, target, modifiers: .command))
+    try check(model.project == keyboardEdit && model.project.layers.count == project.layers.count + 1 && model.undoStepCount == 1,
+              "keyboard edit cancels layer-row trial without being overwritten")
+    model.undo(); try await settle()
+    try check(model.project == project, "layer-row interrupted duplicate undo")
+    view.mouseDown(with: synthMouse(.leftMouseDown, start, modifiers: .command))
+    view.mouseDragged(with: synthMouse(.leftMouseDragged, target, modifiers: .command))
+    view.mouseUp(with: synthMouse(.leftMouseUp, target, modifiers: .command))
+    try check(model.project.layers.first { $0.id == layerID }?.track == 3 && model.undoStepCount == 1, "internal drop allocates track in one undo")
+    model.undo(); try await settle()
+    try check(model.project == project, "internal new-track undo")
+
+    try check(view.draggingEntered(info) == .copy && view.performDragOperation(info), "real PNG new-track drop accepted")
+    for _ in 0..<250 {
+        if model.undoStepCount == 1 && model.mediaImportStatus == nil { break }
+        try await Task.sleep(for: .milliseconds(20))
+    }
+    try check(model.project.layers.count == project.layers.count + 1 && model.undoStepCount == 1 && model.mediaImportStatus == nil, "PNG import completes in one undo")
+    guard let imported = model.project.layers.first(where: { !project.layers.map(\.id).contains($0.id) }) else { throw Fail(description: "PNG drop layer missing") }
+    try check(imported.track == 3 && model.project.clips == project.clips && FileManager.default.fileExists(atPath: package.appendingPathComponent(imported.file).path), "PNG owns media on next highest track without changing gaps")
+    try check(imported.rect == NormRect(), "new-track image fills the canvas")
+    try await settle(); view.displayIfNeeded(); container.displayIfNeeded()
+    guard let bitmap = container.bitmapImageRepForCachingDisplay(in: container.bounds),
+          let png = { () -> Data? in container.cacheDisplay(in: container.bounds, to: bitmap); return bitmap.representation(using: .png, properties: [:]) }() else {
+        throw Fail(description: "header screenshot unavailable")
+    }
+    try png.write(to: URL(fileURLWithPath: "/tmp/recorder-t705-header.png"))
+    model.undo(); try await settle()
+    try check(model.project == project && model.project.checkInvariants() == nil, "PNG drop undo restores complete project")
+    let next = view.lanes.compactMap { lane -> Int? in if case .layer(let track) = lane { return track }; return nil }.max()! + 1
+    view.debugNewTrackButton.performClick(nil); try await settle()
+    try check(view.revealedLanes.contains(.layer(next)) && model.project == project && model.undoStepCount == 0,
+              "only an explicit new-track click reveals an empty lane without editing project")
 }

@@ -172,7 +172,7 @@ extension EditorModel {
                 let start = kind == .image ? idle?.start ?? time : time
                 let length = kind == .image ? idle.map { $0.end - $0.start } ?? 4 : copied.duration
                 id = trial.addLayer(kind: kind, file: copied.file, atOutput: start, duration: length,
-                                    rect: layerPlacementRect(.card, aspect: aspect, canvas: canvas)!, hasAudio: copied.audio, track: track)
+                                    rect: kind == .image ? NormRect() : layerPlacementRect(.card, aspect: aspect, canvas: canvas)!, hasAudio: copied.audio, track: track)
             }
         } else {
             guard replacing == nil else { throw fail("Choose an image or video to replace a layer.") }

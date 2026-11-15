@@ -286,7 +286,7 @@ older builds ignore those points and cannot preserve their phase. Recording laye
 
 | Scope | Tasks | Done |
 |---|---|---|
-| Phase 1 | T-701, T-701b, T-702, T-702b, T-703…T-705 | 6/7 |
+| Phase 1 | T-701, T-701b, T-702, T-702b, T-703…T-705, T-705b, T-705c | 7/9 |
 | Phase 2 | T-711…T-714 | 0/4 |
 | Phase 3 | T-721…T-723 | 0/3 |
 
@@ -408,13 +408,44 @@ older builds ignore those points and cannot preserve their phase. Recording laye
     source project has changed, preserving intervening menu/external edits and current selection on drop or Escape.
     `make test` 154/154 plus `timeline-selection`, `timeline-reorder`, `timeline-ops` pass with T-701's Xcode native
     flags; reassembled debug app also passes `timeline-selection`. No new visual/HUMAN gate or hardware claim.
-- [ ] **T-705 Timeline: lane order, drop row, Magnet/Free switch**
+- [x] **T-705 Timeline: lane order, drop row, Magnet/Free switch**
   - `lanes`: replace the drag-only spare layer lane (`if mediaDragActive { layerTracks.insert(max + 1) }`) with a
     permanent 26 pt `+ New track` row at the top; order layer lanes above Video (decision 6). Fixtures use
     `laneMidY`, so order changes don't break them — re-check `timeline-tracks`, `timeline-full-layers`, `timeline-png`.
   - Video header gets a small `magnet` / `free` toggle bound to `project.rippleDelete` via `model.edit("Magnetic
     Video")`; switching Free → Magnet keeps spaces as gap clips (already the gap representation), ⌫ closes them.
   - Verify: `--selftest timeline-tracks`, `timeline-png` (inspect PNG); HUMAN: header + drop row against the prototype.
+  - User correction 2026-11-15: images on Video tracks should fill the preview canvas. Change the shared image-import
+    default from Card to Full, cover file/clipboard/new-track imports, and correct the agent-created review scene's
+    small image rectangles while preserving the user's track/timing edits. Existing layer moves keep their geometry.
+  - Automated verification 2026-11-15: 154/154 Core tests; native `timeline-tracks`, `timeline-full-layers`,
+    `timeline-png`, `timeline-selection`, `timeline-reorder`, `timeline-ops` pass. Assembled app also passes tracks.
+    Extended tracks check covers real header/toolbar/undo synchronization, unchanged gaps, compact accessibility,
+    26 pt permanent geometry, no allocation on hover, deferred existing-layer placement/cancel/commit, keyboard
+    interruption, explicit + click and real PNG drop/import to the next highest track with one undo.
+    Clip coordinate fixtures use lane geometry; restore-bubble clicks precede both layer hits and idle media pickers.
+  - `make -o build gallery gallery-png CONFIG=debug` reuses the verified binary; gallery/header/timeline renders
+    inspected, as is settled minimum-size editor capture at `/tmp/recorder-t705-editor-minimum.png`.
+    The initial editor captures showed loading state and are not settled evidence. Default settled capture fails the
+    titlebar assertion consistently and is tracked in T-705b. User waived further HUMAN review on 2026-11-15
+    ("dont need human review just keep going as u feel"); automated checks and agent image inspection replace that gate.
+    Corrected review `/tmp/Recorder-T705-Full-Canvas-Review.recorder` preserves the user's track/timing edits;
+    settled image at output 1.25 s inspected. File/clipboard/new-track imports pass Full-canvas assertions;
+    preview/export parity maxDelta=0 across 11 times. Extra `make-layers-fixture` check fails image orientation;
+    tracked separately in T-705c because its render fixture is independent of import defaults.
+- [ ] **T-705b Settle default editor capture and titlebar alignment**
+  - Observed while verifying T-705: assembled-app `--selftest editor-png /tmp/Recorder-T705-Review.recorder
+    /tmp/recorder-t705-editor-default.png 1300 850 --time 0.5` fails "window controls must align with the 48-point
+    document row" consistently after preview preparation. The 1100×700 settled capture passes. Diagnose actual
+    window layout versus capture lifecycle; fix the root cause without weakening alignment/clickability checks.
+  - Read: SPEC §6.1, `EditorWindowController.swift` window/control layout, `SelfTest.swift` editor-png.
+  - Verify: settled `editor-png --time 0.5` at 1100×700 and 1300×850; inspect both images; `menu-actions`,
+    `timeline-tracks`; preserve fresh native build checks. No loading-state screenshot counted as settled evidence.
+- [ ] **T-705c Correct full-canvas image orientation**
+  - Observed during image-default verification: `--selftest make-layers-fixture` fails the existing compositor
+    "Image orientation" check. Diagnose the fixture and shared image/render path; preserve transparency, crop,
+    color and preview/export parity. Fix the cause without loosening the pixel assertion.
+  - Verify: `make-layers-fixture`, `media-import`, parity on the generated layers fixture; inspect the orientation proof.
 
 ### Phase 2 — Recording clips on Video tracks (format v4 only when used)
 
@@ -1345,3 +1376,7 @@ T-702b · 2026-11-15 · Added optional validated media-time audio-envelope point
 T-703 · 2026-11-15 · Integrated trial-only magnetic reordering and Free placement with pointer-following ghosts, 45% landing slots, identity-aware 0.18s neighbor motion, continuous40pt edge scroll, release-time Option copying and one-edit commit; no-op/Escape leave no undo. Option-click still blades after release; sticky blade stays immediate. Added Video ⌘D per selected clip and retained layer collision-aware duplication. New trial tracks/headers/layer mapping render correctly; layout height growth preserves drag and stale source-selection outlines are suppressed. All154 Core tests and all9 current timeline-* selftests pass (new reorder also passes from assembled app); gallery and drag/collision/timeline renders inspected. User confirmed horizontal feel is right in local review fixture. Recorded debug long-timeline timing above without presentation/hardware claim. Existing Video Track/header-selection baseline is retained in this commit; unrelated config changes remain untouched. No vertical lift/recording-layer/performance acceptance or release claimed.
 
 T-704 · 2026-11-15 · Verified existing header/Command-A Video group selection with real synthetic header clicks, gaps and grabbing the second selected clip in both Magnet/Free; order, retained spacing, complete selection and one exact undo are asserted. Added stale-trial protection: editing shortcuts cancel clip drag, and drop never overwrites an intervening external/menu edit or restores stale selection. Extended timeline-selection also checks keyboard/drop/Escape interruptions and block-lane Command-A isolation. Full make test154/154 and native timeline-selection/reorder/ops pass; make -o build app CONFIG=debug reuses verified native build and assembled app selection case passes. Xcode native/platform Testing overrides as T-701. No hardware/performance/release acceptance claimed; unrelated config edits preserved.
+
+T-705 · 2026-11-15 · Implemented permanent26pt New track strip, descending Video N layers above Video, native accessible Magnet/Free header using existing rippleDelete and synchronized toolbar/undo. External file drops use next track; existing layers show a private row placeholder without lane/project allocation until one-step drop, with Escape/cancel and keyboard interruption safe. New row-aware clip ghost geometry and restore-bubble event priority retained; fixture coordinates use laneMidY. Full make test154/154, six native timeline cases (tracks/full-layers/png/selection/reorder/ops) and assembled tracks pass; native checks include actual PNG import, hover stability, gap preservation and mode undo. Gallery/header/timeline and settled1100×700 editor renders inspected. Default1300×850 settled capture fails titlebar alignment consistently; T-705b added to diagnose/fix before claiming full UI validation. HUMAN header/drop-row question is pending on opened review fixture; task remains[~], no visual acceptance invented. Native Xcode/platform Testing flags as T-701; gallery reused verified native binary; unrelated config changes preserved.
+
+T-705 follow-up · 2026-11-15 · User reported image should fill canvas; changed shared new-image import default to Full while preserving videos and existing placements. File/clipboard/new-track imports verified; full154 Core pass, media-import/tracks pass, corrected settled review image inspected, parity maxDelta0 over11 times. Review copy retains user track/timing edits. User explicitly waived further HUMAN reviews; T705 completed using automated checks and agent visual judgment. Titlebar failure remains T705b; independent extra layers-render check exposed orientation assertion, recorded as T705c.
