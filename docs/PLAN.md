@@ -287,7 +287,7 @@ older builds ignore those points and cannot preserve their phase. Recording laye
 | Scope | Tasks | Done |
 |---|---|---|
 | Phase 1 | T-701, T-701b, T-702, T-702b, T-703…T-705, T-705b, T-705c | 9/9 |
-| Phase 2 | T-711…T-714 | 0/4 |
+| Phase 2 | T-711…T-714 | 1/4 |
 | Phase 3 | T-721…T-723 | 0/3 |
 
 - [x] **T-701 Core: media continuity instead of clock continuity**
@@ -472,25 +472,41 @@ older builds ignore those points and cannot preserve their phase. Recording laye
     occluded; the command correctly refuses to claim playback results. Two full 3600-frame fixtures were generated
     before moving visibility preflight ahead of synthesis. No preview FPS or dual-screen export time measured;
     Intel hardware also unavailable. No wake/unlock action or review prompt requested; continue software tasks.
-- [ ] **T-712 Core: recording layers, `liftClips`, `insertLayers`, versioning**
+- [x] **T-712 Core: recording layers, `liftClips`, `insertLayers`, versioning**
   - `LayerBlock.Kind.recording` (file `"screen.mov"`, `mediaStart`, new `mediaRate: Double?` for sped-up clips,
-    `rect` = full canvas, `backdrop .none`, fades nil) and `LayerBlock.scene: SceneEffects?` where
+    `rect` = full canvas, `backdrop .none`, clip fades retained, otherwise nil) and `LayerBlock.scene: SceneEffects?` where
     `struct SceneEffects: Codable, Equatable { var zooms: [Zoom]; var masks: [Mask]; var hideCursor: Bool? }` with times
-    relative to the layer start. Allow `"screen.mov"` in layer media validation (`mediaIsValid` duration =
+    relative to the layer start. Optional scene window shots and original camera context (clips/zooms/masks/window
+    shots plus selected original clip, captured before clock normalization) preserve multi-window selection,
+    spring history and mask fade phase for T-713's identity promise. Retained effect IDs let the inverse rejoin only
+    lift-generated fragments, preserving later splits/edits. Context contains project metadata, never events.
+    Allow `"screen.mov"` in layer media validation (`mediaIsValid` duration =
     `source.duration`). Counts toward the 4 video-layer-lane cap in `freeLayerTrack`.
   - `liftClips(_ indices: Set<Int>, toTrack: Int, atOutput: Double, copy: Bool) -> [UUID]`: per clip (timeline order,
     keeping relative offsets) build the layer, move zooms/masks inside the clip's clock range into `scene` (sliced at
     the clip edges, re-based to 0), relink its screen-linked audio with `linkAudio(_, to: .layer, layer:)`, place with
     `freeLayerTrack(…, preferred: toTrack)` (collision → next track up, decision "nothing is overwritten"), then remove
-    the clip with the existing `deleteClips` (ripple per `rippleDelete`). `copy` skips the removal and duplicates ids.
+    the clip with the existing `deleteClips` (ripple per `rippleDelete`). Stage the new content off-project until
+    deletion finishes, then place it at the requested output position so ripple cannot shift the destination.
+    `copy` skips the removal and duplicates ids. Recording minimum length is 0.1 media seconds; its output duration
+    may be shorter at high speed. Imported layer minimum length stays unchanged.
   - `insertLayers(_ ids: [UUID], intoVideoAt index: Int, copy: Bool) -> Set<Int>`: inverse for `.recording` layers —
     build `Clip`s from `mediaStart/mediaRate`, insert through T-702's clock re-lay, restore `scene` effects at the new
     clock positions and relink audio to `.screen`. Imported image/video layers can't enter Video until T-722.
   - Versioning: `currentVersion = 4`, but `save` writes `4` only when a `.recording` layer exists, else `3`, so projects
-    that don't use the feature still open in older builds. Older builds already refuse a newer version with an alert.
+    that don't use the feature still open in older builds. `currentVersion` is the supported maximum; new/versionless
+    models retain version 3 metadata until file save chooses the required version. Read the version header before
+    feature enums to reject future versions clearly. Older builds already refuse a newer version with an alert.
   - Tests: `liftInsertRoundTrip` (lift then insert at the same index = original), `liftCarriesZoomsAndAudio`,
     `liftCollisionPushesUp`, `liftCopyLeavesSource`, `v3DecodesUnchanged`, `savesV3WithoutRecordingLayers`.
   - Verify: `make test FILTER=lift`.
+  - Verified 2026-11-15: targeted lift 4/4 and full Core 160/160 pass with the established native Xcode/Testing
+    flags; app compiles. Six named tests cover rates, short fast clips, collision rollback, independent copies,
+    audio settings/envelopes, immutable trim context, trimmed scene insertion, v3/default decoding and v4 saves.
+    Round trips include independent camera/key/layout/text timing at middle and tail positions, automatic padding,
+    spanning effect restoration and a later neighbor split. Only unchanged owned padding is reclaimed; copies own
+    neither padding nor retained neighbors. Audio collisions may change lanes while preserving volume/mute/gain.
+    Rendering and vertical gestures remain T-713/T-714; no recording-layer visual acceptance inferred yet.
 - [ ] **T-713 Render: recording layers through the screen pass**
   - `FrameSource.makeComposition`: a `.recording` layer inserts from the already-open screen asset (keep-alive rule
     in that file applies) into its layer track at `mediaStart … + duration × mediaRate`, scaled for `mediaRate`.
@@ -1404,3 +1420,5 @@ T-705b · 2026-11-15 · Fixed native window-control alignment after screen-const
 T-705c · 2026-11-15 · Corrected reversed red/green bands in orientation fixture under its top-left CTM; production image rendering unchanged, pixel assertion retained. Native build, make-layers-fixture (compositor+livevideo), media-import pass; layers parity maxDelta0 over32 times. Added and inspected rendered orientation proof; Phase1 now9/9.
 
 T-711 · 2026-11-15 · Added opt-in native dual4K60 benchmark with actual presented timestamps and sampled main/layer PTS, standard framebuffer-only playback, full2160p60HEVC export validation/reporting and native event-loop dispatch. Native build and ordinary menu-actions/tracks pass. Two3600-frame moving fixtures generated; actual playback attempts correctly refused occluded windows. Final LaunchServices preflight plus read-onlyCGSession confirmed lockedconsole; no wake/unlock attempted. Task remains[~]: noASpreviewFPS/dualexporttime orIntelresult claimed. User requested no further prompts, so continuing software tasks while hardware/visible-session evidence remains outstanding.
+
+T-712 · 2026-11-15 · Added recording layers/mediaRate/scene and original camera context, lift/insert using shared clock/slicing/paste/collision operations, conditional v4 saves with v3 defaults and future-header refusal. Preserved fades/color/hidecursor, carried screen audio envelopes/settings, independent global-lane output positions and safe owned padding. Copies clear ownership and refresh scene IDs; unchanged spanning effects can rejoin while later neighbor edits survive. Trim context remains immutable and insertion clips scene tails. Native targetedlift4/4/full160/160 pass; app compiles and diffcheck clean. Audio collision routing can choose another lane; recording render/gestures still pending713/714. Unrelated config modifications remain untouched.

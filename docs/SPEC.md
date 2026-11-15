@@ -489,10 +489,23 @@ Rules:
   metadata retains legacy local fade behavior. Gain multiplies the stored envelope; an explicit fade edit resets it
   to the clip's local fade controls. Preview, export and timeline outlines use the same ramps. Version remains 3;
   older builds ignore this additive field and cannot preserve a sliced fade's phase when rewriting the project.
+- Recording layers use `kind: "recording"`, `file: "screen.mov"`, `mediaStart`, optional `mediaRate` (default 1),
+  full-canvas `rect`, no backdrop, and the source clip's fades/color. Their `scene` contains local-output-time
+  `zooms`/`masks`, optional `hideCursor` and window shots. Optional `cameraContext` snapshots the original clips,
+  zooms, masks, window shots and selected clip before clock normalization, preserving camera history and mask fade
+  phase; it contains no recorded events. Its retained effect IDs protect edits made after lifting. Internal
+  `scene.padding` records only an automatically added tail gap needed by independent lanes; insertion reclaims
+  matching unchanged owned padding. Copies clear padding/neighbor ownership and receive independent effect IDs.
+  Camera, key, layout and text lanes keep absolute output positions when recording clips move between lane kinds.
+  Audio collisions preserve sound settings and may require another lane. Recording layers count toward the four
+  video-decoder-lane limit; minimum length is 0.1 media seconds, including output spans below 0.1 seconds at speed.
+- Maximum supported format is 4. New/versionless models default to version 3 metadata; atomic `save` writes version
+  4 when recording layers exist, otherwise 3. The loaded version remains metadata in memory. File loading checks
+  the version header before decoding feature enums so a future version fails clearly without rewriting it.
 - Screen/camera-linked audio uses timeline-clock start/end, with file playback rate `mediaRate ?? 1`, mapped through
   the overlapping video clips. Unlinked/layer-linked audio and all layers are **connected**: output start =
   `TimeMap.outputTime(atSource: start)`, output duration = `end - start`, independent of video speed. Their own media
-  plays at `mediaRate ?? 1` (video layers always 1×). Audio `track` indexes `audioTracks`; `layer` is set only for
+  plays at `mediaRate ?? 1` (imported video layers currently use 1×). Audio `track` indexes `audioTracks`; `layer` is set only for
   `link: "layer"` and names its video layer. Layer `track` is its lane (higher is in front); its `rect` is normalised
   to the **output canvas**, not the source frame. Audio/layer tails extend preview/export beyond screen footage.
   Full signatures, defaults, link/settling rules and media-range invariants: `docs/AUDIO-LAYERS.md` §3–§4.

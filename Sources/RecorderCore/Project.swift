@@ -386,8 +386,46 @@ public struct AudioClip: Codable, Equatable, Sendable {
     }
 }
 
+/// Recording-clock history needed to replay camera motion at a lifted clip's first frame.
+public struct RecordingCameraContext: Codable, Equatable, Sendable {
+    public var clips: [Clip]
+    public var zooms: [Zoom]
+    public var masks: [Mask]
+    public var windowShots: [WindowShot]
+    public var clip: Clip
+    public var retainedEffectIDs: [String]? = nil
+    public init(clips: [Clip], zooms: [Zoom], masks: [Mask], windowShots: [WindowShot], clip: Clip, retainedEffectIDs: [String]? = nil) {
+        self.clips = clips; self.zooms = zooms; self.masks = masks; self.windowShots = windowShots; self.clip = clip
+        self.retainedEffectIDs = retainedEffectIDs
+    }
+}
+
+public struct SceneEffects: Codable, Equatable, Sendable {
+    public var zooms: [Zoom]
+    public var masks: [Mask]
+    public var hideCursor: Bool?
+    public var windowShots: [WindowShot]?
+    public var cameraContext: RecordingCameraContext?
+    public var padding: Clip? = nil
+    public init(zooms: [Zoom] = [], masks: [Mask] = [], hideCursor: Bool? = nil,
+                windowShots: [WindowShot]? = nil, cameraContext: RecordingCameraContext? = nil) {
+        self.zooms = zooms; self.masks = masks; self.hideCursor = hideCursor
+        self.windowShots = windowShots; self.cameraContext = cameraContext
+    }
+    enum CodingKeys: String, CodingKey { case zooms, masks, hideCursor, windowShots, cameraContext, padding }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        zooms = try c.value(.zooms, default: [])
+        masks = try c.value(.masks, default: [])
+        hideCursor = try c.decodeIfPresent(Bool.self, forKey: .hideCursor)
+        windowShots = try c.decodeIfPresent([WindowShot].self, forKey: .windowShots)
+        cameraContext = try c.decodeIfPresent(RecordingCameraContext.self, forKey: .cameraContext)
+        padding = try c.decodeIfPresent(Clip.self, forKey: .padding)
+    }
+}
+
 public struct LayerBlock: Codable, Equatable, Sendable {
-    public enum Kind: String, Codable, Sendable { case image, video }
+    public enum Kind: String, Codable, Sendable { case image, video, recording }
     public enum Backdrop: String, Codable, Sendable { case none, dim, blur }
     public enum Motion: String, Codable, Sendable { case fade, scale, slide }
     public var id: String
@@ -396,6 +434,8 @@ public struct LayerBlock: Codable, Equatable, Sendable {
     public var end: Double
     public var file: String
     public var mediaStart: Double
+    public var mediaRate: Double? = nil
+    public var scene: SceneEffects? = nil
     public var track: Int
     public var rect: NormRect
     public var backdrop: Backdrop
@@ -407,13 +447,14 @@ public struct LayerBlock: Codable, Equatable, Sendable {
 
     public init(id: String = UUID().uuidString, kind: Kind, start: Double, end: Double, file: String,
                 mediaStart: Double = 0, track: Int = 0, rect: NormRect, backdrop: Backdrop = .dim,
-                motion: Motion = .fade, fadeIn: Double? = 0.3, fadeOut: Double? = 0.3, aboveCamera: Bool = false) {
+                motion: Motion = .fade, fadeIn: Double? = 0.3, fadeOut: Double? = 0.3, aboveCamera: Bool = false, mediaRate: Double? = nil, scene: SceneEffects? = nil) {
         self.id = id; self.kind = kind; self.start = start; self.end = end; self.file = file
         self.mediaStart = mediaStart; self.track = track; self.rect = rect; self.backdrop = backdrop
+        self.mediaRate = mediaRate; self.scene = scene
         self.motion = motion; self.fadeIn = fadeIn; self.fadeOut = fadeOut; self.aboveCamera = aboveCamera
     }
     enum CodingKeys: String, CodingKey {
-        case id, kind, start, end, file, mediaStart, track, rect, backdrop, motion, fadeIn, fadeOut, aboveCamera, color
+        case id, kind, start, end, file, mediaStart, track, rect, backdrop, motion, fadeIn, fadeOut, aboveCamera, color, mediaRate, scene
     }
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -423,6 +464,8 @@ public struct LayerBlock: Codable, Equatable, Sendable {
         end = try container.value(.end, default: 0)
         file = try container.value(.file, default: "")
         mediaStart = try container.value(.mediaStart, default: 0)
+        mediaRate = try container.decodeIfPresent(Double.self, forKey: .mediaRate)
+        scene = try container.decodeIfPresent(SceneEffects.self, forKey: .scene)
         track = try container.value(.track, default: 0)
         rect = try container.value(.rect, default: NormRect())
         backdrop = try container.value(.backdrop, default: .dim)
@@ -441,6 +484,7 @@ public struct LayerBlock: Codable, Equatable, Sendable {
         try container.encode(backdrop, forKey: .backdrop); try container.encode(motion, forKey: .motion)
         try container.encode(fadeIn, forKey: .fadeIn); try container.encode(fadeOut, forKey: .fadeOut)
         try container.encode(aboveCamera, forKey: .aboveCamera)
+        try container.encodeIfPresent(mediaRate, forKey: .mediaRate); try container.encodeIfPresent(scene, forKey: .scene)
         try container.encodeIfPresent(color, forKey: .color)
     }
 }
@@ -674,7 +718,7 @@ public enum ProjectError: Error, Equatable, Sendable {
 /// The editor's entire edit state. See docs/SPEC.md §5. `project.json` is the only file the
 /// editor ever rewrites; media alongside it is never modified after recording.
 public struct Project: Codable, Equatable, Sendable {
-    public static let currentVersion = 3
+    public static let currentVersion = 4
 
     public var framingEnabled: Bool { frame.enabled ?? true }
 
@@ -714,7 +758,7 @@ public struct Project: Codable, Equatable, Sendable {
     public var keys: Keys
 
     public init(
-        version: Int = Project.currentVersion,
+        version: Int = 3,
         id: String = UUID().uuidString,
         title: String = "Untitled",
         createdAt: String = ISO8601DateFormatter().string(from: Date()),
@@ -759,7 +803,7 @@ public struct Project: Codable, Equatable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        version = try c.value(.version, default: Project.currentVersion)
+        version = try c.value(.version, default: 3)
         id = try c.value(.id, default: UUID().uuidString)
         title = try c.value(.title, default: "Untitled")
         createdAt = try c.value(.createdAt, default: ISO8601DateFormatter().string(from: Date()))
@@ -809,16 +853,18 @@ public struct Project: Codable, Equatable, Sendable {
     /// Throws `ProjectError.newerVersion` rather than silently opening (and risking a rewrite) a
     /// `project.json` written by a future version of the app.
     public static func load(from url: URL) throws -> Project {
-        let project = try JSONDecoder().decode(Project.self, from: Data(contentsOf: url))
-        guard project.version <= currentVersion else { throw ProjectError.newerVersion(project.version) }
-        return project
+        let data = try Data(contentsOf: url)
+        struct Header: Decodable { var version: Int? }
+        let version = try JSONDecoder().decode(Header.self, from: data).version ?? 3
+        guard version <= currentVersion else { throw ProjectError.newerVersion(version) }
+        return try JSONDecoder().decode(Project.self, from: data)
     }
 
     public func save(to url: URL) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         var saved = self
-        saved.version = Self.currentVersion
+        saved.version = layers.contains { $0.kind == .recording } ? 4 : 3
         try encoder.encode(saved).write(to: url, options: .atomic)
     }
 }
