@@ -560,6 +560,8 @@ older builds ignore those points and cannot preserve their phase. Recording laye
   multiplier (`Clip.groupSpeed`, `setGroupSpeed`/`groupSpeedRange`, `displayedSpeed`), cursor/fades/remove act on the
   group; right-click Speed and the timeline label use the group speed. Verify: `make test FILTER=groupSpeed`;
   `--selftest clip-fades`.
+- [x] **T-734 Insert preview when dropping onto Video** · SPEC §7.2 — dragging a lifted recording over the Video lane
+  draws the trial insert (landing clip faded + outlined) and ripples neighbours apart/back. Verify: `--selftest timeline-lift`.
 
 ---
 
@@ -1469,3 +1471,5 @@ T-711 close · 2026-11-15 · User chose to drop the Intel measurement; T-711 clo
 T-731 T-732 · 2026-11-15 · Pencil tool (P), cross-lane box select, ⌘J grouping with ⇧⌘J ungroup. make test 168/168 (with Xcode's DEVELOPER_DIR; CLT toolchain can't load SwiftUI macros here); selftests timeline-ops (new pointer/pencil/group/box checks), timeline-selection/-lift/-clipboard/-tracks/-full-layers, menus, menu-actions, audio-lanes, command-scissors OK. Fixed two selection writes inside `model.update` closures (exclusive-access crash once `selectedClips` reads `project`).
 
 T-733 · 2026-11-16 · Joined clips get the clip inspector: group speed multiplies members (ratios kept, linked/ripple path), cursor/fades/remove on the group. make test 169/169 (Xcode DEVELOPER_DIR); selftests clip-fades (new group checks), clip-cursor, timeline-ops, timeline-selection, inspector, inspector-panels, menu-actions OK (debug build).
+
+T-734 · 2026-11-16 · Video-lane insert preview for Video 2+ drags (trial clip lane + index-aligned ripple from zero-length stand-ins). Selftests timeline-lift (new preview check), timeline-reorder/-ops/-tracks/-full-layers OK (debug build). HUMAN: judge the animation in the app.

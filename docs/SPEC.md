@@ -830,7 +830,7 @@ against each copy's selected window; edits and undo invalidate that cursor looku
 | `⌘D` on a clip | Duplicate after itself (on Main: insert; on tracks: next free spot). |
 | `⌘` held while dragging | Disables snapping, as today. |
 
-Each gesture is one undo step. A group drag moves the whole selection as one block. Lifted recordings keep their zooms, smoothed cursor, crop and frame. Dropping onto magnetic Video inserts; there is no overwrite mode. Reorder and lift are stored in `project.json` per §5 (`version` 4 only when a recording layer is used).
+Each gesture is one undo step. A group drag moves the whole selection as one block. Lifted recordings keep their zooms, smoothed cursor, crop and frame. Dropping onto magnetic Video inserts; there is no overwrite mode. While a Video 2+ item hovers the Video lane, the lane previews the insert: neighbours slide apart (0.18 s ripple) and the landing clip shows faded with an accent outline; leaving the lane slides them back. Reorder and lift are stored in `project.json` per §5 (`version` 4 only when a recording layer is used).
 
 **Restore**: clicking a ✂ bubble between two clips shows a popover `Restore 00:05.80 removed here` `[Restore]`; it re-inserts the removed source range (merging clips when speeds match).
 

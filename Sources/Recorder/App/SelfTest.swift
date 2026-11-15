@@ -4619,6 +4619,9 @@ private func runTimelineLiftSelfTest() async throws {
         let t = start + (layer.end - layer.start) / 2
         view.mouseDown(with: synthMouse(.leftMouseDown, at(view, t, y: laneY)))
         view.mouseDragged(with: synthMouse(.leftMouseDragged, at(view, 14, y: view.laneMidY(.clip))))
+        // Hovering Video previews the insert: the landing clip is marked and neighbours slide from where they were.
+        let preview = view.debugVideoInsertPreview
+        try check(preview.clips.count == 1 && preview.rippleFrom == lifted.clips.count + 1, "insert preview while hovering Video: \(preview)")
         view.mouseUp(with: synthMouse(.leftMouseUp, at(view, 14, y: view.laneMidY(.clip))))
         try check(model.project.layers.isEmpty && model.project.zooms.count == 1 && model.project.checkInvariants() == nil, "insert back restores zoom, no layer")
         try check(abs(videoSeconds(model.project) - 16) < 1e-6 && !model.selectedClips.isEmpty && model.undoStepCount == 2, "insert back one undo")

@@ -404,6 +404,7 @@ final class TimelineView: NSView {
     var debugMagneticVideoButton: NSButton { magneticVideoButton }
     var debugNewTrackButton: NSButton { newTrackButton }
     var debugNewTrackLayerTrial: Project? { layerDropTrial }
+    var debugVideoInsertPreview: (clips: Set<Int>, rippleFrom: Int?) { (layerDropClips, rippleFromClips?.count) }
     private var lanesOrigin: CGFloat { newTrackDropRect.maxY }
     private var newVideoTrack: Int { (lanes.compactMap { lane -> Int? in if case .layer(let track) = lane { return track }; return nil }.max() ?? -1) + 1 }
 
@@ -800,7 +801,9 @@ final class TimelineView: NSView {
                 withAttributes: [.font: Theme.labelFont, .foregroundColor: Theme.textSecondary])
         }
         drawRuler()
-        drawClipLane(project, timeMap)
+        // Dragging a Video 2+ item over Video previews the insert there (the item itself stays drawn on its lane).
+        if !layerDropClips.isEmpty, let trial = layerDropTrial { drawClipLane(trial, TimeMap(trial.clips)) }
+        else { drawClipLane(project, timeMap) }
         drawCameraLane(project, timeMap)
         drawMediaLayers(project)
         drawZoomLane(project, timeMap)
@@ -1077,7 +1080,9 @@ final class TimelineView: NSView {
         let targetRects = clipDragActive ? clipDragRects() : clipRects(clips, row: row)
         // T-408 "Ripple animation": ease from the pre-change geometry, keyed by index —
         // ponytail: animate by index; fine because ops change at most one seam.
-        let eased = dragKind == nil ? rippleEasedProgress() : nil
+        let layerDrag: Bool
+        if case .layer = dragKind { layerDrag = true } else { layerDrag = false }
+        let eased = dragKind == nil || layerDrag ? rippleEasedProgress() : nil
         let fromRects = eased != nil ? clipRects(rippleFromClips ?? clips, row: row) : nil
 
         var outStart = 0.0
@@ -1095,7 +1100,7 @@ final class TimelineView: NSView {
             let rect = pieces.dropFirst().reduce(pieces[0]) { $0.union($1) }
             guard rect.width > 0.5, run.count > 1 || !clip.isEmpty else { continue }
             let label = "Clip \(i + 1)  ·  " + (run.count > 1 ? "\(run.count) joined  ·  " : "") + "\(formatSpeed(project.displayedSpeed(i)))×"
-            let landing = clipDragActive && clipDragLanding.contains(i)
+            let landing = (clipDragActive && clipDragLanding.contains(i)) || layerDropClips.contains(i)
             NSGraphicsContext.saveGraphicsState()
             if landing { NSGraphicsContext.current?.cgContext.setAlpha(0.45) }
             drawBlock(rect, fill: Theme.clip, tornLeft: false, tornRight: false, label: label,
@@ -1147,6 +1152,14 @@ final class TimelineView: NSView {
             return CGRect(x: x(forOutput: outStart) + 1.5, y: row.minY + 2,
                            width: max(0, x(forOutput: outEnd) - x(forOutput: outStart) - 3), height: row.height - 4)
         }
+    }
+
+    /// What an insert preview animates from: `clips` without `removed`, with zero-length stand-ins at `inserted`, so
+    /// each existing clip slides from where it was and new ones grow from their seam (index-keyed, like `beginRipple`).
+    private func rippleBase(_ clips: [Clip], removing removed: Set<Int>, inserting inserted: Set<Int>) -> [Clip] {
+        var base = clips.indices.filter { !removed.contains($0) }.map { clips[$0] }
+        for i in inserted.sorted() where i <= base.count { base.insert(Clip(sourceStart: 0, sourceEnd: 0), at: i) }
+        return base
     }
 
     private func beginRipple(from oldClips: [Clip]) {
@@ -2453,10 +2466,18 @@ final class TimelineView: NSView {
         guard let model, var project = dragProject, let layer = project.layers.first(where: { $0.id == id.uuidString }) else { return }
         let raw = geometry.output(forX: geometryX(point)) - (edge == nil ? grabOffset : 0)
         let (output, snapped) = snappedOutput(raw, excludingBlock: id, disabled: snapDisabled)
+        let shown = layerDropClips.isEmpty ? nil : layerDropTrial?.clips, shownInserted = layerDropClips
+        // Leaving the Video lane slides the preview back; entering it or moving the seam slides clips apart.
+        func animate(to clips: [Clip], inserted: Set<Int>) {
+            guard inserted != shownInserted else { return }
+            let base = rippleBase(shown ?? (dragProject ?? model.project).clips, removing: shownInserted, inserting: inserted)
+            if base.count == clips.count { beginRipple(from: base) }
+        }
         layerDropTrial = nil; layerDropClips = []
         if edge == nil, layer.kind == .recording, laneRow(.clip).contains(point) {
             let clips = project.insertLayers([id], intoVideoAt: videoInsertIndex(project, atOutput: max(0, geometry.output(forX: geometryX(point)))), copy: NSEvent.modifierFlags.contains(.option))
             if !clips.isEmpty, project.checkInvariants(mediaDurations: mediaDurations) == nil {
+                animate(to: project.clips, inserted: clips)
                 layerDropTrial = project // trial-only like the new-track drop; mouse-up commits it
                 layerDropClips = clips
                 if let original = dragProject, model.project != original { model.update { $0 = original } }
@@ -2464,6 +2485,7 @@ final class TimelineView: NSView {
                 return
             }
         }
+        if shown != nil { animate(to: (dragProject ?? model.project).clips, inserted: []) }
         if edge == nil, newTrackDropRect.contains(point) {
             project.moveLayer(id, toOutput: max(0, output), track: newVideoTrack, propagate: project.linkVideoEdits)
             if project.checkInvariants(mediaDurations: mediaDurations) == nil {
