@@ -436,7 +436,7 @@ source frame unless noted; media in-points use their own file's seconds):
 
 ```jsonc
 {
-  "version": 3,
+  "version": 3,                 // 4 when a recording layer or a clip with "file" exists (rules below)
   "id": "UUID", "title": "My Recording", "createdAt": "ISO8601",
   "source": { "kind": "display|window|area", "pixelWidth": 2880, "pixelHeight": 1800, "scale": 2, "duration": 93.4, "hasCamera": true, "hasMic": true, "hasSystemAudio": false },
   "clips":   [ { "sourceStart": 0, "sourceEnd": 41.2, "speed": 1 }, { "sourceStart": 47.0, "sourceEnd": 93.4, "speed": 2 } ],
@@ -478,7 +478,10 @@ Rules:
   the project removes it. "Extract raw files" = reveal the package contents in Finder.
 - Chosen backdrop images use immutable `background-<id>.<ext>` files beside `project.json`; `background.imagePath`
   selects the current copy. Replacing a backdrop never overwrites the file a previous undo state references.
-- `audioTracks`/`audioClips`/`layers` are additive version-3 keys; no version bump. When `audioClips` is absent, derive
+- **Version rule.** Save `"version": 4` only when the project has a `layers` entry with `kind: "recording"` or a clip with `file`; otherwise save `3`. Older builds reject a newer version with the alert above and never rewrite it, so projects that don't use free editing stay openable in them. Opening a v3 project needs no migration.
+- **Clip `file`** (v4): optional. `nil` = `screen.mov` (the default, and what every existing clip means). A string names an imported `media/` file that this clip plays instead; such clips have no cursor or zoom.
+- **Recording layer** (v4): `kind: "recording"` is a lifted clip (§7.2 Free editing). `file` is `"screen.mov"`, `mediaStart` is the in-point into it, `mediaRate` as for audio (default 1), `rect` is the full output canvas, and `scene` holds the carried effects: `{ "zooms": [...], "masks": [...], "hideCursor": false }`, with times **relative to the layer's `start`** (not the timeline clock). `scene` is `null` for image and video layers. Its cursor and zooms are drawn through the same screen pass as the Main footage.
+- `audioTracks`/`audioClips`/`layers` are additive version-3 keys; no version bump for them. The v4 kind and clip file above are the only additions that need one. When `audioClips` is absent, derive
   Mic/System tracks and one linked audio clip per non-gap video clip from the legacy source/audio fields. Mic links
   to camera if present, otherwise screen; System links to screen. An explicit `audioClips: []` stays silent. Layers
   default to `[]`. Track volume/mute and clip gain/fades are authoritative; legacy `audio` volume/mute fields remain
@@ -751,6 +754,10 @@ Magnet reorders clips and closes deleted spans; Free places clips at a time and 
    16 pt gutter at left           hover line: 1 px white @ 30% following the mouse (with timecode tooltip)
 ```
 
+Lane order top to bottom: `+ New track` row, Video N … Video 2 (free, ○), Video (Main, magnet/free toggle on its header; ⧉ = a copy that owns its own zooms and masks), effect lanes, audio lanes. Effect lanes describe Main; items on free tracks show their own zooms inside the block.
+
+
+
 ### 7.2 Interaction rules (normative)
 
 **Navigation**
@@ -780,7 +787,7 @@ Magnet reorders clips and closes deleted spans; Free places clips at a time and 
 - A split produces two clips with identical speed; it is invisible in output until one side is changed. Splitting within 2 frames of an existing edge does nothing (shake animation on the blade, no error dialog).
 - After a split, a 0.25 s "cut flash" (white line fading) confirms it. Undo is one step.
 
-**Remove a segment** = select clip → `⌫` (or right-click ▸ Remove). Neighbours close the gap with a 0.18 s slide animation; a ✂ bubble marks the seam. Ripple is inherent (x-axis is output time). The last remaining clip cannot be removed.
+**Remove a segment** = select clip → `⌫` (or right-click ▸ Remove). Neighbours close the gap with a 0.18 s slide animation; a ✂ bubble marks the seam. On Magnet the gap closes (ripple is inherent: the x-axis is output time); on Free it stays as a gap. The last remaining clip cannot be removed.
 
 **Trim** = drag a clip edge. The clip's other edge stays fixed **on screen**; following clips ripple live. While dragging: preview shows the frame at the edge, a chip shows `new duration (Δ ±0:01.20)`. Can extend back up to the neighbour's source boundary (never overlap source ranges). Min clip length 0.1 s.
 
@@ -799,6 +806,24 @@ Recorded click, typing and silence times map through each kept occurrence of foo
 clips at different rates. Regenerating zooms preserves continuous effects across harmless splits; copies own separate
 effects. Pause erasing changes only the touched audio occurrence. Multi-window copies normalize and hide the cursor
 against each copy's selected window; edits and undo invalidate that cursor lookup.
+
+**Free editing (clip drags)** — Video clips can be reordered, lifted onto other tracks, copied and inserted. Gestures:
+
+| Gesture | Result |
+|---|---|
+| `C`, `⌥`-blade, trims, `⌫` on Main | Unchanged. The Magnet/Free toggle decides close-gap vs leave-gap. |
+| Drag a Main clip sideways past a neighbour | **Reorder.** Blue insertion caret between clips; neighbours slide aside live (0.18 s). Effects and linked audio move with the clip. |
+| Drag a Main clip sideways into a gap (Free) | Slides within the gap. The caret appears only when the pointer crosses a neighbour's midpoint. |
+| Drag a Main clip up/down onto Video N | **Lift.** The clip becomes a free item at the drop time; Main closes the gap (Magnet) or leaves one (Free). Its zooms, masks and linked audio go with it. |
+| Drop onto the `+ New track` row | Creates Video N+1 and drops there. No lane is created until release. |
+| Drag any track item onto Main | **Insert** at the caret; Main ripples to make room. Imported video/images become Main clips too. |
+| Hold `⌥` while dropping | **Copy** instead of move (Finder rule). The copy owns its own zooms and masks. |
+| Drop onto an occupied part of a track | The item goes to the next free track above (created if needed). Nothing is overwritten. |
+| `⌥↑` / `⌥↓` with a selection | Move the selection one lane up/down. |
+| `⌘D` on a clip | Duplicate after itself (on Main: insert; on tracks: next free spot). |
+| `⌘` held while dragging | Disables snapping, as today. |
+
+Each gesture is one undo step. A group drag moves the whole selection as one block. Lifted recordings keep their zooms, smoothed cursor, crop and frame. Dropping onto magnetic Video inserts; there is no overwrite mode. Reorder and lift are stored in `project.json` per §5 (`version` 4 only when a recording layer is used).
 
 **Restore**: clicking a ✂ bubble between two clips shows a popover `Restore 00:05.80 removed here` `[Restore]`; it re-inserts the removed source range (merging clips when speeds match).
 
@@ -820,14 +845,14 @@ against each copy's selected window; edits and undo invalidate that cursor looku
 |---|---|---|---|
 | `Space` | play/pause; stop voiceover | `C` | split at playhead |
 | `←` `→` | ±1 frame | `⌥` hold / `S` | split mode |
-| | | `V` | pointer tool (exit split mode) |
+| `⌥↑` `⌥↓` | move selection to lane above/below | `V` | pointer tool (exit split mode) |
 | `⇧←` `⇧→` | ±1 s | `⌫` | remove selection |
 | `J` `K` `L` | reverse/stop/forward shuttle | `Z` | add zoom at playhead |
 | `Home` `End` | start/end | `⌘Z` `⇧⌘Z` | undo/redo |
 | `↑` `↓` | prev/next edit point | `⌘=` `⌘-` `⇧Z` | timeline zoom in/out/fit |
 | `Esc` | cancel drag → exit split mode → deselect | `⌘E` `⌘S` `⌘K` `⌘/` | export · save · command menu · cheat sheet |
 | `1`–`6` | inspector tabs | `⌘D` | duplicate selected Video clips or supported blocks after themselves |
-| `⇧R` | record/re-record voiceover; stop take | `⌘L` | link/unlink selected audio |
+| `⇧R` | record/re-record voiceover; stop take | `⌘L` | link toggle: link/unlink selected audio; when off, drags act on one item (ignore links) |
 
 During voiceover, `Esc` discards the pending take without an undo entry; ordinary editing shortcuts are locked.
 
@@ -840,7 +865,7 @@ their footage and playback settings on a normalized output clock. Linked content
 effects are sliced at clip boundaries while connected items move whole. Link Layers controls effects/camera/connected
 items; screen-linked audio follows propagation. Invalid/no-op edits leave the project unchanged. Reordering preserves
 the full Main clock length; export still ends at retained content, trimming trailing gaps under the existing rule.
-Invariants (assert in debug, test always): clips sorted by `sourceStart`, non-overlapping in source, each ≥ 0.1 s, speed in 0.25…16, ≥ 1 clip; zooms sorted, non-overlapping, ≥ 0.5 s, within `[0, duration]`.
+Invariants (assert in debug, test always): clips sorted by `sourceStart`, non-overlapping in source (media in-points `mediaStart` need not increase), each ≥ 0.1 s, speed in 0.25…16, ≥ 1 clip; zooms sorted, non-overlapping, ≥ 0.5 s, within `[0, duration]`.
 
 **AC-TL-1** (unit) Each op preserves the invariants for randomised inputs (property-style loop, 1 000 iterations, fixed seed).
 **AC-TL-2** (unit) `split` then `removeClip` then `restoreCut` returns the original project.
@@ -1035,7 +1060,7 @@ PLAN T-640…T-650.
 - **Audio is clips on tracks.** `Project.audioTracks` (name, volume, muted) and `audioClips` (file, media in-point, track,
   gain, fades, `link`). Mic and system audio become clips; old projects derive one clip per video clip and sound unchanged.
 - **Links.** `screen`-linked audio always follows video edits; `camera`-linked follows the camera clip; `layer`-linked
-  follows its video layer. ⌥ acts on one clip; deleting a video layer this way preserves and detaches its sound.
+  follows its video layer. With the link toggle (⌘L) off, drags act on one clip; deleting a video layer this way preserves and detaches its sound.
   Unlink/relink per clip; an out-of-sync clip shows a red offset chip with
   Move into Sync.
 - **Connected.** Unlinked audio, voiceover takes, audio files and all layers ride the video clock (ripple carries them),

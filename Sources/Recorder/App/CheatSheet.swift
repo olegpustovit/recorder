@@ -43,7 +43,7 @@ enum CheatSheetContent {
         Row(key: "⌥ hold / S", action: "split mode (non-audio)"),
         Row(key: "⌘L", action: "link/unlink selected audio"),
         Row(key: "⇧R", action: "record/re-record voiceover; stop take"),
-        Row(key: "⌥ drag / ⌥⌫", action: "edit audio without its linked video"),
+        Row(key: "⌥⌫", action: "delete ignoring linked audio"),
         Row(key: "⌫", action: "remove selection"),
         Row(key: "Z", action: "add zoom at playhead"),
         Row(key: "⌘Z ⇧⌘Z", action: "undo/redo"),
@@ -52,7 +52,9 @@ enum CheatSheetContent {
         Row(key: "⌘S", action: "save"),
         Row(key: "⌘K", action: "command menu"),
         Row(key: "⌘/", action: "cheat sheet"),
-        Row(key: "⌘D", action: "duplicate selected zoom/mask after itself"),
+        Row(key: "⌘D", action: "duplicate selected clip/zoom/mask after itself"),
+        Row(key: "⌥↑ ⌥↓", action: "move selection to lane above/below"),
+        Row(key: "⌥ drop", action: "copy instead of move"),
     ]
 }
 
