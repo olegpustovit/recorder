@@ -35,6 +35,7 @@ enum PerfSelfTest {
         let hardwareName = hardware("hw.model"), cpuName = hardware("machdep.cpu.brand_string")
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 720), styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "Recorder — native dual 4K60 decoder benchmark"
+        window.level = .floating  // stays above the frontmost app during the minute-long fixture synthesis
         window.isReleasedWhenClosed = false; window.center(); window.orderFrontRegardless()
         defer { window.close() }
         let visibilityDeadline = Date().addingTimeInterval(3)
@@ -143,7 +144,7 @@ enum PerfSelfTest {
         reader.add(trackOutput)
         guard reader.startReading() else { throw Fail(description: "Cannot inspect exported samples") }
         var countedFrames = 0
-        while trackOutput.copyNextSampleBuffer() != nil { countedFrames += 1 }
+        while let sample = trackOutput.copyNextSampleBuffer() { countedFrames += CMSampleBufferGetNumSamples(sample) }  // marker buffers carry 0 samples
         guard reader.status == .completed, exportedFrames == 3600, countedFrames == 3600, abs(duration - 60) < 1.0 / 60,
               size.width == 3840, size.height == 2160, codec == kCMVideoCodecType_HEVC else {
             throw Fail(description: "Export validation failed: reported=\(exportedFrames) counted=\(countedFrames) duration=\(duration) size=\(size) codec=\(String(describing: codec))")

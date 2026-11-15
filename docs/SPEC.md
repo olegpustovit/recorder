@@ -967,9 +967,11 @@ Open questions to verify during M1 (do not guess — test and record the answer 
 T-711 dual-screen performance measurement (2026-11-15): `--selftest timeline-render-perf --dual-screen` now
 measures real presented frames and distinct decoded-display timestamps for two simultaneous 4K60 streams, then
 times a verified 60-second 2160p60 HEVC export. Synthetic moving content is lighter than some real recordings.
-Local hardware is native Apple M1 / MacBookAir10,1; the console is locked, so visibility preflight correctly refuses
-live playback measurement. Preview FPS and dual-screen export time remain unmeasured on both Apple Silicon and
-Intel. No Intel half-resolution fallback decision or performance acceptance is inferred from this implementation.
+Measured 2026-11-15 on native Apple M1 / MacBookAir10,1 (debug build, 2560×1440 drawable): preview presented
+59.85 fps over the 20 s overlap; distinct displayed PTS 58.95/s main and 57.27/s layer copy, no backwards PTS;
+60 s 2160p60 HEVC export with the dual decode took 69.3 s (≈52 fps), 3600 frames verified. Answer for Apple
+Silicon: two decodes of `screen.mov` hold real time; no proxy needed. Intel: still unmeasured (no Intel hardware
+available); run the same command natively on an Intel Mac before deciding the half-resolution preview fallback.
 
 
 ### Recording/editor polish (2026-09-19)

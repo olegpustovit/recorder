@@ -475,6 +475,11 @@ older builds ignore those points and cannot preserve their phase. Recording laye
     occluded; the command correctly refuses to claim playback results. Two full 3600-frame fixtures were generated
     before moving visibility preflight ahead of synthesis. No preview FPS or dual-screen export time measured;
     Intel hardware also unavailable. No wake/unlock action or review prompt requested; continue software tasks.
+  - Apple Silicon measured 2026-11-15 (benchmark window floated above other apps; export counter now ignores
+    0-sample marker buffers): preview 59.85 fps, distinct PTS 58.95/s main + 57.27/s layer, export 69.3 s for 60 s
+    2160p60, `--selftest timeline-render-perf --dual-screen` OK. Numbers in SPEC §9.
+  - BLOCKED: Intel numbers need an Intel Mac; none is available to the agent. Remains `[~]` until someone runs the
+    same command natively on Intel.
 - [x] **T-712 Core: recording layers, `liftClips`, `insertLayers`, versioning**
   - `LayerBlock.Kind.recording` (file `"screen.mov"`, `mediaStart`, new `mediaRate: Double?` for sped-up clips,
     `rect` = full canvas, `backdrop .none`, clip fades retained, otherwise nil) and `LayerBlock.scene: SceneEffects?` where
@@ -1443,3 +1448,5 @@ T-722 · 2026-11-15 · Clip.file lets imported image/video layers enter Video vi
 T-723 · 2026-11-15 · SPEC §5 v4 keys + version rule, §7.1 anatomy, §7.2 free-editing gestures, §7.3 keys (⌥↑/⌥↓, ⌘D clips, ⌘L ignore-links), §7.4 invariant note; cheat sheet updated (⌥ drop copies, ⌥⌫ ignores links).
 
 Free-editing merge · 2026-11-15 · Combined T-713/714/721/722/723 verified on dev: native build, make test 167/167, selftests lift-identity + layer-recording-parity (maxDelta 0), timeline-lift/-reorder/-selection/-tracks/-ops/-full-layers, media-import, make-layers-fixture, menu-actions all OK. Review fixes: carried-zoom mapping, lift trial revert, image cache key.
+
+T-711 · 2026-11-15 · Apple Silicon measured: preview 59.85 fps presented, 58.95/57.27 distinct PTS/s (main/layer), dual-decode 4K60 export 69.3 s for 60 s; selftest OK after floating the benchmark window and counting only non-empty sample buffers. Intel BLOCKED (no hardware); task stays [~].
