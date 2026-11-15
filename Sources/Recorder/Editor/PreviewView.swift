@@ -934,7 +934,6 @@ final class PreviewView: MTKView {
             var pts = CMTime.invalid
             if let buffer = decoder.output.copyPixelBuffer(forItemTime: CMTime(seconds: time, preferredTimescale: 600), itemTimeForDisplay: &pts) {
                 decoder.last = buffer
-                if layer.block.kind == .recording { print("RECORDPTS preview request=\(time) display=\(pts.seconds) player=\(decoder.player.currentTime().seconds)") }
                 if onPresentedFrameForTest != nil { lastLayerPTS[lane] = pts.isNumeric ? pts.seconds : nil }
             }
             if let buffer = decoder.last { textures[lane] = textureCache.texture(from: buffer) }

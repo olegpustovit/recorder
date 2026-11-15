@@ -292,7 +292,7 @@ older builds ignore those points and cannot preserve their phase. Recording laye
 | Scope | Tasks | Done |
 |---|---|---|
 | Phase 1 | T-701, T-701b, T-702, T-702b, T-703…T-705, T-705b, T-705c | 9/9 |
-| Phase 2 | T-711…T-714 | 1/4 |
+| Phase 2 | T-711…T-714 | 2/4 |
 | Phase 3 | T-721…T-723 | 0/3 |
 
 - [x] **T-701 Core: media continuity instead of clock continuity**
@@ -512,12 +512,11 @@ older builds ignore those points and cannot preserve their phase. Recording laye
     spanning effect restoration and a later neighbor split. Only unchanged owned padding is reclaimed; copies own
     neither padding nor retained neighbors. Audio collisions may change lanes while preserving volume/mute/gain.
     Rendering and vertical gestures remain T-713/T-714; no recording-layer visual acceptance inferred yet.
-- [ ] **T-713 Render: recording layers through the screen pass**
-  - PAUSED WIP 2026-11-15: renderer/cache/composition and native tests are saved in the handoff checkpoint.
-    `make test` last passed 162/162; `lift-identity` passed 49 samples at maxDelta=0. `layer-recording-parity`
-    fails `mixed-rate-0-t4.0167` at maxDelta=127. Temporary PTS diagnostics remain; their build was interrupted.
-    Rebuild, diagnose preview/reader frame selection, and keep strict parity assertions. See `docs/RESUME.md`
-    and durable logs/PNG pairs under `docs/handoff/2026-11-15-recording-layers/`. No task completion claimed.
+- [x] **T-713 Render: recording layers through the screen pass**
+  - Verified 2026-11-15: Core 162/162; `lift-identity` and `layer-recording-parity` maxDelta=0; `make-layers-fixture`,
+    `media-import`, `timeline-tracks`, `menu-actions` OK. Parity root cause: `FrameHold` compared reader PTS (ns-rounded
+    CMTime, 4.016666667) to a double request (4.0166666666666667) with `<=` and missed the exact frame, returning the
+    previous one; now a 1e-6 slack. Shared fix, so all layers/export benefit.
   - `FrameSource.makeComposition`: a `.recording` layer inserts from the already-open screen asset (keep-alive rule
     in that file applies) into its layer track at `mediaStart … + duration × mediaRate`, scaled for `mediaRate`.
   - `EditorModel.rebuildPathsIfNeeded`: one `CameraPath(zooms: scene.zooms, cursor:, spring:, duration:)` per
@@ -1434,3 +1433,5 @@ T-711 · 2026-11-15 · Added opt-in native dual4K60 benchmark with actual presen
 T-712 · 2026-11-15 · Added recording layers/mediaRate/scene and original camera context, lift/insert using shared clock/slicing/paste/collision operations, conditional v4 saves with v3 defaults and future-header refusal. Preserved fades/color/hidecursor, carried screen audio envelopes/settings, independent global-lane output positions and safe owned padding. Copies clear ownership and refresh scene IDs; unchanged spanning effects can rejoin while later neighbor edits survive. Trim context remains immutable and insertion clips scene tails. Native targetedlift4/4/full160/160 pass; app compiles and diffcheck clean. Audio collision routing can choose another lane; recording render/gestures still pending713/714. Unrelated config modifications remain untouched.
 
 T-713 paused handoff · 2026-11-15 · User paused goal and requested a repository handoff usable by another agent. Saved unfinished renderer/native tests and temporary PTS diagnostics as explicit WIP; T713 stays unchecked. Last full Core162/162 and lift-identity49 exact samples pass; actual Preview/export parity fails first mixed2xsample at4.0167,maxDelta127. Diagnostic build interrupted, so rebuild first. Durable logs and PNG pairs copied into docs/handoff; docs/RESUME.md records code map, commands, user review waiver, pending hardware measurements and next tasks. No agent compiler/test remained active at handoff; unrelated CLAUDE.md/Makefile/pack.lock edits preserved.
+
+T-713 · 2026-11-15 · Recording layers render through the screen pass; preview/export parity and lift identity at maxDelta 0. Root cause of the parity failure was FrameHold missing a frame whose ns-rounded PTS exceeded the double request time by ~3e-10; added 1e-6 slack. Temporary PTS prints removed.

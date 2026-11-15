@@ -509,18 +509,20 @@ final class FrameHold {
     private var current: CMSampleBuffer?
     private var lookahead: CMSampleBuffer?
     private var lookaheadPTS = Double.infinity
+    /// Reader PTS come from rounded CMTimes (e.g. 4.016666667 for a request of 4.0166666666666667); without slack that frame is missed.
+    private static let slack = 1e-6
 
     init(output: AVAssetReaderTrackOutput) { self.output = output }
 
     func imageBuffer(upTo t: Double) -> CVPixelBuffer? {
-        if let lookahead, lookaheadPTS <= t {
+        if let lookahead, lookaheadPTS <= t + Self.slack {
             current = lookahead
             self.lookahead = nil
             lookaheadPTS = .infinity
         }
         while lookahead == nil, let next = output.copyNextSampleBuffer() {
             let pts = CMSampleBufferGetPresentationTimeStamp(next).seconds
-            if pts <= t {
+            if pts <= t + Self.slack {
                 current = next
             } else {
                 lookahead = next
@@ -528,7 +530,6 @@ final class FrameHold {
             }
         }
         guard let current else { return nil }
-        print("RECORDPTS reader request=\(t) display=\(CMSampleBufferGetPresentationTimeStamp(current).seconds) track=\(output.track.trackID)")
         return CMSampleBufferGetImageBuffer(current)
     }
 }
