@@ -799,6 +799,8 @@ private final class EditorRootView: NSView {
         let rowY = clampedTimeline + Self.dividerHeight
 
         topBar.frame = NSRect(x: 0, y: rowY + rowHeight + Self.navigationHeight, width: bounds.width, height: Self.topBarHeight)
+        // Height-only window resizing moves this row without invalidating its native-control alignment.
+        topBar.needsLayout = true
         navigation.frame = NSRect(x: 0, y: rowY + rowHeight, width: bounds.width, height: Self.navigationHeight)
         timeline.frame = NSRect(x: 0, y: 0, width: previewWidth, height: clampedTimeline)
         transport.frame = NSRect(x: 0, y: rowY, width: previewWidth, height: Self.transportHeight)

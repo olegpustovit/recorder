@@ -286,7 +286,7 @@ older builds ignore those points and cannot preserve their phase. Recording laye
 
 | Scope | Tasks | Done |
 |---|---|---|
-| Phase 1 | T-701, T-701b, T-702, T-702b, T-703…T-705, T-705b, T-705c | 7/9 |
+| Phase 1 | T-701, T-701b, T-702, T-702b, T-703…T-705, T-705b, T-705c | 8/9 |
 | Phase 2 | T-711…T-714 | 0/4 |
 | Phase 3 | T-721…T-723 | 0/3 |
 
@@ -433,7 +433,7 @@ older builds ignore those points and cannot preserve their phase. Recording laye
     settled image at output 1.25 s inspected. File/clipboard/new-track imports pass Full-canvas assertions;
     preview/export parity maxDelta=0 across 11 times. Extra `make-layers-fixture` check fails image orientation;
     tracked separately in T-705c because its render fixture is independent of import defaults.
-- [ ] **T-705b Settle default editor capture and titlebar alignment**
+- [x] **T-705b Settle default editor capture and titlebar alignment**
   - Observed while verifying T-705: assembled-app `--selftest editor-png /tmp/Recorder-T705-Review.recorder
     /tmp/recorder-t705-editor-default.png 1300 850 --time 0.5` fails "window controls must align with the 48-point
     document row" consistently after preview preparation. The 1100×700 settled capture passes. Diagnose actual
@@ -441,6 +441,10 @@ older builds ignore those points and cannot preserve their phase. Recording laye
   - Read: SPEC §6.1, `EditorWindowController.swift` window/control layout, `SelfTest.swift` editor-png.
   - Verify: settled `editor-png --time 0.5` at 1100×700 and 1300×850; inspect both images; `menu-actions`,
     `timeline-tracks`; preserve fresh native build checks. No loading-state screenshot counted as settled evidence.
+  - Verified 2026-11-15: native debug build and scratch assembled-app settled captures at both sizes, `menu-actions`
+    and `timeline-tracks` pass. Both images inspected. Native ordering clamps the 850 pt window to 834 pt on this
+    screen, resets native controls, and moves the document bar without invalidating its layout. The shared root
+    layout now invalidates the bar after positioning it; existing clipping/alignment/clickability assertions stay.
 - [ ] **T-705c Correct full-canvas image orientation**
   - Observed during image-default verification: `--selftest make-layers-fixture` fails the existing compositor
     "Image orientation" check. Diagnose the fixture and shared image/render path; preserve transparency, crop,
@@ -1380,3 +1384,5 @@ T-704 · 2026-11-15 · Verified existing header/Command-A Video group selection 
 T-705 · 2026-11-15 · Implemented permanent26pt New track strip, descending Video N layers above Video, native accessible Magnet/Free header using existing rippleDelete and synchronized toolbar/undo. External file drops use next track; existing layers show a private row placeholder without lane/project allocation until one-step drop, with Escape/cancel and keyboard interruption safe. New row-aware clip ghost geometry and restore-bubble event priority retained; fixture coordinates use laneMidY. Full make test154/154, six native timeline cases (tracks/full-layers/png/selection/reorder/ops) and assembled tracks pass; native checks include actual PNG import, hover stability, gap preservation and mode undo. Gallery/header/timeline and settled1100×700 editor renders inspected. Default1300×850 settled capture fails titlebar alignment consistently; T-705b added to diagnose/fix before claiming full UI validation. HUMAN header/drop-row question is pending on opened review fixture; task remains[~], no visual acceptance invented. Native Xcode/platform Testing flags as T-701; gallery reused verified native binary; unrelated config changes preserved.
 
 T-705 follow-up · 2026-11-15 · User reported image should fill canvas; changed shared new-image import default to Full while preserving videos and existing placements. File/clipboard/new-track imports verified; full154 Core pass, media-import/tracks pass, corrected settled review image inspected, parity maxDelta0 over11 times. Review copy retains user track/timing edits. User explicitly waived further HUMAN reviews; T705 completed using automated checks and agent visual judgment. Titlebar failure remains T705b; independent extra layers-render check exposed orientation assertion, recorded as T705c.
+
+T-705b · 2026-11-15 · Fixed native window-control alignment after screen-constrained resize by invalidating the document bar layout after every root positioning. Geometry proved native850→834pt clamp moved bar but reset controls16pt from top; fix restores24pt. Native debug build, scratch assembled settled1100×700/1300×850 captures, menu-actions and timeline-tracks pass; both PNGs inspected. No test assertions weakened; no Core logic changed.
