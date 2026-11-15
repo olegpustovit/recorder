@@ -251,6 +251,9 @@ final class TimelineView: NSView {
     private var clipDragAnimationStart: CFTimeInterval?
     private var clipDragDestination: Double?
     private var clipDragClipboard: Project?
+    private var clipDragCommit: Project?      // lift into the New track row: committed on release, never shown (no lane jumps under the pointer)
+    private var clipDragLiftIDs: [UUID] = []
+    private var layerDropClips: Set<Int> = []
     private var marqueeStart: CGPoint?
     private var marqueeRect: CGRect?
     private var marqueeSelection: Set<Int> = []
@@ -389,6 +392,7 @@ final class TimelineView: NSView {
     var debugClipDragLanding: Set<Int> { clipDragLanding }
     var debugClipDragGhostRects: [CGRect] { clipDragGhostRects() }
     var debugClipDragIsCopy: Bool { clipDragCopy }
+    var debugClipDragCommit: Project? { clipDragCommit }
     var debugSplitMode: Bool { isSplitMode }
     var debugIsAnimating: Bool { animationLink != nil }
     var debugDragKind: String? {
@@ -911,9 +915,11 @@ final class TimelineView: NSView {
         let label = mediaDragActive ? "Drop to create Video \(newVideoTrack + 2)" : "Drop media here for a new track"
         (label as NSString).draw(at: CGPoint(x: gutterWidth + 10, y: row.midY - 6),
                                 withAttributes: [.font: Theme.captionFont, .foregroundColor: Theme.textTertiary])
-        if let trial = layerDropTrial, case .layer(let id, _, _) = dragKind,
-           let layer = trial.layers.first(where: { $0.id == id.uuidString }),
-           let start = TimeMap(trial.clips).outputTime(atSource: layer.start) {
+        var pending: [String] = [], pendingProject = layerDropTrial
+        if case .layer(let id, _, _) = dragKind { pending = [id.uuidString] }
+        else if let commit = clipDragCommit { pendingProject = commit; pending = clipDragLiftIDs.map(\.uuidString) }
+        for layer in pendingProject?.layers.filter({ pending.contains($0.id) }) ?? [] {
+            guard let trial = pendingProject, let start = TimeMap(trial.clips).outputTime(atSource: layer.start) else { continue }
             let placeholder = CGRect(x: x(forOutput: start), y: row.minY + 3, width: max(1, CGFloat((layer.end - layer.start) * geometry.pxPerSecond)), height: row.height - 6)
             drawBlock(placeholder, fill: layer.kind == .image ? Theme.mask : Theme.zoom, tornLeft: false, tornRight: false,
                       label: "Video \(layer.track + 2)", tag: layer.color)
@@ -2322,6 +2328,10 @@ final class TimelineView: NSView {
             drawTagStripe(rect, layer.color)
             let label = missing ? "Missing media" : String(format: "%@ · %.1f s", layer.kind == .image ? "Image" : "Video", layer.end - layer.start)
             (label as NSString).draw(at: CGPoint(x: max(rect.minX + 18, gutterWidth + 4), y: rect.minY), withAttributes: [.font: Theme.captionFont, .foregroundColor: Theme.mediaMatte])
+            for zoom in layer.scene?.zooms ?? [] { // carried zooms, dimmed (they belong to the scene, not the Zoom lane)
+                Theme.zoom.withAlphaComponent(0.4).setFill()
+                CGRect(x: rect.minX + CGFloat(zoom.start * geometry.pxPerSecond), y: rect.maxY - 9, width: max(2, CGFloat((zoom.end - zoom.start) * geometry.pxPerSecond)), height: 6).fill()
+            }
             let fadeIn = CGFloat((layer.fadeIn ?? 0) * geometry.pxPerSecond), fadeOut = CGFloat((layer.fadeOut ?? 0) * geometry.pxPerSecond)
             Theme.mediaMatte.withAlphaComponent(0.35).setStroke()
             for (start, end) in [(CGPoint(x: rect.minX, y: rect.maxY), CGPoint(x: min(rect.maxX, rect.minX + fadeIn), y: rect.minY)),
@@ -2367,7 +2377,16 @@ final class TimelineView: NSView {
         guard let model, var project = dragProject, let layer = project.layers.first(where: { $0.id == id.uuidString }) else { return }
         let raw = geometry.output(forX: geometryX(point)) - (edge == nil ? grabOffset : 0)
         let (output, snapped) = snappedOutput(raw, excludingBlock: id, disabled: snapDisabled)
-        layerDropTrial = nil
+        layerDropTrial = nil; layerDropClips = []
+        if edge == nil, layer.kind == .recording, laneRow(.clip).contains(point) {
+            let clips = project.insertLayers([id], intoVideoAt: videoInsertIndex(project, atOutput: max(0, geometry.output(forX: geometryX(point)))), copy: NSEvent.modifierFlags.contains(.option))
+            if !clips.isEmpty, project.checkInvariants(mediaDurations: mediaDurations) == nil {
+                model.update { $0 = project }
+                layerDropClips = clips
+                needsDisplay = true
+                return
+            }
+        }
         if edge == nil, newTrackDropRect.contains(point) {
             project.moveLayer(id, toOutput: max(0, output), track: newVideoTrack, propagate: project.linkVideoEdits)
             if project.checkInvariants(mediaDurations: mediaDurations) == nil {
@@ -2425,6 +2444,9 @@ final class TimelineView: NSView {
                 cancelActiveDrag()
             case .scrub, nil: break
             }
+        }
+        if event.modifierFlags.contains(.option), !cmd, event.keyCode == 126 || event.keyCode == 125 {
+            moveSelectionLane(up: event.keyCode == 126); return
         }
         if cmd, chars?.lowercased() == "a" { // ⌘A: every block in the selected block's lane, else every clip
             selectLane(model?.selection.first.flatMap { lane(ofBlock: $0) } ?? .clip)
@@ -2650,6 +2672,7 @@ final class TimelineView: NSView {
         clipDragActive = false; clipDragCopy = false; clipDragOptionBlade = false
         clipDragLanding = []; clipDragOrder = []; clipDragFromRects = [:]
         clipDragAnimationStart = nil; clipDragDestination = nil; clipDragClipboard = nil
+        clipDragCommit = nil; clipDragLiftIDs = []
         lastClips = model?.project.clips ?? []
         dragProject = nil; dragClips = []; dragSelection = []; dragKind = nil
         dragOrigin = nil; snapGuideX = nil; trimChip = nil
@@ -2700,6 +2723,65 @@ final class TimelineView: NSView {
         }
     }
 
+    /// Pointer over a layer lane or the New track row: the selected clips lifted there (Core `liftClips`).
+    private func liftTrial(_ source: Project, selected: [Int], anchor: Double, point: CGPoint, raw: Double, copying: Bool,
+                           modifiers: NSEvent.ModifierFlags) -> (project: Project, ids: [UUID])? {
+        let track = newTrackDropRect.contains(point) ? newVideoTrack : lanes.compactMap { lane -> Int? in
+            if case .layer(let track) = lane, laneRow(lane).contains(point) { return track }; return nil
+        }.first
+        guard let track else { return nil }
+        let (out, snapped) = snappedOutput(raw, disabled: modifiers.contains(.command))
+        let anchorOutput = TimeMap(source.clips).outputTime(atSource: anchor) ?? 0
+        let leading = source.clips.prefix(selected[0]).reduce(0) { $0 + $1.outputDuration }
+        var trial = source
+        let ids = trial.liftClips(Set(selected), toTrack: track, atOutput: max(0, leading + out - anchorOutput), copy: copying)
+        guard !ids.isEmpty else { return nil }
+        snapGuideX = snapped ? x(forOutput: out) : nil
+        return (trial, ids)
+    }
+
+    /// Video-lane caret for a scene dropped at output time `t` (same half-clip rule as reordering).
+    private func videoInsertIndex(_ project: Project, atOutput t: Double) -> Int {
+        var start = 0.0
+        for (i, clip) in project.clips.enumerated() {
+            if t < start + clip.outputDuration / 2 { return i }
+            start += clip.outputDuration
+        }
+        return project.clips.count
+    }
+
+    /// ⌥↑/⌥↓: the selection one lane up/down (lift off Video, move between layer lanes, insert back into Video).
+    private func moveSelectionLane(up: Bool) {
+        guard let model, dragKind == nil, !model.voiceover.isActive else { return }
+        let tracks = lanes.compactMap { lane -> Int? in if case .layer(let t) = lane { return t }; return nil }.sorted()
+        var trial = model.project
+        var clips: Set<Int> = [], ids: [UUID] = []
+        if !model.selectedClips.isEmpty {
+            let indices = model.selectedClips.filter { trial.clips.indices.contains($0) && !trial.clips[$0].isEmpty }
+            guard up, let first = indices.min() else { return }
+            ids = trial.liftClips(Set(indices), toTrack: tracks.first ?? 0,
+                                  atOutput: trial.clips.prefix(first).reduce(0) { $0 + $1.outputDuration }, copy: false)
+        } else {
+            var insert: [UUID] = []
+            for id in model.selection {
+                guard let layer = trial.layers.first(where: { $0.id == id.uuidString }),
+                      let start = TimeMap(trial.clips).outputTime(atSource: layer.start) else { continue }
+                if let target = up ? tracks.first(where: { $0 > layer.track }) : tracks.last(where: { $0 < layer.track }) {
+                    trial.moveLayer(id, toOutput: start, track: target, propagate: trial.linkVideoEdits); ids.append(id)
+                } else if !up, layer.kind == .recording { insert.append(id) }
+            }
+            if let first = insert.first, let layer = trial.layers.first(where: { $0.id == first.uuidString }),
+               let start = TimeMap(trial.clips).outputTime(atSource: layer.start) {
+                clips = trial.insertLayers(insert, intoVideoAt: videoInsertIndex(trial, atOutput: start), copy: false)
+            }
+        }
+        guard trial != model.project, trial.checkInvariants(mediaDurations: mediaDurations) == nil else { return }
+        model.edit(clips.isEmpty ? "Move to Lane" : "Move to Video") { $0 = trial }
+        model.selectedClips = clips
+        model.selection = clips.isEmpty ? Set(ids) : []
+        needsLayout = true; needsDisplay = true
+    }
+
     private func updateClipDrag(point: CGPoint, modifiers: NSEvent.ModifierFlags) {
         guard let model, case .moveClip(_, let anchor) = dragKind,
               let source = clipDragSource ?? dragProject else { return }
@@ -2714,6 +2796,21 @@ final class TimelineView: NSView {
         let raw = max(0, geometry.output(forX: geometryX(point)))
         let selected = dragSelection.sorted().filter { source.clips.indices.contains($0) && !source.clips[$0].isEmpty }
         guard !selected.isEmpty else { return }
+        if let lift = liftTrial(source, selected: selected, anchor: anchor, point: point, raw: raw, copying: copying, modifiers: modifiers) {
+            // ponytail: lift re-simulates on every pointer move, no cache; key it by (track, time) if it ever lags.
+            let newTrack = newTrackDropRect.contains(point)
+            clipDragCommit = newTrack ? lift.project : nil; clipDragLiftIDs = lift.ids
+            clipDragFromRects = [:]; clipDragAnimationStart = nil; clipDragDestination = nil; clipDragCopy = copying
+            dragProject = newTrack ? source : lift.project
+            clipDragLanding = newTrack ? Set(selected) : []
+            clipDragOrder = Array(dragProject!.clips.indices)
+            lastClips = model.project.clips
+            needsLayout = true
+            enclosingScrollView?.superview?.needsLayout = true
+            needsDisplay = true
+            return
+        }
+        clipDragCommit = nil; clipDragLiftIDs = []
         var trial = source
         var landing = Set(selected)
         var order = Array(source.clips.indices)
@@ -2877,7 +2974,8 @@ final class TimelineView: NSView {
         if case .layer(let id, let edge, let offset) = dragKind, edge == nil {
             updateLayerDrag(id: id, edge: nil, grabOffset: offset, point: convert(event.locationInWindow, from: nil), snapDisabled: event.modifierFlags.contains(.command))
             if let trial = layerDropTrial { model?.update { $0 = trial } }
-            layerDropTrial = nil
+            if !layerDropClips.isEmpty { model?.selectedClips = layerDropClips; model?.selection = [] }
+            layerDropTrial = nil; layerDropClips = []
         }
         if case .moveClip = dragKind {
             guard let model, let source = clipDragSource, model.project == source else {
@@ -2886,9 +2984,10 @@ final class TimelineView: NSView {
             }
             let point = convert(event.locationInWindow, from: nil)
             if clipDragActive { updateClipDrag(point: point, modifiers: event.modifierFlags) }
-            if clipDragActive, let trial = dragProject {
-                if trial != model.project { model.edit("Move Clips") { $0 = trial } }
+            if clipDragActive, let trial = clipDragCommit ?? dragProject {
+                if trial != model.project { model.edit(clipDragLiftIDs.isEmpty ? "Move Clips" : "Lift Clips") { $0 = trial } }
                 model.selectedClips = clipDragLanding
+                if !clipDragLiftIDs.isEmpty { model.selection = Set(clipDragLiftIDs) }
             } else if clipDragOptionBlade, event.modifierFlags.contains(.option) {
                 performSplit(atOutput: max(0, geometry.output(forX: geometryX(point))), target: hitTest(at: point))
             }
@@ -2955,7 +3054,7 @@ final class TimelineView: NSView {
     }
 
     private func cancelActiveDrag() {
-        layerDropTrial = nil
+        layerDropTrial = nil; layerDropClips = []
         switch dragKind {
         case .moveClip:
             if model?.project == clipDragSource { model?.selectedClips = dragSelection }

@@ -3476,6 +3476,7 @@ enum SelfTest {
         "layer-recording-parity": { @MainActor args in try await RecordingLayerSelfTest.runParity(args) },
         "lift-identity": { @MainActor args in try await RecordingLayerSelfTest.runLiftIdentity(args) },
         "timeline-reorder": { @MainActor args in try await runTimelineReorderSelfTest(args) },
+        "timeline-lift": { @MainActor _ in try await runTimelineLiftSelfTest() },
         "timeline-selection": { @MainActor args in
             try runLaneGroupSelectionSelfTest()
             struct Fail: Error { let message: String }
@@ -4550,6 +4551,110 @@ private func runTimelineReorderSelfTest(_ args: [String]) async throws {
         try await Task.sleep(nanoseconds: 80_000_000)
         try check(view.geometry.scrollX > 0 && model.project == original, "edge drag scrolls without mutating project")
         view.cancelOperation(nil)
+    }
+}
+
+@MainActor
+private func runTimelineLiftSelfTest() async throws {
+    struct Fail: Error, CustomStringConvertible { let description: String }
+    func check(_ condition: Bool, _ message: String) throws { if !condition { throw Fail(description: message) } }
+    @MainActor func fixture() throws -> (EditorModel, TimelineView, () -> Void) {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("timeline-lift-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let clips = (0..<4).map { i -> Clip in
+            var clip = Clip(sourceStart: Double(i) * 4, sourceEnd: Double(i + 1) * 4)
+            clip.mediaStart = clip.sourceStart; clip.clockSpeed = 1
+            return clip
+        }
+        let project = Project(source: Source(duration: 16, hasMic: true), clips: clips, zooms: [Zoom(start: 5, end: 7, scale: 3)])
+        let model = EditorModel(packageURL: folder, project: project, events: EventLog())
+        let view = TimelineView(frame: CGRect(x: 0, y: 0, width: 900, height: 240))
+        view.model = model
+        view.revealedLanes = Set(Lane.allCases).union([.layer(0)])
+        view.setFrameSize(CGSize(width: 900, height: view.contentHeight + 26))
+        view.geometry.pxPerSecond = 40; view.geometry.scrollX = 0
+        return (model, view, { model.saveNow(); try? FileManager.default.removeItem(at: folder) })
+    }
+    @MainActor func at(_ view: TimelineView, _ t: Double, y: CGFloat) -> CGPoint {
+        view.convert(CGPoint(x: TimelineView.gutter + view.geometry.x(forOutput: t), y: y), to: nil)
+    }
+    @MainActor func lift(_ view: TimelineView, y: CGFloat, modifiers: NSEvent.ModifierFlags = []) {
+        view.mouseDown(with: synthMouse(.leftMouseDown, at(view, 6, y: view.laneMidY(.clip))))
+        view.mouseDragged(with: synthMouse(.leftMouseDragged, at(view, 6, y: y), modifiers: modifiers))
+    }
+    @MainActor func release(_ view: TimelineView, y: CGFloat, modifiers: NSEvent.ModifierFlags = []) {
+        view.mouseUp(with: synthMouse(.leftMouseUp, at(view, 6, y: y), modifiers: modifiers))
+    }
+    func videoSeconds(_ project: Project) -> Double { project.clips.reduce(0) { $0 + $1.outputDuration } }
+
+    do { // lift onto an existing layer lane, then drag the scene back onto Video
+        let (model, view, cleanup) = try fixture(); defer { cleanup() }
+        let original = model.project
+        let laneY = view.laneMidY(.layer(0))
+        lift(view, y: laneY)
+        try check(model.project == original && model.undoStepCount == 0, "lift drag is a trial")
+        try check(view.debugClipDragProject?.layers.first?.kind == .recording, "lift trial carries a recording layer")
+        release(view, y: laneY)
+        guard let layer = model.project.layers.first else { throw Fail(description: "lift made no layer") }
+        try check(model.project.layers.count == 1 && layer.track == 0 && layer.scene?.zooms.count == 1 && model.project.zooms.isEmpty, "lift carries the zoom")
+        try check(model.undoStepCount == 1 && model.project.checkInvariants() == nil && model.selection == [UUID(uuidString: layer.id)!], "lift one undo, layer selected")
+        let lifted = model.project
+        guard let start = TimeMap(lifted.clips).outputTime(atSource: layer.start) else { throw Fail(description: "layer time") }
+        let t = start + (layer.end - layer.start) / 2
+        view.mouseDown(with: synthMouse(.leftMouseDown, at(view, t, y: laneY)))
+        view.mouseDragged(with: synthMouse(.leftMouseDragged, at(view, 14, y: view.laneMidY(.clip))))
+        view.mouseUp(with: synthMouse(.leftMouseUp, at(view, 14, y: view.laneMidY(.clip))))
+        try check(model.project.layers.isEmpty && model.project.zooms.count == 1 && model.project.checkInvariants() == nil, "insert back restores zoom, no layer")
+        try check(abs(videoSeconds(model.project) - 16) < 1e-6 && !model.selectedClips.isEmpty && model.undoStepCount == 2, "insert back one undo")
+        model.undo(); try check(model.project == lifted, "undo insert")
+        model.undo(); try check(model.project == original, "undo lift")
+    }
+    do { // Option on drop copies
+        let (model, view, cleanup) = try fixture(); defer { cleanup() }
+        let original = model.project, laneY = view.laneMidY(.layer(0))
+        lift(view, y: laneY)
+        release(view, y: laneY, modifiers: .option)
+        try check(model.project.layers.count == 1 && model.project.clips == original.clips && model.undoStepCount == 1, "Option lift copies, source stays")
+        try check(model.project.zooms == original.zooms && model.project.checkInvariants() == nil, "copy keeps source zoom")
+        model.undo(); try check(model.project == original, "undo copy")
+    }
+    do { // New track row: placeholder only until release
+        let (model, view, cleanup) = try fixture(); defer { cleanup() }
+        let original = model.project, rowY = view.newTrackDropRect.midY
+        lift(view, y: rowY)
+        try check(model.project == original && view.debugClipDragCommit?.layers.first?.track == 1, "new-track drop is a pending placeholder")
+        try check(!view.lanes.contains(.layer(1)) && view.debugClipDragProject == original, "no lane is created before release")
+        release(view, y: rowY)
+        try check(model.project.layers.first?.track == 1 && model.undoStepCount == 1 && model.project.checkInvariants() == nil, "new-track drop one undo")
+        model.undo(); try check(model.project == original, "undo new track")
+    }
+    do { // Escape and no-op
+        let (model, view, cleanup) = try fixture(); defer { cleanup() }
+        let original = model.project
+        lift(view, y: view.laneMidY(.layer(0)))
+        view.keyDown(with: synthKey("\u{1b}", keyCode: 53))
+        try check(model.project == original && model.undoStepCount == 0 && view.debugClipDragProject == nil, "Escape cancels lift")
+        view.mouseUp(with: synthMouse(.leftMouseUp, at(view, 6, y: view.laneMidY(.layer(0)))))
+        model.selectedClips = []; model.selection = []
+        view.keyDown(with: synthKey("", keyCode: 126, modifiers: .option))
+        try check(model.project == original && model.undoStepCount == 0, "empty selection Option-Up is a no-op")
+    }
+    do { // Option-Up / Option-Down
+        let (model, view, cleanup) = try fixture(); defer { cleanup() }
+        let original = model.project
+        model.selectedClips = [1]
+        view.keyDown(with: synthKey("", keyCode: 125, modifiers: .option))
+        try check(model.project == original && model.undoStepCount == 0, "Option-Down on Video is a no-op")
+        view.keyDown(with: synthKey("", keyCode: 126, modifiers: .option))
+        try check(model.project.layers.count == 1 && model.project.layers[0].track == 0 && model.undoStepCount == 1, "Option-Up lifts one lane")
+        try check(model.project.zooms.isEmpty && model.project.layers[0].scene?.zooms.count == 1 && model.project.checkInvariants() == nil, "Option-Up carries zoom")
+        let lifted = model.project
+        view.keyDown(with: synthKey("", keyCode: 126, modifiers: .option))
+        try check(model.project == lifted && model.undoStepCount == 1, "Option-Up on the top lane is a no-op")
+        view.keyDown(with: synthKey("", keyCode: 125, modifiers: .option))
+        try check(model.project.layers.isEmpty && model.project.zooms.count == 1 && abs(videoSeconds(model.project) - 16) < 1e-6 && model.undoStepCount == 2, "Option-Down inserts back into Video")
+        model.undo(); try check(model.project == lifted, "undo Option-Down")
+        model.undo(); try check(model.project == original, "undo Option-Up")
     }
 }
 
