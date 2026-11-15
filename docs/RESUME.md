@@ -48,7 +48,8 @@ T-711 remains `[~]`. This host is native Apple M1 / MacBookAir10,1. Actual GUI v
 console (`CGSSessionScreenIsLocked=1`); no live playback FPS or dual-screen export timing was obtained. Intel is
 also unmeasured. The benchmark refuses occluded-window results before generating another expensive fixture.
 
-**T-713 is DONE (verified; parity fix = `FrameHold` PTS slack). Resume at T-714**, then T-721, T-722, T-723 in order. Do not mark the goal
+**Roadmap done:** T-713, T-714, T-721, T-722, T-723 complete and verified 2026-11-15. Only T-711 remains `[~]`: run
+`--selftest timeline-render-perf --dual-screen` on an unlocked, visible session (Apple Silicon + Intel) and record results in SPEC §9.
 complete while those tasks or required measurements remain outstanding.
 
 ## T-712 behavior to preserve

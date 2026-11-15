@@ -3,10 +3,8 @@
 This file is **both the plan and the progress tracker**. `docs/SPEC.md` says *what* (mockups, behaviour, `AC-*`);
 this file says *in what order, in which file, with what code, and how to prove it*.
 
-**Paused handoff (2026-11-15):** the user requested a saved checkpoint for another agent. Read
-[RESUME.md](RESUME.md) before continuing. Last completed task: T-712. T-713 is saved as unfinished WIP: Core
-162/162 and lift identity 49 samples pass, but actual preview/export parity fails maxDelta=127 at the first
-mixed-speed sample. It remains unchecked. No automatic continuation while paused.
+**Free-editing roadmap (2026-11-15):** T-701…T-723 done except T-711 `[~]` (needs live, unlocked-screen
+fps/export measurements on Apple Silicon and Intel). See [RESUME.md](RESUME.md).
 
 ## 0. Protocol (read every session)
 
@@ -292,8 +290,8 @@ older builds ignore those points and cannot preserve their phase. Recording laye
 | Scope | Tasks | Done |
 |---|---|---|
 | Phase 1 | T-701, T-701b, T-702, T-702b, T-703…T-705, T-705b, T-705c | 9/9 |
-| Phase 2 | T-711…T-714 | 2/4 |
-| Phase 3 | T-721…T-723 | 0/3 |
+| Phase 2 | T-711…T-714 | 3/4 (T-711 `[~]` hardware) |
+| Phase 3 | T-721…T-723 | 3/3 |
 
 - [x] **T-701 Core: media continuity instead of clock continuity**
   - Add `Clip.mediaEnd` (`mediaIn + mediaDuration`). Every "are these two clips continuous / what was cut here"
@@ -527,7 +525,7 @@ older builds ignore those points and cannot preserve their phase. Recording laye
     with `rectPx` = the layer rect in pixels (default rect = the main screen rect, so a full-canvas lift is identical).
   - Verify: `--selftest layer-recording-parity` (preview vs export maxDelta 0) and `lift-identity` (render before and
     after lifting a clip at the same time: maxDelta 0) — the "looks the same on any lane" promise.
-- [ ] **T-714 Timeline: vertical drag, drop row, ⌥↑/⌥↓**
+- [x] **T-714 Timeline: vertical drag, drop row, ⌥↑/⌥↓**
   - Extend T-703's drag: pointer over a layer lane or the `+ New track` row → `trial.liftClips(…)`; layer item over
     Video → `trial.insertLayers(…)`; free target shows the floating block snapped to edges/playhead. The new-track row
     shows a placeholder (no lane is created until drop, so nothing jumps under the pointer). `⌥↑`/`⌥↓` move the
@@ -537,12 +535,12 @@ older builds ignore those points and cannot preserve their phase. Recording laye
 
 ### Phase 3 — Polish (each independent)
 
-- [ ] **T-721 Edit carried effects** — selecting a lifted recording shows its `scene.zooms` editable in the Zoom lane
+- [x] **T-721 Edit carried effects** — selecting a lifted recording shows its `scene.zooms` editable in the Zoom lane
   (offset to the layer) through the generic timed-block ops. Verify: `make test FILTER=sceneEffects`; `timeline-lift`.
-- [ ] **T-722 Imported video/images on the Video lane** — `Clip.file: String?` (nil = `screen.mov`); composition
+- [x] **T-722 Imported video/images on the Video lane** — `Clip.file: String?` (nil = `screen.mov`); composition
   inserts per-clip assets; such clips have no cursor/zoom/events. Bumps the "uses v4" check. Verify:
   `make test FILTER=clipFile`; `--selftest media-import`.
-- [ ] **T-723 Docs** — SPEC §5 (v4 keys, version rule), §7.1 anatomy mockup, §7.2 gestures (from the prototype), §7.3
+- [x] **T-723 Docs** — SPEC §5 (v4 keys, version rule), §7.1 anatomy mockup, §7.2 gestures (from the prototype), §7.3
   keys (⌥ copy, ⌥↑/⌥↓, ⌘D on clips), cheat sheet. Verify: `--selftest menu-actions`.
 
 ---
@@ -1435,3 +1433,13 @@ T-712 · 2026-11-15 · Added recording layers/mediaRate/scene and original camer
 T-713 paused handoff · 2026-11-15 · User paused goal and requested a repository handoff usable by another agent. Saved unfinished renderer/native tests and temporary PTS diagnostics as explicit WIP; T713 stays unchecked. Last full Core162/162 and lift-identity49 exact samples pass; actual Preview/export parity fails first mixed2xsample at4.0167,maxDelta127. Diagnostic build interrupted, so rebuild first. Durable logs and PNG pairs copied into docs/handoff; docs/RESUME.md records code map, commands, user review waiver, pending hardware measurements and next tasks. No agent compiler/test remained active at handoff; unrelated CLAUDE.md/Makefile/pack.lock edits preserved.
 
 T-713 · 2026-11-15 · Recording layers render through the screen pass; preview/export parity and lift identity at maxDelta 0. Root cause of the parity failure was FrameHold missing a frame whose ns-rounded PTS exceeded the double request time by ~3e-10; added 1e-6 slack. Temporary PTS prints removed.
+
+T-714 · 2026-11-15 · Clip drag lifts over layer lanes / New track row (placeholder, committed on release; ⌥ copies, Esc cancels); recording layers drag back onto Video via insertLayers as a trial (reverted on invariant failure); ⌥↑/⌥↓ move selection one lane; carried zooms draw dimmed. One model.edit per gesture. New --selftest timeline-lift passes with timeline-reorder/-selection/-tracks/-ops, menu-actions. HUMAN feel waived by user.
+
+T-721 · 2026-11-15 · add/move/resize/removeSceneZoom reuse generic block ops on layer.scene.zooms (stored as output offsets from layer.start; length capped by sceneZoomLength from the recordingScene context clip). Zoom lane edits them while a recording layer or its carried zoom is selected. sceneEffects tests incl. sceneZoomRendersWhereAdded pass.
+
+T-722 · 2026-11-15 · Clip.file lets imported image/video layers enter Video via insertLayers (no cursor/zoom; liftClips refuses them); save writes v4 when any clip has a file. Composition inserts per-clip assets, images as a cached one-frame movie keyed by path hash+mtime+size. clipFile 3/3, media-import extended. Main text/masks still apply over file clips by source time (user-placed; not filtered).
+
+T-723 · 2026-11-15 · SPEC §5 v4 keys + version rule, §7.1 anatomy, §7.2 free-editing gestures, §7.3 keys (⌥↑/⌥↓, ⌘D clips, ⌘L ignore-links), §7.4 invariant note; cheat sheet updated (⌥ drop copies, ⌥⌫ ignores links).
+
+Free-editing merge · 2026-11-15 · Combined T-713/714/721/722/723 verified on dev: native build, make test 167/167, selftests lift-identity + layer-recording-parity (maxDelta 0), timeline-lift/-reorder/-selection/-tracks/-ops/-full-layers, media-import, make-layers-fixture, menu-actions all OK. Review fixes: carried-zoom mapping, lift trial revert, image cache key.
