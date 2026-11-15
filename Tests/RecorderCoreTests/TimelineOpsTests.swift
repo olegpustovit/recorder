@@ -414,3 +414,163 @@ private struct LCG: RandomNumberGenerator {
     #expect(abs(m.rect.w - 0.5) < 1e-9 && abs(m.rect.x - 0.5) < 1e-9 && abs(m.rect.y - 0.25) < 1e-9) // clamped inside the frame
     #expect(p.highlightZoom(id) == nil) // a mask already covers it
 }
+
+private func reorderFixture(speeds: [Double] = [1, 1, 1, 1]) -> Project {
+    let clips = speeds.enumerated().map { i, speed in
+        var clip = Clip(sourceStart: Double(i) * 4, sourceEnd: Double(i + 1) * 4, speed: speed)
+        clip.mediaStart = Double(i) * 8
+        clip.clockSpeed = 1
+        return clip
+    }
+    var project = Project(source: Source(duration: 32), clips: clips)
+    project.linkVideoEdits = true
+    return project
+}
+
+@Test func reorderRoundTrip() {
+    var p = reorderFixture()
+    p.zooms = [Zoom(start: 5, end: 7)]
+    p.clips[1].fadeIn = 0.2; p.clips[1].fadeOut = 0.3
+    p.clips[1].hideCursor = true; p.clips[1].color = .blue
+    let original = p
+    #expect(p.reorderClips([1, 2], to: 4) == [2, 3])
+    #expect(p.clips.map(\.mediaIn) == [0, 24, 8, 16])
+    #expect(p.reorderClips([2, 3], to: 1) == [1, 2])
+    #expect(p == original)
+    for caret in [1, 2, 3, -1, 5] {
+        #expect(p.reorderClips([1, 2], to: caret) == [1, 2])
+        #expect(p == original)
+    }
+    #expect(p.reorderClips([], to: 2).isEmpty)
+    #expect(p.reorderClips([-1, 8], to: 2).isEmpty)
+    #expect(p == original)
+    #expect(p.reorderClips([0, 2], to: 4) == [2, 3])
+    #expect(p.clips.map(\.mediaIn) == [8, 24, 0, 16])
+    #expect(p.checkInvariants() == nil)
+}
+
+@Test func reorderCarriesZoom() throws {
+    var p = reorderFixture()
+    p.zooms = [Zoom(start: 5, end: 7, scale: 3)]
+    let layer = LayerBlock(kind: .video, start: 5.5, end: 6.5, file: "media/clip.mov", mediaStart: 1, rect: NormRect())
+    p.layers = [layer]
+    p.audioTracks = [AudioTrack(name: "Audio 1"), AudioTrack(name: "Audio 2")]
+    p.audioClips = [AudioClip(start: 5.25, end: 6.25, mediaStart: 2, mediaRate: 1.5, file: "media/music.m4a"),
+                    AudioClip(start: 5.5, end: 6.5, mediaStart: 1, file: layer.file, track: 1, link: .layer, layer: layer.id)]
+    let original = p
+    #expect(p.reorderClips([1], to: 4) == [3])
+    #expect(p.zooms[0].start == 13 && p.zooms[0].end == 15 && p.zooms[0].scale == 3)
+    #expect(p.layers[0].start == 13.5 && p.layers[0].end == 14.5 && p.layers[0].mediaStart == 1)
+    #expect(p.audioClips.map(\.start) == [13.25, 13.5])
+    #expect(p.audioClips.map(\.mediaStart) == [2, 1])
+    #expect(p.checkInvariants() == nil)
+    var independent = original
+    #expect(independent.reorderClips([1], to: 4, propagate: false) == [3])
+    #expect(independent.zooms == original.zooms && independent.layers == original.layers && independent.audioClips == original.audioClips)
+    var unlinked = original
+    unlinked.linkVideoEdits = false
+    #expect(unlinked.reorderClips([1], to: 4) == [3])
+    #expect(unlinked.zooms == original.zooms && unlinked.layers == original.layers && unlinked.audioClips == original.audioClips)
+    let moved = try #require(p.zooms.first)
+    #expect(moved.id == original.zooms[0].id)
+}
+
+@Test func reorderSplitsSpanningZoom() {
+    var p = reorderFixture()
+    p.zooms = [Zoom(start: 3, end: 5, scale: 3, center: NormPoint(x: 0.3, y: 0.7))]
+    let zoom = p.zooms[0]
+    #expect(p.reorderClips([0], to: 4) == [3])
+    #expect(p.zooms.map(\.start) == [0, 15])
+    #expect(p.zooms.map(\.end) == [1, 16])
+    #expect(Set(p.zooms.map(\.id)).count == 2)
+    #expect(p.zooms.allSatisfy { $0.scale == zoom.scale && $0.center == zoom.center && $0.mode == zoom.mode })
+    #expect(p.checkInvariants() == nil)
+    var invalidSplit = reorderFixture()
+    invalidSplit.audioTracks = [AudioTrack(name: "Microphone")]
+    invalidSplit.audioClips = [AudioClip(start: 3.95, end: 5, file: "mic.m4a", link: .screen)]
+    let before = invalidSplit
+    #expect(invalidSplit.reorderClips([0], to: 4) == [0])
+    #expect(invalidSplit == before)
+}
+
+@Test func reorderKeepsLinkedAudioMedia() throws {
+    var p = reorderFixture(speeds: [1, 2, 0.5, 1])
+    p.audioTracks = [AudioTrack(name: "Microphone")]
+    p.audioClips = p.clips.map { AudioClip(start: $0.sourceStart, end: $0.sourceEnd, mediaStart: $0.mediaIn,
+                                         mediaRate: $0.speed, file: "mic.m4a", link: .screen) }
+    let original = p.audioClips
+    #expect(p.reorderClips([0, 2], to: 4) == [2, 3])
+    for clip in p.clips {
+        let audio = try #require(p.audioClips.first { $0.start == clip.sourceStart })
+        let segment = try #require(p.audioSegments(audio).first)
+        #expect(segment.media.start == clip.mediaIn && segment.media.end == clip.mediaEnd)
+        #expect(audio.mediaStart == original.first { $0.id == audio.id }?.mediaStart)
+        #expect(audio.mediaRate == clip.speed)
+    }
+    #expect(p.checkInvariants() == nil)
+}
+
+@Test func reorderKeepsPlaybackRates() {
+    var p = reorderFixture(speeds: [1, 2, 0.5, 1])
+    p.clips[0].fadeIn = 0.4; p.clips[2].fadeOut = 0.3
+    p.clips[1].hideCursor = true; p.clips[3].color = .green
+    let original = p.clips
+    #expect(p.reorderClips([1, 3], to: 0) == [0, 1])
+    for clip in p.clips {
+        let old = original.first { $0.mediaIn == clip.mediaIn }!
+        #expect(clip.mediaDuration == old.mediaDuration && clip.speed == old.speed && clip.clockSpeed == old.clockSpeed)
+        #expect(clip.fadeIn == old.fadeIn && clip.fadeOut == old.fadeOut && clip.hideCursor == old.hideCursor && clip.color == old.color)
+    }
+    var legacy = Project(source: Source(duration: 12), clips: [Clip(sourceStart: 0, sourceEnd: 4), Clip(sourceStart: 4, sourceEnd: 12, speed: 2)])
+    legacy.zooms = [Zoom(start: 6, end: 10)]
+    #expect(legacy.reorderClips([0], to: 2) == [1])
+    #expect(legacy.reorderClips([1], to: 0) == [0])
+    #expect(legacy.clips.map(\.mediaIn) == [0, 4])
+    #expect(legacy.clips.map(\.mediaDuration) == [4, 8])
+    #expect(legacy.clips.map(\.speed) == [1, 2])
+    #expect(legacy.zooms.map(\.start) == [5] && legacy.zooms.map(\.end) == [7])
+    #expect(legacy.checkInvariants() == nil)
+}
+
+@Test func reorderPreservesExportDuration() {
+    for withGap in [false, true] {
+        var p = reorderFixture(speeds: [1, 2, 0.5, 1])
+        if withGap { p.clips[1].isGap = true }
+        let duration = p.exportDuration
+        let output = TimeMap(p.clips).outputDuration
+        #expect(p.reorderClips([0], to: 4) == [3])
+        #expect(p.exportDuration == duration && TimeMap(p.clips).outputDuration == output)
+        #expect(p.clips.filter(\.isEmpty).count == (withGap ? 1 : 0))
+        #expect(p.checkInvariants() == nil)
+    }
+}
+
+@Test func reorderInvariants() {
+    var rng = LCG(state: 702)
+    var p = reorderFixture(speeds: [1, 2, 0.5, 1])
+    p.zooms = p.clips.map { Zoom(start: $0.sourceStart + 1, end: $0.sourceStart + 2) }
+    p.audioTracks = [AudioTrack(name: "Microphone")]
+    p.audioClips = p.clips.map { AudioClip(start: $0.sourceStart, end: $0.sourceEnd, mediaStart: $0.mediaIn,
+                                         mediaRate: $0.speed, file: "mic.m4a", link: .screen) }
+    let media = p.clips.map(\.mediaIn).sorted()
+    for _ in 0..<1000 {
+        var selected = Set(p.clips.indices.filter { _ in Bool.random(using: &rng) })
+        if selected.isEmpty { selected.insert(Int.random(in: p.clips.indices, using: &rng)) }
+        let caret = Int.random(in: 0...p.clips.count, using: &rng)
+        let duration = p.exportDuration
+        let moving = p.clips.indices.filter { selected.contains($0) }
+        var expected = p.clips.indices.filter { !selected.contains($0) }
+        expected.insert(contentsOf: moving, at: caret - selected.filter { $0 < caret }.count)
+        let expectedMedia = expected.map { p.clips[$0].mediaIn }
+        let moved = p.reorderClips(selected, to: caret)
+        #expect(moved.count == selected.count)
+        #expect(p.clips.map(\.mediaIn) == expectedMedia)
+        #expect(p.clips.map(\.mediaIn).sorted() == media)
+        #expect(p.exportDuration == duration)
+        #expect(p.checkInvariants() == nil)
+        for clip in p.clips {
+            #expect(p.zooms.contains { $0.start == clip.sourceStart + 1 && $0.end == clip.sourceStart + 2 })
+            #expect(p.audioClips.contains { $0.start == clip.sourceStart && $0.mediaStart == clip.mediaIn && $0.mediaRate == clip.speed })
+        }
+    }
+}

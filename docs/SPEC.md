@@ -793,6 +793,11 @@ During voiceover, `Esc` discards the pending take without an undo entry; ordinar
 
 `split(atOutput:)`, `removeClip(index:)`, `trimClip(index:edge:toSource:)`, `restoreCut(afterClip:)`, `setSpeed(index:_)`,
 `addZoom(atSource:)`, `moveZoom(id:toStart:)`, `resizeZoom(id:edge:to:)`, `removeBlock(id:)`, plus `snap(_ x:candidates:threshold:)`.
+`reorderClips(_:to:propagate:)` inserts selected clips in their current order at an original-array caret, preserving
+their footage and playback settings on a normalized output clock. Linked content shifts simultaneously; clock-bound
+effects are sliced at clip boundaries while connected items move whole. Link Layers controls effects/camera/connected
+items; screen-linked audio follows propagation. Invalid/no-op edits leave the project unchanged. Reordering preserves
+the full Main clock length; export still ends at retained content, trimming trailing gaps under the existing rule.
 Invariants (assert in debug, test always): clips sorted by `sourceStart`, non-overlapping in source, each ≥ 0.1 s, speed in 0.25…16, ≥ 1 clip; zooms sorted, non-overlapping, ≥ 0.5 s, within `[0, duration]`.
 
 **AC-TL-1** (unit) Each op preserves the invariants for randomised inputs (property-style loop, 1 000 iterations, fixed seed).

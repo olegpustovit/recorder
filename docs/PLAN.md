@@ -282,7 +282,7 @@ pushes colliding layers up a track and caps video layer lanes at 4; the timeline
 
 | Scope | Tasks | Done |
 |---|---|---|
-| Phase 1 | T-701, T-701b, T-702…T-705 | 2/6 |
+| Phase 1 | T-701, T-701b, T-702, T-702b, T-703…T-705 | 3/7 |
 | Phase 2 | T-711…T-714 | 0/4 |
 | Phase 3 | T-721…T-723 | 0/3 |
 
@@ -315,7 +315,7 @@ pushes colliding layers up a track and caps video layer lanes at 4; the timeline
     and M6 fixture `parity` (maxDelta=0 at eight times). Xcode native/platform Testing overrides as in T-701.
     Multi-window cursor tables currently simulate full recording duration per clip; narrow the cache if long-project
     profiling warrants it. No real-device/performance acceptance implied.
-- [ ] **T-702 Core: `reorderClips`**
+- [x] **T-702 Core: `reorderClips`**
   - `mutating func reorderClips(_ indices: Set<Int>, to index: Int, propagate: Bool = true) -> Set<Int>` (returns the
     moved clips' new indices; `index` counts positions in the original array, like an insertion caret).
   - How: `before = self`; `useOutputClock()`; split `clips` into `moving` (selected, original order) and `rest`
@@ -328,6 +328,8 @@ pushes colliding layers up a track and caps video layer lanes at 4; the timeline
     (reuse the slice helper inside `applyLinkedEdit`; a zoom spanning two clips becomes two zooms that each follow their
     footage), then adds the delta of the range containing each piece. Connected layers/unlinked audio whose `start`
     lies in a moved range move with it (same rule as `placeClip(moving:)`). When `propagate == false` only clips move.
+    Preserve existing Link Layers semantics: screen-linked audio follows propagation; effects, camera and connected
+    items also require `linkVideoEdits`. Layer-linked audio follows its owning layer's delta, not its own start.
     Finish with `settleConnected()`; `checkInvariants() != nil` → `self = before`, return original indices.
   - Copy (`⌥`): no new op — `copySelection(clips:blocks:)` + `pasteSelection(_:atOutput:)` at the caret's output time
     (paste already inserts and duplicates effects with new ids = decision 3).
@@ -336,6 +338,23 @@ pushes colliding layers up a track and caps video layer lanes at 4; the timeline
     in-points unchanged relative to the video), `reorderKeepsPlaybackRates` (mixed 1×/2× clips: every `mediaDuration`
     unchanged), `reorderPreservesExportDuration`, `reorderInvariants` (1 000 random reorders, fixed seed, AC-TL-1 style).
   - Verify: `make test FILTER=reorder`.
+  - Verified 2026-11-15: all seven targeted tests and 150/150 full Core tests pass with T-701's Xcode native/platform
+    Testing flags. Random tests verify the requested permutation, not only invariants; invalid short-audio slicing
+    rolls the whole edit back. Unchanged permutations return before clock normalization. `useOutputClock` is now an
+    identity on an already explicit contiguous output clock, avoiding repeated slicing/new ids on every reorder.
+  - Roundtrip identity is structural for canonical, collision-free projects whose effects do not require splitting.
+    Legacy fields normalize to the explicit output clock; spanning effects remain sliced with independent ids;
+    collision settlement can change tracks. Footage, rates, payloads and output length are preserved.
+    The existing SPEC export rule still trims a newly trailing empty gap; export duration is preserved when retained
+    content still reaches the same end. The seven-test duration fixture covers gaps inside retained video.
+- [ ] **T-702b Preserve spanning audio envelopes before magnetic editing**
+  - Review finding (2026-11-15): `useOutputClock` and `applyLinkedEdit` retain each original audio fade on every
+    sliced piece. A single fade-in on spanning mic audio can therefore repeat after reorder. Preserve each piece's
+    original envelope phase/gain through slicing and rate conversion, including subsequent reorder, copy and trim.
+    Reuse the shared audio-ramp path; legacy projects must retain their current envelope defaults.
+  - Verify: a spanning mic clip with fade-in/out sliced across three video clips has the same gain at corresponding
+    media samples before/after reorder, including cuts inside either fade, mixed rates and undo-equivalent roundtrip;
+    `make test`; native `audio-mix-abutting`, `clip-fades` and `menu-actions`.
 - [ ] **T-703 Timeline: lift-and-follow drag with live reflow**
   - `TimelineView` `DragKind.moveClip` gets two behaviours by `project.rippleDelete`: Magnet → on every
     `mouseDragged` compute the caret index (pointer x vs. midpoints of the *other* clips), build
@@ -1289,3 +1308,5 @@ Documentation review · 2026-10-23 · Shortened the entry README, retained insta
 T-701 · 2026-11-15 · Added Clip.mediaEnd; restore and cut bubbles use footage bounds, refusing reversed neighbours. Rebased restoration reuses clipboard insertion to preserve later footage/effects; head/tail, playback rates and tiny moved edge gaps covered. Targeted make test FILTER=TimelineOps passes 18/18; full make test passes 137/137 using installed Xcode native engine/platform Testing flags (default swiftbuild/CLT macro failures recorded above). Native timeline-ops remains failing at the pre-existing Video Track menu fixture mismatch; no UI acceptance claimed. Artifact audits add T-701b for media-order/copy bugs and explicit ⌘D implementation to T-703. Unrelated worktree edits preserved.
 
 T-701b · 2026-11-15 · Completed artifact A8 media-order fixes: recorded typing/silence ranges map into every kept clip; regeneration maps independently owned zooms through copies/rates while retaining effects across harmless splits; pause slicing visits every media occurrence and erasing preserves untouched copies and connected tails; multi-window cursor normalization, camera following and frame sampling use each copy’s window selection with edit/undo cache invalidation. Core make test 143/143 passes with Xcode native/platform Testing overrides; native menu-actions and cursor-copies pass; fresh M6 fixture parity maxDelta=0 across eight times. Full-duration per-clip multi-window cursor simulation is the documented profiling limit. No physical-device/performance gate claimed; unrelated worktree changes preserved.
+
+T-702 · 2026-11-15 · Added group reorderClips with original-array carets, stable group order, no-op/invalid guards, simultaneous linked-content slicing/shifts, whole connected anchors and layer-owned audio deltas, existing link semantics, collision settlement and invariant rollback. Made explicit output-clock normalization idempotent. Seven targeted reorder tests pass; full make test 150/150 with Xcode native/platform Testing flags, including 1000 seeded requested-permutation checks and rollback on invalid audio slivers. Documented canonical-vs-legacy roundtrip representation and existing trailing-gap export trimming; added T-702b for reviewer-found repeated spanning-audio fades before UI integration. No native drag behavior, physical performance or release acceptance claimed. Unrelated worktree changes preserved.

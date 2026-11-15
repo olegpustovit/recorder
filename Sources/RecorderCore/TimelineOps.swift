@@ -388,6 +388,9 @@ public extension Project {
     /// Playback rates and layer media positions stay unchanged; only timeline coordinates change.
     private mutating func useOutputClock() {
         let original = clips
+        if original.first?.sourceStart == 0,
+           original.allSatisfy({ $0.timeScale == 1 && $0.mediaStart != nil }),
+           zip(original, original.dropFirst()).allSatisfy({ $0.sourceEnd == $1.sourceStart }) { return }
         func output(_ source: Double) -> Double {
             var time = 0.0
             for clip in original {
@@ -449,6 +452,76 @@ public extension Project {
             return moved
         }
         settleConnected()
+    }
+
+    /// Insert a group at an array caret without changing its footage or playback rates.
+    @discardableResult
+    mutating func reorderClips(_ indices: Set<Int>, to index: Int, propagate: Bool = true) -> Set<Int> {
+        let selected = indices.filter { clips.indices.contains($0) && !clips[$0].isEmpty }
+        guard !selected.isEmpty, (0...clips.count).contains(index) else { return selected }
+        let moving = clips.indices.filter { selected.contains($0) }
+        var order = clips.indices.filter { !selected.contains($0) }
+        let insertion = index - selected.filter { $0 < index }.count
+        order.insert(contentsOf: moving, at: insertion)
+        guard order != Array(clips.indices) else { return selected }
+        let before = self
+        useOutputClock()
+        let original = clips
+        var moves: [(range: ClosedRange<Double>, delta: Double)] = []
+        var time = 0.0
+        clips = order.map { i in
+            var clip = original[i]
+            let length = clip.sourceEnd - clip.sourceStart
+            moves.append((clip.sourceStart...clip.sourceEnd, time - clip.sourceStart))
+            clip.sourceStart = time
+            time += length
+            clip.sourceEnd = time
+            return clip
+        }
+        if propagate { shiftLinked(moves) }
+        settleConnected()
+        guard checkInvariants() == nil else { self = before; return selected }
+        return Set(insertion..<(insertion + moving.count))
+    }
+
+    private mutating func shiftLinked(_ moves: [(range: ClosedRange<Double>, delta: Double)]) {
+        let boundaries = Set(moves.flatMap { [$0.range.lowerBound, $0.range.upperBound] }).sorted()
+        func delta(at start: Double) -> Double {
+            moves.first { start >= $0.range.lowerBound && start < $0.range.upperBound }?.delta ?? 0
+        }
+        func shift<Block: TimedBlock>(_ blocks: inout [Block]) {
+            for boundary in boundaries {
+                applyLinkedEdit(&blocks, in: boundary...boundary, moveBy: 0)
+            }
+            for i in blocks.indices {
+                let offset = delta(at: blocks[i].start)
+                blocks[i].start += offset; blocks[i].end += offset
+            }
+            blocks.sort { $0.start < $1.start }
+        }
+        var screenAudio = audioClips.filter { $0.link == .screen }
+        shift(&screenAudio)
+        audioClips.removeAll { $0.link == .screen }
+        if linkVideoEdits {
+            shift(&cameraClips); shift(&zooms); shift(&keystrokeClips); shift(&layouts)
+            shift(&masks); shift(&texts); shift(&windowShots)
+            var cameraAudio = audioClips.filter { $0.link == .camera }
+            shift(&cameraAudio)
+            audioClips.removeAll { $0.link == .camera }
+            let layerMoves = Dictionary(uniqueKeysWithValues: layers.map { ($0.id, delta(at: $0.start)) })
+            for i in layers.indices {
+                let offset = layerMoves[layers[i].id] ?? 0
+                layers[i].start += offset; layers[i].end += offset
+            }
+            for i in audioClips.indices {
+                let audio = audioClips[i]
+                let offset = audio.link == .layer ? audio.layer.flatMap { layerMoves[$0] } ?? 0 : delta(at: audio.start)
+                audioClips[i].start += offset; audioClips[i].end += offset
+            }
+            audioClips += cameraAudio
+        }
+        audioClips += screenAudio
+        audioClips.sort { $0.start < $1.start }
     }
 
     /// Clipboard content uses output seconds relative to the selection, with media in-points
