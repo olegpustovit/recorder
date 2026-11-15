@@ -689,7 +689,7 @@ final class TimelineView: NSView {
         case .clip: return true
         case .layer(let track): return p.layers.contains { $0.track == track }
         case .camera: return !p.cameraClips.isEmpty
-        case .zoom: return !p.zooms.isEmpty
+        case .zoom: return !p.zooms.isEmpty || sceneZoomLayer != nil
         case .keys: return !p.keystrokeClips.isEmpty
         case .layout: return !p.layouts.isEmpty
         case .mask: return !p.masks.isEmpty
@@ -1157,13 +1157,46 @@ final class TimelineView: NSView {
         }
     }
 
+    // MARK: Carried zooms (T-721)
+
+    /// Recording layer whose `scene.zooms` the Zoom lane edits: the selected layer, or the owner of the selected carried zoom.
+    private var sceneZoomLayer: LayerBlock? {
+        guard let model, !model.selection.isEmpty else { return nil }
+        let ids = Set(model.selection.map(\.uuidString))
+        return model.project.layers.first { layer in
+            layer.kind == .recording && ((ids.count == 1 && ids.contains(layer.id)) || (layer.scene?.zooms.contains { ids.contains($0.id) } ?? false))
+        }
+    }
+
+    private func zoomLaneBlocks(_ project: Project) -> [Zoom] { sceneZoomLayer?.scene?.zooms ?? project.zooms }
+
+    /// Zoom-lane time at output `t`: layer-local seconds for carried zooms, source time for Main's.
+    private func zoomTime(atOutput t: Double) -> Double {
+        guard let model else { return 0 }
+        if let layer = sceneZoomLayer, let origin = model.timeMap.outputTime(atSource: layer.start) { return (t - origin) * (layer.mediaRate ?? 1) }
+        return model.timeMap.sourceTime(atOutput: t)
+    }
+
+    private func zoomOutput(atTime s: Double) -> Double? {
+        guard let model else { return nil }
+        if let layer = sceneZoomLayer { return model.timeMap.outputTime(atSource: layer.start).map { $0 + s / (layer.mediaRate ?? 1) } }
+        return model.timeMap.outputTime(atSource: s)
+    }
+
+    private func zoomSegments(start: Double, end: Double, project: Project, timeMap: TimeMap)
+        -> [(outStart: Double, outEnd: Double, tornLeft: Bool, tornRight: Bool)] {
+        guard sceneZoomLayer != nil else { return visibleSegments(start: start, end: end, project: project, timeMap: timeMap) }
+        guard let a = zoomOutput(atTime: start), let b = zoomOutput(atTime: end) else { return [] }
+        return [(a, b, false, false)]
+    }
+
     private func drawZoomLane(_ project: Project, _ timeMap: TimeMap) {
         let row = laneRow(.zoom)
         let selection = model?.selection ?? []
-        for zoom in project.zooms {
+        for zoom in zoomLaneBlocks(project) {
             let label = "\(String(format: "%.1f", zoom.scale))\u{00D7} \(zoom.mode == .auto ? "A" : "M")"
             let selected = UUID(uuidString: zoom.id).map(selection.contains) ?? false
-            for segment in visibleSegments(start: zoom.start, end: zoom.end, project: project, timeMap: timeMap) {
+            for segment in zoomSegments(start: zoom.start, end: zoom.end, project: project, timeMap: timeMap) {
                 let rect = CGRect(x: x(forOutput: segment.outStart), y: row.minY + 2,
                                    width: max(0, x(forOutput: segment.outEnd) - x(forOutput: segment.outStart)), height: row.height - 4)
                 guard rect.width > 0.5 else { continue }
@@ -1602,7 +1635,7 @@ final class TimelineView: NSView {
             return .blockBody(id)
         }
         if model.project.source.hasCamera, let hit = hitBlockLane(p, model, lane: .camera, blocks: model.project.cameraClips.map { ($0.id, $0.start, $0.end) }) { return hit }
-        if let hit = hitBlockLane(p, model, lane: .zoom, blocks: model.project.zooms.map { ($0.id, $0.start, $0.end) }) { return hit }
+        if let hit = hitBlockLane(p, model, lane: .zoom, blocks: zoomLaneBlocks(model.project).map { ($0.id, $0.start, $0.end) }) { return hit }
         if let hit = hitBlockLane(p, model, lane: .keys, blocks: model.project.keystrokeClips.map { ($0.id, $0.start, $0.end) }) { return hit }
         if hasLayoutLane, let hit = hitBlockLane(p, model, lane: .layout, blocks: model.project.layouts.map { ($0.id, $0.start, $0.end) }) {
             return hit
@@ -1652,7 +1685,8 @@ final class TimelineView: NSView {
         guard p.y >= row.minY, p.y <= row.maxY else { return nil }
         let timeMap = model.timeMap
         for b in blocks {
-            for segment in visibleSegments(start: b.start, end: b.end, project: model.project, timeMap: timeMap) {
+            for segment in lane == .zoom ? zoomSegments(start: b.start, end: b.end, project: model.project, timeMap: timeMap)
+                                         : visibleSegments(start: b.start, end: b.end, project: model.project, timeMap: timeMap) {
                 let x0 = x(forOutput: segment.outStart), x1 = x(forOutput: segment.outEnd)
                 guard p.x >= x0, p.x <= x1, let uuid = UUID(uuidString: b.id) else { continue }
                 let zone = edgeZone(width: x1 - x0)
@@ -1718,7 +1752,7 @@ final class TimelineView: NSView {
             let row = laneRow(lane)
             guard p.y >= row.minY, p.y <= row.maxY, p.x >= gutterWidth else { continue }
             let t = geometry.output(forX: geometryX(p))
-            return .emptyLane(lane, source: model.timeMap.sourceTime(atOutput: t))
+            return .emptyLane(lane, source: lane == .zoom ? zoomTime(atOutput: t) : model.timeMap.sourceTime(atOutput: t))
         }
         return nil
     }
@@ -1742,7 +1776,7 @@ final class TimelineView: NSView {
         let key = id.uuidString
         if model.project.keystrokeClips.contains(where: { $0.id == key }) { return .keys }
         if model.project.cameraClips.contains(where: { $0.id == key }) { return .camera }
-        if model.project.zooms.contains(where: { $0.id == key }) { return .zoom }
+        if zoomLaneBlocks(model.project).contains(where: { $0.id == key }) { return .zoom }
         if model.project.layouts.contains(where: { $0.id == key }) { return .layout }
         if model.project.masks.contains(where: { $0.id == key }) { return .mask }
         if model.project.texts.contains(where: { $0.id == key }) { return .text }
@@ -1803,7 +1837,10 @@ final class TimelineView: NSView {
         guard !indices.isEmpty || !ids.isEmpty else { return }
         // Blocks first: removing them never renumbers clips. A mixed marquee selection is one undo step.
         model.edit(indices.isEmpty ? "Remove" : "Remove Clips") { project in
-            for id in ids { project.removeBlock(id, propagate: !ignoringLinks) }
+            for id in ids {
+                if let layer = project.layers.first(where: { $0.scene?.zooms.contains { $0.id == id.uuidString } == true }) { project.removeSceneZoom(layerID: layer.id, id) }
+                else { project.removeBlock(id, propagate: !ignoringLinks) }
+            }
             if !indices.isEmpty { project.deleteClips(indices, propagate: !ignoringLinks) }
         }
         model.selectedClip = nil
@@ -2640,9 +2677,12 @@ final class TimelineView: NSView {
             if !event.modifierFlags.contains(.shift), lane != .clip, let model {
                 model.beginGesture()
                 var id: UUID?
+                let sceneID = sceneZoomLayer?.id
                 model.update { project in
                     switch lane {
-                    case .zoom: id = project.addZoom(atSource: source, mode: zoomMode(nearSource: source))
+                    case .zoom:
+                        if let sceneID { id = project.addSceneZoom(layerID: sceneID, atLocal: source) }
+                        else { id = project.addZoom(atSource: source, mode: zoomMode(nearSource: source)) }
                     case .camera: id = project.addCamera(atSource: source)
                     case .keys: id = project.addKeys(atSource: source)
                     case .layout: id = project.addLayout(atSource: source, kind: .bubble)
@@ -2902,11 +2942,18 @@ final class TimelineView: NSView {
             let raw = geometry.output(forX: geometryX(p))
             let (snapped, didSnap) = snappedOutput(raw, excludingBlock: id, disabled: snapDisabled)
             snapGuideX = didSnap ? x(forOutput: snapped) : nil
-            let source = model.timeMap.sourceTime(atOutput: snapped)
+            let source = lane == .zoom ? zoomTime(atOutput: snapped) : model.timeMap.sourceTime(atOutput: snapped)
+            let sceneID = sceneZoomLayer?.id
             model.update { project in
                 // Contract first, then expand: works in either direction and clamps at neighbours.
                 switch lane {
                 case .zoom:
+                    if let sceneID {
+                        project.resizeSceneZoom(layerID: sceneID, id, edge: .leading, to: min(anchor, source))
+                        project.resizeSceneZoom(layerID: sceneID, id, edge: .trailing, to: max(anchor, source))
+                        project.resizeSceneZoom(layerID: sceneID, id, edge: .leading, to: min(anchor, source))
+                        break
+                    }
                     project.resizeZoom(id, edge: .leading, to: min(anchor, source))
                     project.resizeZoom(id, edge: .trailing, to: max(anchor, source))
                     project.resizeZoom(id, edge: .leading, to: min(anchor, source))
@@ -3209,8 +3256,8 @@ final class TimelineView: NSView {
 
     /// "Double-click = select + move playhead to its start" (SPEC §7.2 "Zoom blocks" — zoom-only).
     private func doubleClickZoom(id: UUID) {
-        guard let model, let zoom = model.project.zooms.first(where: { $0.id == id.uuidString }),
-              let out = model.timeMap.outputTime(atSource: zoom.start) else { return }
+        guard let model, let zoom = zoomLaneBlocks(model.project).first(where: { $0.id == id.uuidString }),
+              let out = zoomOutput(atTime: zoom.start) else { return }
         selectBlock(id, addToSelection: false)
         model.playhead = out
     }
@@ -3219,7 +3266,7 @@ final class TimelineView: NSView {
     private func blockStart(id: UUID, lane: Lane) -> Double? {
         guard let model else { return nil }
         switch lane {
-        case .zoom: return model.project.zooms.first { $0.id == id.uuidString }?.start
+        case .zoom: return zoomLaneBlocks(model.project).first { $0.id == id.uuidString }?.start
         case .keys: return model.project.keystrokeClips.first { $0.id == id.uuidString }?.start
         case .camera: return model.project.cameraClips.first { $0.id == id.uuidString }?.start
         case .layout: return model.project.layouts.first { $0.id == id.uuidString }?.start
@@ -3234,7 +3281,8 @@ final class TimelineView: NSView {
 
     private func beginMoveBlock(id: UUID, lane: Lane, atViewX viewX: CGFloat) {
         guard let model, let start = blockStart(id: id, lane: lane) else { return }
-        let mouseSource = model.timeMap.sourceTime(atOutput: geometry.output(forX: geometryX(NSPoint(x: viewX, y: 0))))
+        let mouseOutput = geometry.output(forX: geometryX(NSPoint(x: viewX, y: 0)))
+        let mouseSource = lane == .zoom ? zoomTime(atOutput: mouseOutput) : model.timeMap.sourceTime(atOutput: mouseOutput)
         model.beginGesture()
         dragKind = .moveBlock(id: id, lane: lane, grabOffset: mouseSource - start)
         selectBlock(id, addToSelection: false)
@@ -3248,10 +3296,12 @@ final class TimelineView: NSView {
         let raw = geometry.output(forX: geometryX(NSPoint(x: viewX, y: 0)))
         let (snapped, didSnap) = snappedOutput(raw, excludingBlock: id, disabled: snapDisabled)
         snapGuideX = didSnap ? x(forOutput: snapped) : nil
-        let toStart = model.timeMap.sourceTime(atOutput: snapped) - grabOffset
+        let toStart = (lane == .zoom ? zoomTime(atOutput: snapped) : model.timeMap.sourceTime(atOutput: snapped)) - grabOffset
+        let sceneID = sceneZoomLayer?.id
         model.update { project in
             switch lane {
-            case .zoom: project.moveZoom(id, toStart: toStart)
+            case .zoom:
+                if let sceneID { project.moveSceneZoom(layerID: sceneID, id, toStart: toStart) } else { project.moveZoom(id, toStart: toStart) }
             case .keys: project.moveKeys(id, toStart: toStart)
             case .camera: project.moveCamera(id, toStart: toStart, propagate: true)
             case .layout: project.moveLayout(id, toStart: toStart)
@@ -3276,10 +3326,12 @@ final class TimelineView: NSView {
         let raw = geometry.output(forX: geometryX(NSPoint(x: viewX, y: 0)))
         let (snapped, didSnap) = snappedOutput(raw, excludingBlock: id, disabled: snapDisabled)
         snapGuideX = didSnap ? x(forOutput: snapped) : nil
-        let source = model.timeMap.sourceTime(atOutput: snapped) // read before `update`'s exclusive `inout` access to `project`
+        let source = lane == .zoom ? zoomTime(atOutput: snapped) : model.timeMap.sourceTime(atOutput: snapped) // read before `update`'s exclusive `inout` access to `project`
+        let sceneID = sceneZoomLayer?.id
         model.update { project in
             switch lane {
-            case .zoom: project.resizeZoom(id, edge: edge, to: source)
+            case .zoom:
+                if let sceneID { project.resizeSceneZoom(layerID: sceneID, id, edge: edge, to: source) } else { project.resizeZoom(id, edge: edge, to: source) }
             case .keys: project.resizeKeys(id, edge: edge, to: source)
             case .camera: project.resizeCamera(id, edge: edge, to: source, propagate: true)
             case .layout: project.resizeLayout(id, edge: edge, to: source)
@@ -3352,6 +3404,7 @@ final class TimelineView: NSView {
         guard dragKind == nil, !isSplitMode, let model, let hoverX, let hoverY, hoverX > gutterWidth else { return }
         guard let lane = [Lane.camera, .zoom, .keys, .layout, .mask, .text, .window].first(where: { laneHeight($0) > 0 && hoverY >= laneRow($0).minY && hoverY <= laneRow($0).maxY }) else { return }
         let row = laneRow(lane)
+        guard lane != .zoom || sceneZoomLayer == nil else { return } // no ghost for carried zooms
         let s = model.timeMap.sourceTime(atOutput: geometry.output(forX: geometryX(NSPoint(x: hoverX, y: 0))))
         guard model.timeMap.outputTime(atSource: s) != nil else { return } // hovering a removed segment: no gap to add into
         guard let placement = previewPlacement(lane: lane, atSource: s),

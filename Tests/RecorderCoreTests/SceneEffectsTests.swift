@@ -98,3 +98,24 @@ private func historyCamera(_ project: Project) -> CameraPath {
     let during = trimmed.sourceStart + 1
     #expect(editedPath.sample(atSource: during).scale > oldPath.sample(atSource: during).scale)
 }
+
+@Test func sceneEffectsZoomEdits() throws {
+    var p = Project(source: Source(duration: 10), clips: [Clip(sourceStart: 0, sourceEnd: 10)])
+    var layer = LayerBlock(kind: .recording, start: 2, end: 6, file: "screen.mov", rect: NormRect(), mediaRate: 2, scene: SceneEffects())
+    layer.id = "L"
+    p.layers = [layer]
+    #expect(p.sceneRate(layerID: "L") == 2)
+    // Layer spans 4 output s at 2x = 8 local s.
+    let a0 = p.addSceneZoom(layerID: "L", atLocal: 1, length: 2), b0 = p.addSceneZoom(layerID: "L", atLocal: 5, length: 2)
+    let a = try #require(a0), b = try #require(b0)
+    #expect(p.addSceneZoom(layerID: "L", atLocal: 1.5) == nil)          // inside a
+    #expect(p.layers[0].scene!.zooms.map(\.start) == [1, 5])
+    p.moveSceneZoom(layerID: "L", b, toStart: 7)                         // clamped to the layer end
+    #expect(p.layers[0].scene!.zooms[1].end == 8)
+    p.resizeSceneZoom(layerID: "L", a, edge: .trailing, to: 100)         // clamped by neighbour
+    #expect(p.layers[0].scene!.zooms[0].end == p.layers[0].scene!.zooms[1].start)
+    p.removeSceneZoom(layerID: "L", a)
+    #expect(p.layers[0].scene!.zooms.map(\.id) == [b.uuidString])
+    #expect(p.zooms.isEmpty)                                             // Main untouched
+    #expect(p.addSceneZoom(layerID: "nope", atLocal: 0) == nil)
+}

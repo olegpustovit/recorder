@@ -2390,6 +2390,45 @@ public extension Project {
     /// overlaps its neighbour.
     mutating func resizeZoom(_ id: UUID, edge: Edge, to s: Double) { resizeBlock(id, in: \.zooms, edge: edge, to: s) }
 
+    // MARK: - Carried zooms (T-721): a recording layer's `scene.zooms`, in layer-local source seconds
+    // (output offset = local / mediaRate). Same generic block ops as the main Zoom lane.
+
+    /// Zoom times map to output as `layer.start + local / sceneRate`.
+    func sceneRate(layerID: String) -> Double { layers.first { $0.id == layerID }?.mediaRate ?? 1 }
+
+    /// Runs a generic block op on the layer's scene zooms; `nil` if the layer isn't a recording.
+    @discardableResult
+    private mutating func editSceneZooms<R>(layerID: String, _ body: (inout [Zoom], Double) -> R) -> R? {
+        guard let i = layers.firstIndex(where: { $0.id == layerID && $0.kind == .recording }) else { return nil }
+        var scene = layers[i].scene ?? SceneEffects()
+        let result = body(&scene.zooms, (layers[i].end - layers[i].start) * (layers[i].mediaRate ?? 1))
+        layers[i].scene = scene
+        return result
+    }
+
+    @discardableResult
+    mutating func addSceneZoom(layerID: String, atLocal s: Double, length: Double = 3, mode: Zoom.Mode = .manual) -> UUID? {
+        let id = UUID()
+        let added = editSceneZooms(layerID: layerID) { zooms, duration in
+            zooms.addBlock(atSource: s, length: length, duration: duration, minLength: Self.minBlockLength) {
+                Zoom(id: id.uuidString, start: $0, end: $1, mode: mode)
+            } != nil
+        }
+        return added == true ? id : nil
+    }
+
+    mutating func moveSceneZoom(layerID: String, _ id: UUID, toStart s: Double) {
+        editSceneZooms(layerID: layerID) { $0.moveBlock(id: id.uuidString, toStart: s, duration: $1) }
+    }
+
+    mutating func resizeSceneZoom(layerID: String, _ id: UUID, edge: Edge, to s: Double) {
+        editSceneZooms(layerID: layerID) { $0.resizeBlock(id: id.uuidString, edge: edge, to: s, duration: $1, minLength: Self.minBlockLength) }
+    }
+
+    mutating func removeSceneZoom(layerID: String, _ id: UUID) {
+        editSceneZooms(layerID: layerID) { zooms, _ in zooms.removeBlock(id: id.uuidString) }
+    }
+
     // MARK: - Layout (`moveLayout` landed with T-417 for the accessibility nudge)
 
     /// Adds a layout of `length` seconds (`Layout.Kind` `kind`) into the free gap in `layouts`
