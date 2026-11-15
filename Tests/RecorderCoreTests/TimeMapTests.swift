@@ -85,3 +85,22 @@ import Testing
     project.clips = []
     #expect(project.exportDuration == 0)
 }
+
+@Test func mediaRangesFollowReversedCopiesAndPlaybackRates() {
+    var fast = Clip(sourceStart: 0, sourceEnd: 5, speed: 2)
+    fast.mediaStart = 10; fast.clockSpeed = 1
+    var early = Clip(sourceStart: 5, sourceEnd: 15)
+    early.mediaStart = 0
+    var copy = fast
+    copy.sourceStart = 15; copy.sourceEnd = 20
+    var gap = Clip(sourceStart: 20, sourceEnd: 25)
+    gap.isGap = true; gap.mediaStart = 12
+    let map = TimeMap([fast, early, copy, gap])
+    let mapped = map.sourceRanges(forMedia: [TimeRange(start: 12, end: 16), TimeRange(start: 4, end: 8)])
+    #expect(mapped == [TimeRange(start: 1, end: 3), TimeRange(start: 9, end: 13), TimeRange(start: 16, end: 18)])
+    #expect(map.sourceRanges(forMedia: [TimeRange(start: 20, end: 30)]).isEmpty)
+    var p = Project(source: Source(duration: 20), clips: [fast, early, copy])
+    p.splitAtPauses(mapped)
+    #expect(p.clips.filter { $0.sourceStart == 1 || $0.sourceStart == 9 || $0.sourceStart == 16 }.count == 3)
+    #expect(p.checkInvariants() == nil)
+}

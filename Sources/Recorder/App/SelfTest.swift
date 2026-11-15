@@ -1875,6 +1875,33 @@ enum SelfTest {
         },
     ]
     private static let projectCases: [String: Case] = [
+        "cursor-copies": { @MainActor _ in
+            struct Fail: Error, CustomStringConvertible { let description: String }
+            let folder = FileManager.default.temporaryDirectory.appendingPathComponent("cursor-copies-" + UUID().uuidString)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: folder) }
+            var copy = Clip(sourceStart: 6, sourceEnd: 12)
+            copy.mediaStart = 0
+            let project = Project(source: Source(pixelWidth: 800, pixelHeight: 600, duration: 12,
+                windowSizes: [PixelSize(w: 800, h: 600), PixelSize(w: 400, h: 400)]),
+                clips: [Clip(sourceStart: 0, sourceEnd: 6), copy],
+                windowShots: [WindowShot(start: 0, end: 6, window: 0), WindowShot(start: 6, end: 12, window: 1)])
+            let log = EventLog(events: [InputEvent(t: 1, k: .move, x: 1200, y: 300)], windowFrames: [
+                WindowFrame(t: 0, i: 0, x: 0, y: 0, w: 800, h: 600),
+                WindowFrame(t: 0, i: 1, x: 1000, y: 100, w: 400, h: 400)])
+            let model = EditorModel(packageURL: folder, project: project, events: log)
+            @MainActor func cursor(_ t: Double) -> CursorSample? {
+                makeFrameState(model: model, outputTime: t, screen: nil, camera: nil, size: CGSize(width: 800, height: 600)).cursor
+            }
+            guard cursor(2)?.alpha == 0, let second = cursor(8), second.alpha > 0, abs(second.x - 0.5) < 1e-6 else {
+                throw Fail(description: "FrameState reused the first copy's window cursor")
+            }
+            model.edit("Switch copy window") { $0.windowShots[1].window = 0 }
+            guard cursor(8)?.alpha == 0 else { throw Fail(description: "Window cursor cache survived window edit") }
+            model.undo()
+            guard (cursor(8)?.alpha ?? 0) > 0 else { throw Fail(description: "Window cursor cache survived undo") }
+            model.saveNow()
+        },
         "editor-review-png": { args in try await EditorWorkspaceGallery.renderNativeEditor(
             to: URL(fileURLWithPath: args.first ?? "build/editor-final"), readme: args.contains("--readme")) },
         "editor-png": { @MainActor args in
@@ -2095,6 +2122,33 @@ enum SelfTest {
                 guard model.project.checkInvariants() == nil else { throw Fail(description: "Speed Up Typing broke invariants") }
                 controller.performUndo(nil)
                 guard model.project == beforeSpeedUp else { throw Fail(description: "Speed Up Typing wasn't exactly one undo step") }
+
+                // Recorded typing/click times must reach the moved footage and every copy.
+                model.edit("Setup repeated media") { project in
+                    project.clips = [(0.0, 10.0), (10.0, 0.0), (20.0, 10.0)].map { start, media in
+                        var clip = Clip(sourceStart: start, sourceEnd: start + 10)
+                        clip.mediaStart = media
+                        return clip
+                    }
+                    project.linkVideoEdits = true
+                }
+                let repeated = model.project
+                controller.regenerateAutoZooms(nil)
+                guard model.project.zooms.count == 1,
+                      abs(model.project.zooms[0].start - 14.6) < 1e-6 else {
+                    throw Fail(description: "Regenerated zoom didn't follow moved footage")
+                }
+                controller.performUndo(nil)
+                controller.speedUpTyping(nil)
+                let typed = model.project.clips.filter { $0.mediaIn == 10 && $0.mediaEnd == 14 && $0.speed == 2 }
+                guard typed.count == 2, Set(typed.map(\.sourceStart)) == [0, 20],
+                      model.project.checkInvariants() == nil else {
+                    throw Fail(description: "Typing edit didn't follow both media copies")
+                }
+                controller.performUndo(nil)
+                guard model.project == repeated else { throw Fail(description: "Repeated-media typing wasn't one undo") }
+                controller.performUndo(nil)
+                guard model.project == beforeSpeedUp else { throw Fail(description: "Repeated-media setup didn't unwind") }
 
                 // Hide Cursor in Selected Clip.
                 model.selectedClip = 0

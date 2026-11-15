@@ -1560,9 +1560,11 @@ public extension Project {
     /// range (`silentRanges` over that file) and fades the speech side of each cut by `fade` output seconds.
     mutating func splitAudioAtPauses(file: String, silent: [TimeRange], fade: Double = 0.06) {
         for edge in silent.flatMap({ [$0.start, $0.end] }) {
-            guard let audio = audioClips.first(where: { $0.file == file && outputTime(of: $0, media: edge) != nil }),
-                  let id = UUID(uuidString: audio.id), let output = outputTime(of: audio, media: edge) else { continue }
-            _ = splitAudio(id, atOutput: output, propagate: false)
+            let matches = audioClips.filter { $0.file == file && outputTime(of: $0, media: edge) != nil }
+            for audio in matches {
+                guard let id = UUID(uuidString: audio.id), let output = outputTime(of: audio, media: edge) else { continue }
+                _ = splitAudio(id, atOutput: output, propagate: false)
+            }
         }
         for i in audioClips.indices where audioClips[i].file == file {
             let segments = audioSegments(audioClips[i])
@@ -1579,24 +1581,29 @@ public extension Project {
     /// Keeps `tail` media seconds of each pause on both speech sides (pauses shorter than 2×tail + 0.05 s are left
     /// alone) and fades the speech side of each new cut by `fade` output seconds.
     mutating func erasePauses(file: String, silent: [TimeRange], inOutput range: TimeRange, tail: Double = 0, fade: Double = 0.06) {
-        let touched = silent.filter { pause in
-            pause.end - pause.start >= 2 * tail + 0.05 &&
-            audioClips.contains { audio in audio.file == file && audioSegments(audio).contains { segment in
-                let lower = max(pause.start, segment.media.start), upper = min(pause.end, segment.media.end)
-                guard upper > lower, let a = outputTime(of: audio, media: lower), let b = outputTime(of: audio, media: upper) else { return false }
-                return a < range.end && b > range.start
-            } }
-        }
-        .map { TimeRange(start: $0.start + tail, end: $0.end - tail) }
-        guard !touched.isEmpty else { return }
         let before = self
-        splitAudioAtPauses(file: file, silent: touched, fade: fade)
-        let pauses = Set(audioClips.filter { audio in
-            let segments = audioSegments(audio)
-            guard audio.file == file, let first = segments.first, let last = segments.last else { return false }
-            return touched.contains { first.media.start >= $0.start - 1e-3 && last.media.end <= $0.end + 1e-3 }
-        }.map(\.id))
-        audioClips.removeAll { pauses.contains($0.id) }
+        var kept: [AudioClip] = []
+        for audio in before.audioClips {
+            let touched = silent.filter { pause in
+                pause.end - pause.start >= 2 * tail + 0.05 && audio.file == file && audioSegments(audio).contains { segment in
+                    let lower = max(pause.start, segment.media.start), upper = min(pause.end, segment.media.end)
+                    guard upper > lower, let a = outputTime(of: audio, media: lower), let b = outputTime(of: audio, media: upper) else { return false }
+                    return a < range.end && b > range.start
+                }
+            }.map { TimeRange(start: $0.start + tail, end: $0.end - tail) }
+            guard !touched.isEmpty else { kept.append(audio); continue }
+            // A media pause can occur in several copies; slice only this touched occurrence.
+            var sliced = before
+            sliced.audioClips = [audio]
+            sliced.splitAudioAtPauses(file: file, silent: touched, fade: fade)
+            extendAudioClock(toOutput: TimeMap(sliced.clips).outputDuration)
+            kept += sliced.audioClips.filter { piece in
+                let segments = sliced.audioSegments(piece)
+                guard let first = segments.first, let last = segments.last else { return true }
+                return !touched.contains { first.media.start >= $0.start - 1e-3 && last.media.end <= $0.end + 1e-3 }
+            }
+        }
+        audioClips = kept.sorted { $0.start < $1.start }
         if checkInvariants() != nil { self = before }
     }
 

@@ -72,7 +72,7 @@ func makeFrameState(model: EditorModel, outputTime: Double, screen: FrameState.T
     let clip = model.project.clipIndex(atOutput: outputTime).map { model.project.clips[$0] }
     let prevView = model.cameraPath.sample(atSource: sourceTime - (clip?.timeScale ?? 1) / 60)
     let mediaTime = clip.map { $0.mediaTime(atSource: sourceTime) } ?? sourceTime
-    var cursor = model.cursorPath.sample(atSource: mediaTime)
+    var cursor = model.cursorSample(atSource: sourceTime, clip: clip)
     if clip?.hideCursor == true { cursor.alpha = 0 }
     let (layoutKind, layoutAmount) = layoutMix(layouts: model.project.layouts, atSource: sourceTime)
     // T-602: the active key chip, if the Keys tab's "Show keyboard shortcuts" is on and a `.key`

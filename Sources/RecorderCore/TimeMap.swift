@@ -38,6 +38,19 @@ public struct TimeMap: Sendable {
 
     public var outputDuration: Double { clips.reduce(0) { $0 + $1.outputDuration } }
 
+    /// Every kept occurrence of recorded footage, in editing-clock order (copies included).
+    public func sourceRanges(forMedia ranges: [TimeRange]) -> [TimeRange] {
+        clips.filter { !$0.isEmpty }.flatMap { clip in
+            ranges.compactMap { range -> TimeRange? in
+                let start = max(range.start, clip.mediaIn), end = min(range.end, clip.mediaEnd)
+                guard end > start else { return nil }
+                let scale = clip.timeScale / clip.speed
+                return TimeRange(start: clip.sourceStart + (start - clip.mediaIn) * scale,
+                                 end: clip.sourceStart + (end - clip.mediaIn) * scale)
+            }
+        }.sorted { $0.start < $1.start }
+    }
+
     /// Clamps to the valid range, so callers can pass any playhead value.
     public func sourceTime(atOutput t: Double) -> Double {
         var start = 0.0

@@ -155,7 +155,7 @@ import RecorderCore
         if let data = try? Data(contentsOf: packageURL.appendingPathComponent("events.json")),
            let log = try? JSONDecoder().decode(EventLog.self, from: data) {
             project.windowShots = autoWindowShots(events: log, duration: source.duration, windowCount: project.windowCount)
-            project.zooms = generateAutoZooms(clicks: remapWindowEvents(log, project: project).events.clicks(), duration: source.duration)
+            project.zooms = project.generatedAutoZooms(events: log)
         }
 
         do {

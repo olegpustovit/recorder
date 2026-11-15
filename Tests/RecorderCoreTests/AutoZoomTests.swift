@@ -90,3 +90,33 @@ private func stripID(_ z: Zoom) -> Zoom {
     // Deterministic: identical apart from (fresh) ids.
     #expect(a.map(stripID) == b.map(stripID))
 }
+
+@Test func regeneratedZoomsFollowReorderedCopies() {
+    var late = Clip(sourceStart: 0, sourceEnd: 5, speed: 2)
+    late.mediaStart = 10; late.clockSpeed = 1
+    var early = Clip(sourceStart: 5, sourceEnd: 15)
+    early.mediaStart = 0
+    var copied = late
+    copied.sourceStart = 15; copied.sourceEnd = 20
+    let p = Project(source: Source(duration: 20), clips: [late, early, copied])
+    let log = EventLog(events: [click(3, 0.2, 0.2), click(13, 0.8, 0.8)])
+    let zooms = p.generatedAutoZooms(events: log)
+    #expect(zooms.count == 3)
+    #expect(zip(zooms.map(\.start), [1.3, 7.6, 16.3]).allSatisfy { abs($0 - $1) < 1e-8 })
+    #expect(zip(zooms.map(\.end), [2.25, 9.5, 17.25]).allSatisfy { abs($0 - $1) < 1e-8 })
+    #expect(Set(zooms.map(\.id)).count == 3)
+    var checked = p
+    checked.zooms = zooms
+    #expect(checked.checkInvariants() == nil)
+    checked.zooms[0].scale = 3
+    #expect(checked.zooms[2].scale == 2)
+}
+
+@Test func regeneratedZoomSurvivesHarmlessSplit() {
+    var p = Project(source: Source(duration: 10), clips: [Clip(sourceStart: 0, sourceEnd: 10)])
+    let log = EventLog(events: [click(4, 0.5, 0.5)])
+    let original = p.generatedAutoZooms(events: log)
+    let split = p.split(atOutput: 4)
+    #expect(split)
+    #expect(p.generatedAutoZooms(events: log).map(stripID) == original.map(stripID))
+}

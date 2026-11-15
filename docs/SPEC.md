@@ -753,6 +753,11 @@ The x-axis is **output time** (what the viewer sees) — removed segments take n
 
 Video clip movement uses output-time distances across mixed playback speeds, including gaps and grouped selections. Camera and keystroke media rates are preserved when the editing clock is rebased; linking controls whether those layers follow the move.
 
+Recorded click, typing and silence times map through each kept occurrence of footage, including reordered and copied
+clips at different rates. Regenerating zooms preserves continuous effects across harmless splits; copies own separate
+effects. Pause erasing changes only the touched audio occurrence. Multi-window copies normalize and hide the cursor
+against each copy's selected window; edits and undo invalidate that cursor lookup.
+
 **Restore**: clicking a ✂ bubble between two clips shows a popover `Restore 00:05.80 removed here` `[Restore]`; it re-inserts the removed source range (merging clips when speeds match).
 
 **Speed**: right-click clip ▸ `Speed ▸ 0.5× 1× 1.5× 2× 4× 8× Custom…`, or the inspector. Block shows a `2× ⏩` badge and re-sizes with animation. Zoom blocks over it re-size automatically because they are stored in source time.

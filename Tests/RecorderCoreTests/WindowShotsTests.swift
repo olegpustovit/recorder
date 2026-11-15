@@ -71,3 +71,26 @@ private func click(_ t: Double, _ x: Double, _ y: Double) -> InputEvent { InputE
     #expect(out.events.events.contains { $0.k == .key })
     #expect(remapWindowEvents(EventLog(events: log.events), project: p).hidden.isEmpty)
 }
+
+@Test func copiedMediaUsesEachClipsWindowAndKeepsRecordedClock() {
+    var p = twoWindows(shots: [WindowShot(start: 0, end: 6, window: 0), WindowShot(start: 6, end: 12, window: 1)])
+    var copy = Clip(sourceStart: 6, sourceEnd: 12)
+    copy.mediaStart = 0
+    p.clips = [Clip(sourceStart: 0, sourceEnd: 6), copy]
+    let sprite = InputEvent(t: 2, k: .cursor, id: "recorded-arrow")
+    let key = InputEvent(t: 3, k: .key, keyCode: 1)
+    let log = EventLog(events: [InputEvent(t: 1, k: .move, x: 1200, y: 300), sprite, key], windowFrames: frames())
+    let first = remapWindowEvents(log, project: p, clip: p.clips[0])
+    let second = remapWindowEvents(log, project: p, clip: p.clips[1])
+    #expect(first.events.moves().first { $0.t == 1 }?.x == 1.5)
+    #expect(second.events.moves().first { $0.t == 1 }?.x == 0.5)
+    #expect(first.hidden.contains { $0.start <= 2 && $0.end > 2 })
+    #expect(!second.hidden.contains { $0.start <= 2 && $0.end > 2 })
+    for output in [first, second] {
+        #expect(output.events.events.contains(sprite) && output.events.events.contains(key))
+    }
+    let a = CursorPath(events: first.events, style: p.cursor, hidden: first.hidden, duration: p.source.duration).sample(atSource: 2)
+    let b = CursorPath(events: second.events, style: p.cursor, hidden: second.hidden, duration: p.source.duration).sample(atSource: copy.mediaTime(atSource: 8))
+    #expect(a.alpha == 0 && b.alpha > 0)
+    #expect(abs(b.x - 0.5) < 1e-6 && b.imageID == "recorded-arrow")
+}

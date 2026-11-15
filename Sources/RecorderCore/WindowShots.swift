@@ -53,18 +53,23 @@ public func autoWindowShots(events: EventLog, duration: Double, windowCount: Int
 /// Pointer events of a multi-window recording (global points) → normalised against the window visible at
 /// each instant. `hidden` = media-time spans where the pointer is outside that window (cursor not drawn).
 /// A synthetic move at every shot edge re-evaluates a resting pointer against the newly visible window.
+/// Pass `clip` when footage is repeated so each copy uses its own window shots; timestamps stay media time.
 /// Single-window logs are returned untouched.
-public func remapWindowEvents(_ log: EventLog, project: Project) -> (events: EventLog, hidden: [TimeRange]) {
+public func remapWindowEvents(_ log: EventLog, project: Project, clip selectedClip: Clip? = nil) -> (events: EventLog, hidden: [TimeRange]) {
     guard let frames = log.windowFrames, project.windowCount > 1 else { return (log, []) }
-    // Shots are source time, events media time; they only differ for clips moved by unlinked edits.
+    // A media instant can occur more than once; a scoped lookup uses that copy's window selection.
     func source(_ m: Double) -> Double {
-        project.clips.first { !$0.isEmpty && m >= $0.mediaIn && m < $0.mediaIn + $0.mediaDuration }
+        if let clip = selectedClip {
+            return min(max(clip.sourceStart + (m - clip.mediaIn) * clip.timeScale / clip.speed,
+                           clip.sourceStart), clip.sourceEnd.nextDown)
+        }
+        return project.clips.first { !$0.isEmpty && m >= $0.mediaIn && m < $0.mediaIn + $0.mediaDuration }
             .map { $0.sourceStart + (m - $0.mediaIn) * $0.timeScale / $0.speed } ?? m
     }
     let pointer = log.events.filter { $0.x != nil && $0.y != nil }
     var extra: [InputEvent] = []
     for edge in project.windowShots.flatMap({ [$0.start, $0.end] }) {
-        for clip in project.clips where !clip.isEmpty && edge >= clip.sourceStart && edge < clip.sourceEnd {
+        for clip in selectedClip.map({ [$0] }) ?? project.clips where !clip.isEmpty && edge >= clip.sourceStart && edge < clip.sourceEnd {
             let m = clip.mediaTime(atSource: edge)
             if let last = pointer.last(where: { $0.t <= m }) { extra.append(InputEvent(t: m, k: .move, x: last.x, y: last.y)) }
         }

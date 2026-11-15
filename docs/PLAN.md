@@ -282,7 +282,7 @@ pushes colliding layers up a track and caps video layer lanes at 4; the timeline
 
 | Scope | Tasks | Done |
 |---|---|---|
-| Phase 1 | T-701, T-701b, T-702…T-705 | 1/6 |
+| Phase 1 | T-701, T-701b, T-702…T-705 | 2/6 |
 | Phase 2 | T-711…T-714 | 0/4 |
 | Phase 3 | T-721…T-723 | 0/3 |
 
@@ -300,7 +300,7 @@ pushes colliding layers up a track and caps video layer lanes at 4; the timeline
     `make test` required `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` and a `TESTFLAGS` override
     selecting `--build-system native` plus that platform's Testing framework/rpaths. Default swiftbuild cannot
     load Testing macros; the CLT native build cannot load SwiftUI macros. No Makefile changes made for this task.
-- [ ] **T-701b Media-order audit fixes (artifact A8)**
+- [x] **T-701b Media-order audit fixes (artifact A8)**
   - Audit finding (2026-11-15): `regenerateAutoZooms`, `speedUpTyping`, and `splitAtPausesAsync` pass recorded-media
     times to edited-clock arrays/operations. Map ranges through every kept clip, preserving copies and rates.
     `splitAudioAtPauses` splits only the first repeated-media occurrence; `erasePauses` deletes by media range
@@ -310,6 +310,11 @@ pushes colliding layers up a track and caps video layer lanes at 4; the timeline
     already map per clip/audio segment; retain that behavior.
   - Verify: Core regressions for reversed/mixed-speed ranges, repeated-media auto zooms, erasing only the second
     audio copy, and repeated media with different window selections; `make test`; native affected editing selftests.
+  - Verified 2026-11-15: 143/143 Core tests; native `menu-actions` (extended with moved zoom regeneration and
+    repeated-media typing edits/undo), `cursor-copies` (FrameState sampling plus window edit/undo cache invalidation),
+    and M6 fixture `parity` (maxDelta=0 at eight times). Xcode native/platform Testing overrides as in T-701.
+    Multi-window cursor tables currently simulate full recording duration per clip; narrow the cache if long-project
+    profiling warrants it. No real-device/performance acceptance implied.
 - [ ] **T-702 Core: `reorderClips`**
   - `mutating func reorderClips(_ indices: Set<Int>, to index: Int, propagate: Bool = true) -> Set<Int>` (returns the
     moved clips' new indices; `index` counts positions in the original array, like an insertion caret).
@@ -1282,3 +1287,5 @@ T-659 · 2026-10-19 · Published v0.4.1 from 88bf5af; CI 39308484407 and Release
 Documentation review · 2026-10-23 · Shortened the entry README, retained installation/repair details in INSTALLATION.md, reconciled the permission summary with the signed-v0.3.3 evidence above and corrected stale skeleton/install wording in agent guides. Checked relative links and shell syntax on Linux; no native build, capture, export or permission pass is claimed. Native rendering recapture was excluded by the user for unsupported hardware. No functional acceptance boxes changed.
 
 T-701 · 2026-11-15 · Added Clip.mediaEnd; restore and cut bubbles use footage bounds, refusing reversed neighbours. Rebased restoration reuses clipboard insertion to preserve later footage/effects; head/tail, playback rates and tiny moved edge gaps covered. Targeted make test FILTER=TimelineOps passes 18/18; full make test passes 137/137 using installed Xcode native engine/platform Testing flags (default swiftbuild/CLT macro failures recorded above). Native timeline-ops remains failing at the pre-existing Video Track menu fixture mismatch; no UI acceptance claimed. Artifact audits add T-701b for media-order/copy bugs and explicit ⌘D implementation to T-703. Unrelated worktree edits preserved.
+
+T-701b · 2026-11-15 · Completed artifact A8 media-order fixes: recorded typing/silence ranges map into every kept clip; regeneration maps independently owned zooms through copies/rates while retaining effects across harmless splits; pause slicing visits every media occurrence and erasing preserves untouched copies and connected tails; multi-window cursor normalization, camera following and frame sampling use each copy’s window selection with edit/undo cache invalidation. Core make test 143/143 passes with Xcode native/platform Testing overrides; native menu-actions and cursor-copies pass; fresh M6 fixture parity maxDelta=0 across eight times. Full-duration per-clip multi-window cursor simulation is the documented profiling limit. No physical-device/performance gate claimed; unrelated worktree changes preserved.

@@ -526,7 +526,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
     /// T-410 wire: regenerates `project.zooms` from the recording's click events.
     @objc func regenerateAutoZooms(_ sender: Any?) {
-        let zooms = generateAutoZooms(clicks: remapWindowEvents(model.events, project: model.project).events.clicks(), duration: model.project.source.duration)
+        let zooms = model.project.generatedAutoZooms(events: model.events)
         model.edit("Regenerate Auto Zooms") { $0.zooms = zooms }
     }
 
@@ -541,7 +541,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
     /// T-603 wire: splits clips around every `.typing` run (`typingRanges(events:)`) and doubles
     /// their speed (`Project.speedUpTyping`, `RecorderCore/TimelineOps.swift`).
     @objc func speedUpTyping(_ sender: Any?) {
-        let ranges = typingRanges(events: model.events.events)
+        let ranges = model.timeMap.sourceRanges(forMedia: typingRanges(events: model.events.events))
         guard !ranges.isEmpty else { return }
         model.edit("Speed Up Typing") { $0.speedUpTyping(ranges) }
     }
@@ -551,7 +551,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
     func splitAtPausesAsync() async {
         guard model.project.source.hasMic, let url = Waveform.audioURL(in: model.packageURL) else { return }
-        let ranges = await Waveform.silent(in: url)
+        let silent = await Waveform.silent(in: url)
+        let ranges = model.timeMap.sourceRanges(forMedia: silent)
         guard !ranges.isEmpty else { return }
         model.edit("Split at Pauses") { $0.splitAtPauses(ranges) }
     }

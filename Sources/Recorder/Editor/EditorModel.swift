@@ -134,6 +134,21 @@ import RecorderCore
     /// ponytail note (~2 ms for a 10 min recording); revisit only if profiling says so.`
     private(set) var cursorPath: CursorPath
     private(set) var cameraPath: CameraPath
+    // shortcut: full-duration simulation per multi-window clip; narrow cached media ranges if long-project profiling requires it.
+    private var windowCursorPaths: [Double: CursorPath] = [:]
+
+    func cursorSample(atSource time: Double, clip: Clip?) -> CursorSample {
+        let media = clip?.mediaTime(atSource: time) ?? time
+        guard project.windowCount > 1, events.windowFrames != nil, let clip else {
+            return cursorPath.sample(atSource: media)
+        }
+        if windowCursorPaths[clip.sourceStart] == nil {
+            let (mapped, outside) = remapWindowEvents(events, project: project, clip: clip)
+            windowCursorPaths[clip.sourceStart] = CursorPath(events: mapped, style: project.cursor,
+                hidden: project.cursorHidden + outside, duration: project.source.duration)
+        }
+        return windowCursorPaths[clip.sourceStart]!.sample(atSource: media)
+    }
 
     // ponytail: whole-struct snapshots; Project is a few KB.
     private var undoStack: [Project] = []
@@ -318,18 +333,23 @@ import RecorderCore
             || before.animation.screen != project.animation.screen || before.cursorHidden != project.cursorHidden
             || before.windowShots != project.windowShots
         else { return }
+        windowCursorPaths.removeAll()
         (cursorPath, cameraPath) = Self.buildPaths(project: project, events: events)
     }
 
     nonisolated static func buildPaths(project: Project, events: EventLog) -> (CursorPath, CameraPath) {
         // Multi-window: pointer normalised against the visible window, hidden outside it (identity otherwise).
-        let (events, outside) = remapWindowEvents(events, project: project)
-        let cursorPath = CursorPath(events: events, style: project.cursor, hidden: project.cursorHidden + outside, duration: project.source.duration)
+        let (normalised, outside) = remapWindowEvents(events, project: project)
+        let cursorPath = CursorPath(events: normalised, style: project.cursor, hidden: project.cursorHidden + outside, duration: project.source.duration)
         // Remap recorded pointer motion into the edited video clock for automatic zoom following.
         let mappedEvents = project.clips.filter { !$0.isEmpty }.flatMap { clip -> [InputEvent] in
-            let initial = cursorPath.sample(atSource: clip.mediaIn)
+            let (normalised, hidden) = remapWindowEvents(events, project: project, clip: clip)
+            let path = project.windowCount > 1 && events.windowFrames != nil
+                ? CursorPath(events: normalised, style: project.cursor, hidden: project.cursorHidden + hidden, duration: project.source.duration)
+                : cursorPath
+            let initial = path.sample(atSource: clip.mediaIn)
             var mapped = [InputEvent(t: clip.sourceStart, k: .move, x: initial.x, y: initial.y)]
-            mapped += events.events.filter { $0.t >= clip.mediaIn && $0.t < clip.mediaIn + clip.mediaDuration }.map { event in
+            mapped += normalised.events.filter { $0.t >= clip.mediaIn && $0.t < clip.mediaIn + clip.mediaDuration }.map { event in
                 var moved = event
                 moved.t = clip.sourceStart + (event.t - clip.mediaIn) * clip.timeScale / clip.speed
                 return moved

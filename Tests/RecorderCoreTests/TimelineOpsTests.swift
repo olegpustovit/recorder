@@ -296,6 +296,62 @@ private struct LCG: RandomNumberGenerator {
     #expect(p.audioClips[0].fadeIn == nil && p.audioClips[1].fadeOut == nil)
 }
 
+@Test func pausesSliceDuplicateMedia() throws {
+    for speed in [1.0, 2.0] {
+        var p = Project(source: Source(duration: 10, hasMic: true), clips: [Clip(sourceStart: 0, sourceEnd: 10, speed: speed)])
+        let copied = try #require(p.copySelection(clips: [0], blocks: []))
+        #expect(p.pasteSelection(copied, atOutput: 10 / speed) != nil)
+        #expect(p.audioClips.count == 2)
+        let video = p.clips
+        p.splitAudioAtPauses(file: "mic.m4a", silent: [TimeRange(start: 2, end: 4)], fade: 0.08)
+        #expect(p.audioClips.count == 6)
+        #expect(p.clips == video && p.checkInvariants() == nil)
+        for start in [0.0, 10 / speed] {
+            let pieces = p.audioClips.filter { $0.start >= start && $0.start < start + 10 / speed }
+            #expect(pieces.map(\.mediaStart) == [0, 2, 4])
+            #expect(pieces.map { $0.mediaRate ?? 1 } == [speed, speed, speed])
+            let first = try #require(pieces.first)
+            let last = try #require(pieces.last)
+            #expect(abs(first.end - start - 2 / speed) < 1e-8)
+            #expect(abs(last.start - start - 4 / speed) < 1e-8)
+            #expect(first.fadeOut == 0.08 && last.fadeIn == 0.08)
+        }
+    }
+}
+
+@Test func eraserOnlyTouchedDuplicate() throws {
+    for speed in [1.0, 2.0] {
+        var p = Project(source: Source(duration: 10, hasMic: true), clips: [Clip(sourceStart: 0, sourceEnd: 10, speed: speed)])
+        let copied = try #require(p.copySelection(clips: [0], blocks: []))
+        #expect(p.pasteSelection(copied, atOutput: 10 / speed) != nil)
+        #expect(p.audioClips.count == 2)
+        let untouched = try #require(p.audioClips.first)
+        let video = p.clips
+        p.erasePauses(file: "mic.m4a", silent: [TimeRange(start: 2, end: 4)],
+                      inOutput: TimeRange(start: 12.5 / speed, end: 13 / speed), tail: 0.2, fade: 0.08)
+        #expect(p.audioClips.count == 3)
+        #expect(p.audioClips.first == untouched)
+        #expect(p.clips == video && p.checkInvariants() == nil)
+        let speech = p.audioClips.filter { $0.start >= 10 / speed }
+        let first = try #require(speech.first)
+        let last = try #require(speech.last)
+        #expect(abs(first.end - 12.2 / speed) < 1e-8)
+        #expect(abs(last.start - 13.8 / speed) < 1e-8)
+        #expect(abs(last.mediaStart - 3.8) < 1e-8)
+        #expect(first.fadeOut == 0.08 && last.fadeIn == 0.08)
+        #expect(first.mediaRate == speed && last.mediaRate == speed)
+        #expect(abs(TimeMap(p.clips).outputDuration - 20 / speed) < 1e-8)
+    }
+
+    var p = Project(source: Source(duration: 20, hasMic: true), clips: [Clip(sourceStart: 0, sourceEnd: 5)])
+    p.audioClips = [AudioClip(start: 0, end: 20, file: "mic.m4a")]
+    p.erasePauses(file: "mic.m4a", silent: [TimeRange(start: 10, end: 12)],
+                  inOutput: TimeRange(start: 10.5, end: 11))
+    #expect(p.audioClips.map(\.start) == [0, 12])
+    #expect(p.audioClips.map(\.end) == [10, 20])
+    #expect(p.exportDuration == 20 && p.checkInvariants() == nil)
+}
+
 @Test func joinClipsUndoesSplits() {
     var p = Project(source: Source(duration: 20, hasMic: true), clips: [Clip(sourceStart: 0, sourceEnd: 20, speed: 1)])
     let original = p

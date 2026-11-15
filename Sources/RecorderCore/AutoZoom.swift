@@ -1,5 +1,31 @@
 import Foundation
 
+public extension Project {
+    /// Regeneration follows footage through cuts, copies and rate changes; each occurrence owns its zooms.
+    func generatedAutoZooms(events: EventLog) -> [Zoom] {
+        var result: [Zoom] = []
+        var previous: Clip?
+        for clip in clips where !clip.isEmpty {
+            let mapped = remapWindowEvents(events, project: self, clip: clip).events
+            for zoom in generateAutoZooms(clicks: mapped.clicks(), duration: source.duration) {
+                let start = max(zoom.start, clip.mediaIn), end = min(zoom.end, clip.mediaEnd)
+                guard end > start else { continue }
+                var part = zoom
+                part.start = clip.sourceStart + (start - clip.mediaIn) * clip.timeScale / clip.speed
+                part.end = clip.sourceStart + (end - clip.mediaIn) * clip.timeScale / clip.speed
+                if let previous, let last = result.last,
+                   abs(previous.mediaEnd - clip.mediaIn) < 1e-8,
+                   abs(previous.sourceEnd - clip.sourceStart) < 1e-8,
+                   abs(last.end - part.start) < 1e-8, abs(part.start - clip.sourceStart) < 1e-8 {
+                    result[result.count - 1].end = part.end
+                } else { result.append(part) }
+            }
+            previous = clip
+        }
+        return result.filter { $0.end - $0.start >= 0.5 }
+    }
+}
+
 /// SPEC §6.4: builds the initial `zooms` array for a finished recording from its click events.
 /// `Edit ▸ Regenerate Auto Zooms` calls this again over the same `events.json`; `Edit ▸ Remove All
 /// Zooms` just empties `project.zooms` (no call here).
