@@ -172,7 +172,7 @@ final class Compositor {
             var uniforms = Uniforms(); uniforms.color = SIMD4(0, 0, 0, Float(0.5 * layer.opacity))
             draw(uniforms, encoder: encoder)
         }
-        for layer in s.layers where !layer.block.aboveCamera { drawLayer(layer, project: s.project, outputSize: s.outputSize, encoder: encoder) }
+        for layer in s.layers where !layer.block.aboveCamera { drawLayer(layer, state: s, encoder: encoder) }
 
         // Pass 4: camera (rounded-rect SDF quad, SPEC §6.2 pass 4, §6.6 Camera, T-502) — bubble in
         // its corner, or cross-faded into a full-canvas quad while a `cameraFull` layout is active.
@@ -187,7 +187,7 @@ final class Compositor {
             }
         }
 
-        for layer in s.layers where layer.block.aboveCamera { drawLayer(layer, project: s.project, outputSize: s.outputSize, encoder: encoder) }
+        for layer in s.layers where layer.block.aboveCamera { drawLayer(layer, state: s, encoder: encoder) }
         for (block, word) in s.texts { drawText(block, word: word, outputSize: s.outputSize, encoder: encoder) }
 
         // Pass 5: keyboard-shortcut chip (SPEC §6.2 pass 4 "key overlay", §6.6 Keys tab, T-602) —
@@ -211,10 +211,15 @@ final class Compositor {
         return encoder
     }
 
-    private func drawScreenContent(_ state: FrameState, encoder: MTLRenderCommandEncoder) {
+    private func drawScreenContent(_ state: FrameState, encoder: MTLRenderCommandEncoder, canvas: CGRect? = nil) {
         let alpha = (state.camera != nil && state.layoutKind == .cameraFull ? 1 - state.layoutAmount : 1) * state.videoOpacity
         guard let screen = state.screen, alpha > 0 else { return }
-        let rect = screenRect(output: state.outputSize, cropAspect: cropAspect(state.project), padding: state.project.renderedFrame.padding)
+        var rect = screenRect(output: state.outputSize, cropAspect: cropAspect(state.project), padding: state.project.renderedFrame.padding)
+        if let canvas {
+            rect = CGRect(x: canvas.minX + rect.minX * canvas.width / state.outputSize.width,
+                          y: canvas.minY + rect.minY * canvas.height / state.outputSize.height,
+                          width: rect.width * canvas.width / state.outputSize.width, height: rect.height * canvas.height / state.outputSize.height)
+        }
         let contentUV = cropUV(state.project.crop, view: state.view)
         let previousUV = motionBlurContentUV(project: state.project, view: state.view, prevView: state.prevView, contentUV: contentUV, rectPx: rect)
         let frame = zoomedScreenRect(base: rect, view: state.view)
@@ -245,9 +250,22 @@ final class Compositor {
         return result
     }
 
-    private func drawLayer(_ layer: FrameState.Layer, project: Project, outputSize: CGSize, encoder: MTLRenderCommandEncoder) {
+    private func drawLayer(_ layer: FrameState.Layer, state: FrameState, encoder: MTLRenderCommandEncoder) {
         guard let texture = layer.texture else { return }
+        let project = state.project, outputSize = state.outputSize
         let rect = CGRect(x: layer.rect.x * outputSize.width, y: layer.rect.y * outputSize.height, width: layer.rect.w * outputSize.width, height: layer.rect.h * outputSize.height)
+        if layer.block.kind == .recording {
+            var recording = state
+            recording.screen = texture; recording.view = layer.view; recording.prevView = layer.prevView
+            recording.cursor = layer.cursor; recording.project.masks = layer.masks; recording.sourceTime = layer.sourceTime
+            recording.videoOpacity = layer.opacity
+            if project.windowCount > 1 {
+                recording.project.source.pixelWidth = texture.luma.width; recording.project.source.pixelHeight = texture.luma.height
+                recording.project.crop = NormRect()
+            }
+            drawScreenContent(recording, encoder: encoder, canvas: layer.rect == NormRect() ? nil : rect)
+            return
+        }
         let uv = cameraContentUV(texture: texture, destination: rect.size, mirror: false)
         var style = project
         style.frame.enabled = true

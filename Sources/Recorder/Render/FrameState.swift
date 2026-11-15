@@ -33,6 +33,11 @@ struct FrameState {
         var progress: Double
         var rect: NormRect
         var texture: Texture? = nil
+        var view: ViewTransform = .identity
+        var prevView: ViewTransform = .identity
+        var cursor: CursorSample?
+        var masks: [Mask] = []
+        var sourceTime: Double = 0
     }
 
     var outputSize: CGSize
@@ -93,9 +98,14 @@ func makeFrameState(model: EditorModel, outputTime: Double, screen: FrameState.T
                        keyChip: inTimeline ? keyChip : nil, texts: inTimeline ? texts : [],
                        layers: model.project.layerStates(atOutput: outputTime).map { sample in
                            var layer = FrameState.Layer(block: sample.block, opacity: sample.opacity, progress: sample.progress, rect: sample.rect)
-                           if layer.block.kind == .video, let transform = layerTransforms[layer.block.file] {
+                           if layer.block.kind != .image, let transform = layerTransforms[layer.block.file] {
                                layer.texture = layerTextures[layer.block.track]
                                layer.texture?.preferredTransform = transform
+                           }
+                           if layer.block.kind == .recording, let start = model.timeMap.outputTime(atSource: layer.block.start) {
+                               let recording = model.recordingSample(layer.block, localTime: outputTime - start)
+                               layer.view = recording.view; layer.prevView = recording.previous; layer.cursor = recording.cursor
+                               layer.masks = recording.masks; layer.sourceTime = recording.sourceTime
                            }
                            return layer
                        },

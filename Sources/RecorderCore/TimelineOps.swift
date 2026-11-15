@@ -12,6 +12,58 @@ public enum Edge: Sendable {
 public extension Project {
     var videoLayerLanes: [Int] { Set(layers.filter { $0.kind != .image }.map(\.track)).sorted() }
 
+    /// Replay a lifted scene on its original clock so boundary springs and mask fades keep their history.
+    func recordingScene(for layer: LayerBlock) -> (project: Project, clip: Clip, sourceStart: Double, sourceRate: Double) {
+        let scene = layer.scene ?? SceneEffects()
+        var history = self
+        guard let context = scene.cameraContext else {
+            var clip = Clip(sourceStart: 0, sourceEnd: layer.end - layer.start, speed: layer.mediaRate ?? 1)
+            clip.clockSpeed = 1; clip.mediaStart = layer.mediaStart
+            history.clips = [clip]; history.zooms = scene.zooms; history.masks = scene.masks
+            history.windowShots = scene.windowShots ?? []
+            return (history, clip, 0, 1)
+        }
+        let clip = context.clip
+        let rate = (layer.mediaRate ?? 1) * clip.timeScale / clip.speed
+        let origin = clip.sourceTime(atMedia: layer.mediaStart)
+        func overlay<Block: TimedBlock & Equatable>(_ originals: [Block], local: [Block]) -> [Block] {
+            let lo = clip.sourceStart, hi = clip.sourceEnd
+            var blocks = originals.flatMap { original -> [Block] in
+                guard original.start < hi, original.end > lo else { return [original] }
+                var pieces: [Block] = []
+                if original.start < lo { var prefix = original; prefix.end = lo; pieces.append(prefix) }
+                if original.end > hi { var suffix = original; suffix.start = hi; pieces.append(suffix) }
+                return pieces
+            }
+            blocks += local.compactMap { block in
+                var mapped = block
+                mapped.start = max(lo, origin + block.start * rate)
+                mapped.end = min(hi, origin + block.end * rate)
+                return mapped.end > mapped.start ? mapped : nil
+            }
+            // Restore unchanged spanning blocks, including their original fade and spring boundaries.
+            for original in originals {
+                let pieces = blocks.filter { $0.start >= original.start - 1e-8 && $0.end <= original.end + 1e-8 }.sorted { $0.start < $1.start }
+                guard let first = pieces.first, let last = pieces.last,
+                      abs(first.start - original.start) < 1e-8, abs(last.end - original.end) < 1e-8,
+                      zip(pieces, pieces.dropFirst()).allSatisfy({ abs($0.end - $1.start) < 1e-8 }),
+                      pieces.allSatisfy({ piece in
+                          var comparable = piece
+                          comparable.id = original.id; comparable.start = original.start; comparable.end = original.end
+                          return comparable == original
+                      }) else { continue }
+                blocks.removeAll { $0.start >= original.start - 1e-8 && $0.end <= original.end + 1e-8 }
+                blocks.append(original)
+            }
+            return blocks.sorted { $0.start < $1.start }
+        }
+        history.clips = context.clips
+        history.zooms = overlay(context.zooms, local: scene.zooms)
+        history.masks = overlay(context.masks, local: scene.masks)
+        history.windowShots = overlay(context.windowShots, local: scene.windowShots ?? [])
+        return (history, clip, origin, rate)
+    }
+
     @discardableResult
     mutating func replaceLayerMedia(_ id: UUID, kind: LayerBlock.Kind, file: String, duration: Double, rect: NormRect, hasAudio: Bool) -> Bool {
         guard let index = layers.firstIndex(where: { $0.id == id.uuidString }), file.hasPrefix("media/"), !file.split(separator: "/").contains(".."),

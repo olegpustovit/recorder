@@ -1,0 +1,409 @@
+DEVELOPER_DIR=${DEVELOPER_DIR:-/Library/Developer/CommandLineTools} swift test --build-system native -Xswiftc -F -Xswiftc /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks -Xlinker -F -Xlinker /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks -Xlinker -rpath -Xlinker /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks -Xlinker -rpath -Xlinker /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/macosx 
+[0/1] Planning build
+Building for debugging...
+[0/6] Write sources
+[1/6] Write swift-version--58304C5D6DBC2206.txt
+[3/7] Compiling Recorder Exporter.swift
+[4/7] Emitting module Recorder
+/Users/snowbear/projects/recorder/Sources/Recorder/App/SelfTest.swift:2643:42: warning: conformance of 'Timer' to 'Sendable' is unavailable; this is an error in the Swift 6 language mode
+2641 |             let session = try await CaptureSession(target: .windows(windows), settings: settings, packageURL: packageURL)
+2642 |             try await session.start()
+2643 |             let ticker = await MainActor.run {
+     |                                          `- warning: conformance of 'Timer' to 'Sendable' is unavailable; this is an error in the Swift 6 language mode
+2644 |                 Timer.scheduledTimer(withTimeInterval: 1.0 / 60, repeats: true) { _ in
+2645 |                     MainActor.assumeIsolated {
+
+/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.2.sdk/System/Library/Frameworks/Foundation.framework/Headers/NSUserDefaults.h: 0:142 | /// - An app can modify settings for one of its app extensions.
+143 | /// - An app can modify settings for an app group to which it belongs.
+144 | @interface NSUserDefaults : NSObject {
+    +---  --------------------------------------------------------------
+    |1 | @_nonSendable(_assumed)
+    |  | `- note: conformance of 'Timer' to 'Sendable' has been explicitly marked unavailable here
+    +-------------------------------------------------------------------
+145 | @private
+146 |     id _kvo_;
+
+/Users/snowbear/projects/recorder/Sources/Recorder/App/SelfTest.swift:2655:35: warning: capture of 'ticker' with non-Sendable type 'Timer' in a '@Sendable' closure; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+2653 |             try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+2654 |             let avgCPU = (ProcStats.snapshot().cpuSeconds - startCPU) / Date().timeIntervalSince(started) * 100
+2655 |             await MainActor.run { ticker.invalidate() }
+     |                                   `- warning: capture of 'ticker' with non-Sendable type 'Timer' in a '@Sendable' closure; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+2656 |             let source = try await session.finish()
+2657 |             print("record-windows: \(count) animated windows, avg CPU \(String(format: "%.1f", avgCPU))% of one core (AC-REC-1 bar: < 25%)")
+
+/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.2.sdk/System/Library/Frameworks/Foundation.framework/Headers/NSTimer.h:45:12: note: class 'Timer' does not conform to the 'Sendable' protocol
+ 43 | ///
+ 44 | /// Do not subclass ``Timer``.
+ 45 | @interface NSTimer : NSObject
+    |            `- note: class 'Timer' does not conform to the 'Sendable' protocol
+ 46 | 
+ 47 | /// Initializes a timer object with the specified invocation object.
+
+/Users/snowbear/projects/recorder/Sources/Recorder/App/SelfTest.swift:5270:59: warning: conformance of 'TimelineHeaderDraggingInfo' to protocol 'NSDraggingInfo' crosses into main actor-isolated code and can cause data races; this is an error in the Swift 6 language mode [#ConformanceIsolation]
+5268 | 
+5269 | @MainActor
+5270 | private final class TimelineHeaderDraggingInfo: NSObject, NSDraggingInfo {
+     |                                                           |- warning: conformance of 'TimelineHeaderDraggingInfo' to protocol 'NSDraggingInfo' crosses into main actor-isolated code and can cause data races; this is an error in the Swift 6 language mode [#ConformanceIsolation]
+     |                                                           |- note: isolate this conformance to the main actor with '@MainActor'
+     |                                                           `- note: turn data races into runtime errors with '@preconcurrency'
+5271 |     let draggingPasteboard: NSPasteboard
+5272 |     let draggingLocation: NSPoint
+     :
+5274 |     var draggingSourceOperationMask: NSDragOperation { .copy }
+5275 |     var draggedImageLocation: NSPoint { draggingLocation }
+5276 |     var draggedImage: NSImage? { nil }
+     |         |- note: main actor-isolated property 'draggedImage' cannot satisfy nonisolated requirement
+     |         `- note: mark property 'draggedImage' 'nonisolated'
+5277 |     var draggingSource: Any? { nil }
+5278 |     var draggingSequenceNumber: Int { 1 }
+     :
+5286 |     }
+5287 |     func slideDraggedImage(to screenPoint: NSPoint) {}
+5288 |     override func namesOfPromisedFilesDropped(atDestination dropDestination: URL) -> [String]? { nil }
+     |                   |- note: main actor-isolated instance method 'namesOfPromisedFilesDropped(atDestination:)' cannot satisfy nonisolated requirement
+     |                   `- note: mark instance method 'namesOfPromisedFilesDropped(atDestination:)' 'nonisolated'
+5289 |     func resetSpringLoading() {}
+5290 |     func enumerateDraggingItems(options enumOpts: NSDraggingItemEnumerationOptions, for view: NSView?, classes classArray: [AnyClass],
+
+[#ConformanceIsolation]: <https://docs.swift.org/compiler/documentation/diagnostics/conformance-isolation>
+[#SendableClosureCaptures]: <https://docs.swift.org/compiler/documentation/diagnostics/sendable-closure-captures>
+[4/7] Write Objects.LinkFileList
+[5/7] Linking Recorder
+[6/7] Applying Recorder
+Build complete! (7.97s)
+Test Suite 'All tests' started at 2026-11-15 09:30:10.588.
+Test Suite 'All tests' passed at 2026-11-15 09:30:10.599.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.011) seconds
+◇ Test run started.
+↳ Testing Library Version: 2403
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Test legacyCameraAndKeystrokesMigrateSeparately() started.
+◇ Test clipboardLayerPasteKeepsOtherLanesAndOutsidePieces() started.
+◇ Test audioCompositionTimingAndFades() started.
+◇ Test projectRejectsNewerVersion() started.
+◇ Suite "Layout" started.
+◇ Test v3DecodesUnchanged() started.
+◇ Test independentTracksPreserveGapsAndMedia() started.
+◇ Test layerRenderingMotionOrderAndOverlappingFades() started.
+◇ Test splitProducesTwoClipsSameSpeed() started.
+◇ Test cameraPlacementAndAspectTransitions() started.
+◇ Test windowShotsFollowLinkedClipEdits() started.
+◇ Test layerBlocksImageCanExtendWithoutRetiming() started.
+◇ Test copiedMediaUsesEachClipsWindowAndKeepsRecordedClock() started.
+◇ Test splitClipRecoversDeletedFootage() started.
+◇ Test reorderAudioEnvelopeMetadata() started.
+◇ Test cursorIsNormalisedAgainstTheVisibleWindowAndHiddenOutside() started.
+◇ Test windowShotBlocksUseTheGenericEngine() started.
+◇ Test rotationTiltsWithHorizontalVelocityAndClamps() started.
+◇ Test projectDefaultsFromMinimalJSON() started.
+◇ Test outsideZoomsIsIdentityEventually() started.
+◇ Test eraserOnlyTouchedDuplicate() started.
+◇ Test mixedSpeedSelectionClosesGapInEveryTimelineMode() started.
+◇ Test dropShortAndClamp() started.
+◇ Test linkedAudioCameraEditsAreBidirectional() started.
+◇ Test audioModelRoundTrip() started.
+◇ Test gapAtOrAboveOneSecondSplitsRuns() started.
+◇ Test reorderInvariants() started.
+◇ Test linkedAudioPartialPartnersAndOptionEdits() started.
+◇ Test moveAudioToNewTrack() started.
+◇ Test nonTypingEventsIgnoredAndInputNeedNotBeSorted() started.
+◇ Test layerBlocksVideoDecoderBudgetReusesLanesOrRefuses() started.
+◇ Test fullscreenCameraCropNeverStretches() started.
+◇ Test highlightZoomCopiesTimingAndTarget() started.
+◇ Test splitAtPausesOnlySplits() started.
+◇ Test linkedAudioOffsetLayerEditsPreserveSound() started.
+◇ Test springStartsAtZeroEndsAtOne() started.
+◇ Test maskTransitionsAndCompatibility() started.
+◇ Test overlaySettingsClipsRoundTripAndInterpolate() started.
+◇ Test zoomKeepsAnchorTime() started.
+◇ Test cameraSampleIsOrderIndependent() started.
+◇ Test liftCopyLeavesSource() started.
+◇ Test movingRightCreatesGapWithoutLinking() started.
+◇ Test shakeRemovalDropsBriefExcursion() started.
+◇ Test layerEditsDuplicateKeepsTimingAndLinkedSound() started.
+◇ Test connectedCollisionsReuseFreeExtraTracksOrCreateThem() started.
+◇ Test eventsDecodeLegacyKeyWithoutChar() started.
+◇ Test takePlacementCompensatesLatency() started.
+◇ Test linkedAudioIndependentCameraSurvivesVideoCuts() started.
+◇ Test keyChipMergesAndFilters() started.
+◇ Test timeMapRoundTrip() started.
+◇ Test restoreCutUsesMedia() started.
+◇ Test clipColorRoundTripAndInheritance() started.
+◇ Test joinClipsUndoesSplits() started.
+◇ Test regeneratedZoomsFollowReorderedCopies() started.
+◇ Test noRestoreAcrossReorder() started.
+◇ Test layerBlocksImportAndLanePlacement() started.
+◇ Test liftCarriesZoomsAndAudio() started.
+◇ Test linkedAudioScreenIgnoresGlobalToggle() started.
+◇ Test connectedSplitsTrimsAndSpeedNeverCutOrRetimeMedia() started.
+◇ Test regeneratedZoomSurvivesHarmlessSplit() started.
+◇ Test activeKeyChipExpiresAfterHold() started.
+◇ Test idleRangesIgnoreMotionAndPadInward() started.
+◇ Test layerEditsLinkBackTargetsSelectedVideo() started.
+◇ Test clusterByTimeAndDistance() started.
+◇ Test reorderKeepsPlaybackRates() started.
+◇ Test criticallyDampedIsMonotonicNoOvershoot() started.
+◇ Test trimClampsToNeighbour() started.
+◇ Test clipCursorPersistenceAndEdits() started.
+◇ Test eraserTailFade() started.
+◇ Test addZoomFitsGap() started.
+◇ Test linkedAudioUnlinkRelinkAndSync() started.
+◇ Test connectedSettleMapsDeletedEndpointsAndIsIdempotent() started.
+◇ Test settlesWithinHalfPixelAfterRest() started.
+◇ Test mergeCloseZooms() started.
+◇ Test linkedAudioMixedClockMovesAndScreenPartners() started.
+◇ Test typingRunOverThresholdKept() started.
+◇ Test reorderPreservesSpanningAudioEnvelope() started.
+◇ Test autoWindowShotsSwitchToClickedWindowRespectingMinShot() started.
+◇ Test windowCornersFollowNativeAlpha() started.
+◇ Test liftInsertRoundTrip() started.
+◇ Test linkedAudioOptionVideoEditsTouchOnlyVideo() started.
+◇ Test keyChipLabelOrdersModifiers() started.
+◇ Test connectedLanePushReservesFutureBlocksAndPreservesMute() started.
+◇ Test reorderCarriesZoom() started.
+◇ Test viewportAlwaysInsideSource() started.
+◇ Test linkedAndUnlinkedSpeedHaveDifferentClocks() started.
+◇ Test linkedAudioLinkSlicesAtClockAndTargetEdges() started.
+◇ Test pausesSliceDuplicateMedia() started.
+◇ Test silentRangesThresholdMinDurationAndPad() started.
+◇ Test splitRemoveRestoreIsIdentity() started.
+◇ Test keyCategories() started.
+◇ Test sampleIsOrderIndependent() started.
+◇ Test keysLegacyAllKeysDecode() started.
+◇ Test layerRenderingUsesConnectedOutputTimeAndHalfOpenEnds() started.
+◇ Test linkedAudioVideoClipboardPreservesSync() started.
+◇ Test clipboardRejectsInvalidPasteWithoutChangingProject() started.
+◇ Test takePlacementCommitAndReplacement() started.
+◇ Test snapPicksNearest() started.
+◇ Test captionPhrasesGroupByCountGapAndPunctuation() started.
+◇ Test takePlacementPartialReplacementPreservesOtherAudio() started.
+◇ Test sceneEffectsTrimAndLocalEditKeepPrefix() started.
+◇ Test exportDurationTracksActiveMedia() started.
+◇ Test layerBlocksMoveTrimSplitAndUndoInput() started.
+◇ Test layerEditsPlacement() started.
+◇ Test captureFramingDefaultsAndOverrides() started.
+◇ Test eventLogRoundTrip() started.
+◇ Test reorderSplitsSpanningZoom() started.
+◇ Test savesV3WithoutRecordingLayers() started.
+◇ Test randomOpsKeepInvariants() started.
+◇ Test linkedTrimSlicesOnlyOverlappingRanges() started.
+◇ Test textBlocksDuplicateRemoveAndRespreadWords() started.
+◇ Test linkedAudioRandomEditsKeepSync() started.
+◇ Test audioModelDefaultsAndMediaAdvance() started.
+◇ Test connectedRandomVideoEditsNeverLoseMedia() started.
+◇ Test pausesSliceAndEraseMicOnly() started.
+◇ Test shortRunDropped() started.
+◇ Test clipboardCutAudioRetainsItsLinkedVideo() started.
+◇ Test linkedAudioLayerEditsKeepPieceReferences() started.
+◇ Test clipboardPreservesMediaAndInsertsVideo() started.
+◇ Test reorderPreservesExportDuration() started.
+◇ Test connectedClipMoveCarriesLayerAndSound() started.
+◇ Test presetRoundTripAndApply() started.
+◇ Test zoomsNeverOverlap() started.
+◇ Test alwaysArrowIgnoresSampledCursorImage() started.
+◇ Test idleHidesAfterTwoSeconds() started.
+◇ Test liftCollisionPushesUp() started.
+◇ Test stepConvergesToClosedForm() started.
+◇ Test splitNearEdgeRefused() started.
+◇ Test exportDurationIncludesAudioAndLayerTails() started.
+◇ Test tickIntervalReadable() started.
+◇ Test connectedRippleDeletePreservesTakesAndLayers() started.
+◇ Test smoothedNeverLeadsRaw() started.
+◇ Test loopSpringsTowardFirstPosition() started.
+◇ Test mediaRangesFollowReversedCopiesAndPlaybackRates() started.
+◇ Test removeLastClipRefused() started.
+◇ Test projectRoundTrip() started.
+◇ Test audioModelInvariants() started.
+◇ Test reorderKeepsLinkedAudioMedia() started.
+◇ Test restoringTinyMovedGapKeepsValidMedia() started.
+◇ Test timelineModesSelectionMovesAndGapArrival() started.
+◇ Test noTypingEventsIsEmpty() started.
+◇ Test audioModelLegacyDerivation() started.
+◇ Test zoomedScreenRectPutsViewportOnBase() started.
+◇ Test connectedMoveUsesHalfOpenAnchorsAndMixedClockOffsets() started.
+◇ Test sceneEffectsPreserveHistoryAndPhase(canonical:) started.
+◇ Test speedUpTypingKeepsInvariants() started.
+◇ Test linkedVideoSplitDeleteAndMoveAreOneWay() started.
+◇ Test zoomTransitionSpeedIndependent() started.
+◇ Test zoomClampsToRange() started.
+◇ Test clipboardReusesGapAndPreservesRippleChoice() started.
+◇ Test reorderRoundTrip() started.
+◇ Test clipboardAudioAndTailEdits() started.
+◇ Test instantZoomJumps() started.
+◇ Test windowShotsDecodeDefaultsAndRoundTrip() started.
+◇ Test outputSortedNonOverlappingDeterministic() started.
+◇ Test reorderAudioEnvelopeCopyAndTrim() started.
+◇ Test reorderAudioEnvelopeSplitJoin() started.
+◇ Test layerEditsReplacePreservesDetachedMediaAndUndoValue() started.
+◇ Test explicitClipFadesDefaultOffAndPreserveOuterSplitEdges() started.
+◇ Test layerEditsDuplicateRespectsDecoderBudget() started.
+◇ Test layoutAspects() started.
+◇ Test layoutFitsAndCentres() started.
+◇ Test layoutMixFadesAtEdges() started.
+✔ Test legacyCameraAndKeystrokesMigrateSeparately() passed after 0.015 seconds.
+✔ Test layerRenderingMotionOrderAndOverlappingFades() passed after 0.015 seconds.
+✔ Test splitProducesTwoClipsSameSpeed() passed after 0.016 seconds.
+✔ Test audioCompositionTimingAndFades() passed after 0.016 seconds.
+✔ Test clipboardLayerPasteKeepsOtherLanesAndOutsidePieces() passed after 0.017 seconds.
+✔ Test windowShotsFollowLinkedClipEdits() passed after 0.017 seconds.
+✔ Test layerBlocksImageCanExtendWithoutRetiming() passed after 0.022 seconds.
+✔ Test cameraPlacementAndAspectTransitions() passed after 0.025 seconds.
+✔ Test projectRejectsNewerVersion() passed after 0.031 seconds.
+◇ Test case passing 1 argument canonical → false to sceneEffectsPreserveHistoryAndPhase(canonical:) started.
+◇ Test case passing 1 argument canonical → true to sceneEffectsPreserveHistoryAndPhase(canonical:) started.
+✔ Test v3DecodesUnchanged() passed after 0.074 seconds.
+✔ Test cursorIsNormalisedAgainstTheVisibleWindowAndHiddenOutside() passed after 0.097 seconds.
+✔ Test independentTracksPreserveGapsAndMedia() passed after 0.107 seconds.
+✔ Test windowShotBlocksUseTheGenericEngine() passed after 0.107 seconds.
+✔ Test dropShortAndClamp() passed after 0.107 seconds.
+✔ Test projectDefaultsFromMinimalJSON() passed after 0.107 seconds.
+✔ Test splitClipRecoversDeletedFootage() passed after 0.107 seconds.
+✔ Test rotationTiltsWithHorizontalVelocityAndClamps() passed after 0.107 seconds.
+✔ Test gapAtOrAboveOneSecondSplitsRuns() passed after 0.107 seconds.
+✔ Test linkedAudioCameraEditsAreBidirectional() passed after 0.107 seconds.
+✔ Test outsideZoomsIsIdentityEventually() passed after 0.107 seconds.
+✔ Test linkedAudioPartialPartnersAndOptionEdits() passed after 0.107 seconds.
+✔ Test nonTypingEventsIgnoredAndInputNeedNotBeSorted() passed after 0.107 seconds.
+✔ Test moveAudioToNewTrack() passed after 0.107 seconds.
+✔ Test fullscreenCameraCropNeverStretches() passed after 0.107 seconds.
+✔ Test audioModelRoundTrip() passed after 0.107 seconds.
+✔ Test reorderAudioEnvelopeMetadata() passed after 0.107 seconds.
+✔ Test eraserOnlyTouchedDuplicate() passed after 0.107 seconds.
+✔ Test springStartsAtZeroEndsAtOne() passed after 0.107 seconds.
+✔ Test highlightZoomCopiesTimingAndTarget() passed after 0.107 seconds.
+✔ Test zoomKeepsAnchorTime() passed after 0.107 seconds.
+✔ Test layerBlocksVideoDecoderBudgetReusesLanesOrRefuses() passed after 0.107 seconds.
+✔ Test splitAtPausesOnlySplits() passed after 0.107 seconds.
+✔ Test linkedAudioOffsetLayerEditsPreserveSound() passed after 0.107 seconds.
+✔ Test movingRightCreatesGapWithoutLinking() passed after 0.107 seconds.
+✔ Test maskTransitionsAndCompatibility() passed after 0.107 seconds.
+✔ Test overlaySettingsClipsRoundTripAndInterpolate() passed after 0.107 seconds.
+✔ Test layerEditsDuplicateKeepsTimingAndLinkedSound() passed after 0.107 seconds.
+✔ Test eventsDecodeLegacyKeyWithoutChar() passed after 0.107 seconds.
+✔ Test takePlacementCompensatesLatency() passed after 0.107 seconds.
+✔ Test copiedMediaUsesEachClipsWindowAndKeepsRecordedClock() passed after 0.108 seconds.
+✔ Test timeMapRoundTrip() passed after 0.107 seconds.
+✔ Test keyChipMergesAndFilters() passed after 0.107 seconds.
+✔ Test shakeRemovalDropsBriefExcursion() passed after 0.107 seconds.
+✔ Test cameraSampleIsOrderIndependent() passed after 0.107 seconds.
+✔ Test liftCopyLeavesSource() passed after 0.107 seconds.
+✔ Test regeneratedZoomsFollowReorderedCopies() passed after 0.105 seconds.
+✔ Test clipColorRoundTripAndInheritance() passed after 0.107 seconds.
+✔ Test connectedCollisionsReuseFreeExtraTracksOrCreateThem() passed after 0.107 seconds.
+✔ Test linkedAudioIndependentCameraSurvivesVideoCuts() passed after 0.107 seconds.
+✔ Test joinClipsUndoesSplits() passed after 0.107 seconds.
+✔ Test layerBlocksImportAndLanePlacement() passed after 0.105 seconds.
+✔ Test mixedSpeedSelectionClosesGapInEveryTimelineMode() passed after 0.108 seconds.
+✔ Test activeKeyChipExpiresAfterHold() passed after 0.104 seconds.
+✔ Test idleRangesIgnoreMotionAndPadInward() passed after 0.104 seconds.
+✔ Test regeneratedZoomSurvivesHarmlessSplit() passed after 0.104 seconds.
+✔ Test layerEditsLinkBackTargetsSelectedVideo() passed after 0.104 seconds.
+✔ Test connectedSplitsTrimsAndSpeedNeverCutOrRetimeMedia() passed after 0.104 seconds.
+✔ Test clusterByTimeAndDistance() passed after 0.104 seconds.
+✔ Test trimClampsToNeighbour() passed after 0.104 seconds.
+✔ Test linkedAudioScreenIgnoresGlobalToggle() passed after 0.105 seconds.
+✔ Test noRestoreAcrossReorder() passed after 0.105 seconds.
+✔ Test reorderKeepsPlaybackRates() passed after 0.104 seconds.
+✔ Test criticallyDampedIsMonotonicNoOvershoot() passed after 0.104 seconds.
+✔ Test eraserTailFade() passed after 0.104 seconds.
+✔ Test addZoomFitsGap() passed after 0.104 seconds.
+✔ Test mergeCloseZooms() passed after 0.104 seconds.
+✔ Test connectedSettleMapsDeletedEndpointsAndIsIdempotent() passed after 0.104 seconds.
+✔ Test typingRunOverThresholdKept() passed after 0.104 seconds.
+✔ Test settlesWithinHalfPixelAfterRest() passed after 0.105 seconds.
+✔ Test restoreCutUsesMedia() passed after 0.107 seconds.
+✔ Test autoWindowShotsSwitchToClickedWindowRespectingMinShot() passed after 0.104 seconds.
+✔ Test windowCornersFollowNativeAlpha() passed after 0.104 seconds.
+✔ Test clipCursorPersistenceAndEdits() passed after 0.105 seconds.
+✔ Test keyChipLabelOrdersModifiers() passed after 0.104 seconds.
+✔ Test reorderCarriesZoom() passed after 0.104 seconds.
+✔ Test linkedAudioOptionVideoEditsTouchOnlyVideo() passed after 0.105 seconds.
+✔ Test linkedAudioUnlinkRelinkAndSync() passed after 0.105 seconds.
+✔ Test linkedAudioMixedClockMovesAndScreenPartners() passed after 0.105 seconds.
+✔ Test connectedLanePushReservesFutureBlocksAndPreservesMute() passed after 0.105 seconds.
+✔ Test silentRangesThresholdMinDurationAndPad() passed after 0.104 seconds.
+✔ Test linkedAudioLinkSlicesAtClockAndTargetEdges() passed after 0.104 seconds.
+✔ Test keyCategories() passed after 0.104 seconds.
+✔ Test linkedAndUnlinkedSpeedHaveDifferentClocks() passed after 0.105 seconds.
+✔ Test keysLegacyAllKeysDecode() passed after 0.104 seconds.
+✔ Test sampleIsOrderIndependent() passed after 0.105 seconds.
+✔ Test splitRemoveRestoreIsIdentity() passed after 0.105 seconds.
+✔ Test layerRenderingUsesConnectedOutputTimeAndHalfOpenEnds() passed after 0.105 seconds.
+✔ Test liftCarriesZoomsAndAudio() passed after 0.106 seconds.
+✔ Test clipboardRejectsInvalidPasteWithoutChangingProject() passed after 0.105 seconds.
+✔ Test snapPicksNearest() passed after 0.105 seconds.
+✔ Test takePlacementCommitAndReplacement() passed after 0.105 seconds.
+✔ Test pausesSliceDuplicateMedia() passed after 0.105 seconds.
+✔ Test captionPhrasesGroupByCountGapAndPunctuation() passed after 0.105 seconds.
+✔ Test linkedAudioVideoClipboardPreservesSync() passed after 0.105 seconds.
+✔ Test takePlacementPartialReplacementPreservesOtherAudio() passed after 0.105 seconds.
+✔ Test layerEditsPlacement() passed after 0.105 seconds.
+✔ Test layerBlocksMoveTrimSplitAndUndoInput() passed after 0.105 seconds.
+✔ Test eventLogRoundTrip() passed after 0.105 seconds.
+✔ Test reorderPreservesSpanningAudioEnvelope() passed after 0.105 seconds.
+✔ Test exportDurationTracksActiveMedia() passed after 0.105 seconds.
+✔ Test linkedTrimSlicesOnlyOverlappingRanges() passed after 0.105 seconds.
+✔ Test reorderSplitsSpanningZoom() passed after 0.105 seconds.
+✔ Test textBlocksDuplicateRemoveAndRespreadWords() passed after 0.105 seconds.
+✔ Test captureFramingDefaultsAndOverrides() passed after 0.105 seconds.
+✔ Test audioModelDefaultsAndMediaAdvance() passed after 0.105 seconds.
+✔ Test savesV3WithoutRecordingLayers() passed after 0.105 seconds.
+✔ Test liftInsertRoundTrip() passed after 0.105 seconds.
+✔ Test shortRunDropped() passed after 0.105 seconds.
+✔ Test pausesSliceAndEraseMicOnly() passed after 0.105 seconds.
+✔ Test viewportAlwaysInsideSource() passed after 0.105 seconds.
+✔ Test clipboardCutAudioRetainsItsLinkedVideo() passed after 0.105 seconds.
+✔ Test linkedAudioLayerEditsKeepPieceReferences() passed after 0.105 seconds.
+✔ Test clipboardPreservesMediaAndInsertsVideo() passed after 0.105 seconds.
+✔ Test reorderPreservesExportDuration() passed after 0.105 seconds.
+✔ Test presetRoundTripAndApply() passed after 0.105 seconds.
+✔ Test connectedClipMoveCarriesLayerAndSound() passed after 0.105 seconds.
+✔ Test alwaysArrowIgnoresSampledCursorImage() passed after 0.105 seconds.
+✔ Test idleHidesAfterTwoSeconds() passed after 0.105 seconds.
+✔ Test stepConvergesToClosedForm() passed after 0.105 seconds.
+✔ Test exportDurationIncludesAudioAndLayerTails() passed after 0.105 seconds.
+✔ Test splitNearEdgeRefused() passed after 0.105 seconds.
+✔ Test tickIntervalReadable() passed after 0.105 seconds.
+✔ Test liftCollisionPushesUp() passed after 0.105 seconds.
+✔ Test connectedRippleDeletePreservesTakesAndLayers() passed after 0.105 seconds.
+✔ Test smoothedNeverLeadsRaw() passed after 0.105 seconds.
+✔ Test mediaRangesFollowReversedCopiesAndPlaybackRates() passed after 0.105 seconds.
+✔ Test removeLastClipRefused() passed after 0.105 seconds.
+✔ Test loopSpringsTowardFirstPosition() passed after 0.105 seconds.
+✔ Test sceneEffectsTrimAndLocalEditKeepPrefix() passed after 0.105 seconds.
+✔ Test projectRoundTrip() passed after 0.105 seconds.
+✔ Test reorderKeepsLinkedAudioMedia() passed after 0.105 seconds.
+✔ Test audioModelInvariants() passed after 0.105 seconds.
+✔ Test noTypingEventsIsEmpty() passed after 0.105 seconds.
+✔ Test restoringTinyMovedGapKeepsValidMedia() passed after 0.105 seconds.
+✔ Test zoomedScreenRectPutsViewportOnBase() passed after 0.105 seconds.
+✔ Test connectedMoveUsesHalfOpenAnchorsAndMixedClockOffsets() passed after 0.105 seconds.
+✔ Test audioModelLegacyDerivation() passed after 0.105 seconds.
+✔ Test timelineModesSelectionMovesAndGapArrival() passed after 0.105 seconds.
+✔ Test speedUpTypingKeepsInvariants() passed after 0.105 seconds.
+✔ Test zoomTransitionSpeedIndependent() passed after 0.105 seconds.
+✔ Test linkedVideoSplitDeleteAndMoveAreOneWay() passed after 0.105 seconds.
+✔ Test zoomClampsToRange() passed after 0.105 seconds.
+✔ Test clipboardReusesGapAndPreservesRippleChoice() passed after 0.105 seconds.
+✔ Test reorderRoundTrip() passed after 0.105 seconds.
+✔ Test randomOpsKeepInvariants() passed after 0.106 seconds.
+✔ Test zoomsNeverOverlap() passed after 0.105 seconds.
+✔ Test clipboardAudioAndTailEdits() passed after 0.105 seconds.
+✔ Test outputSortedNonOverlappingDeterministic() passed after 0.105 seconds.
+✔ Test instantZoomJumps() passed after 0.105 seconds.
+✔ Test windowShotsDecodeDefaultsAndRoundTrip() passed after 0.105 seconds.
+✔ Test reorderAudioEnvelopeCopyAndTrim() passed after 0.105 seconds.
+✔ Test explicitClipFadesDefaultOffAndPreserveOuterSplitEdges() passed after 0.105 seconds.
+✔ Test layerEditsReplacePreservesDetachedMediaAndUndoValue() passed after 0.105 seconds.
+✔ Test reorderAudioEnvelopeSplitJoin() passed after 0.105 seconds.
+✔ Test layerEditsDuplicateRespectsDecoderBudget() passed after 0.105 seconds.
+✔ Test layoutAspects() passed after 0.101 seconds.
+✔ Test layoutMixFadesAtEdges() passed after 0.100 seconds.
+✔ Test layoutFitsAndCentres() passed after 0.101 seconds.
+✔ Suite "Layout" passed after 0.110 secondswarning: '--build-system native' has been deprecated and will be removed in a future release; please report an issue at https://github.com/swiftlang/swift-package-manager/issues if you are unable to adopt the default build system.
+.
+✔ Test sceneEffectsPreserveHistoryAndPhase(canonical:) with 2 test cases passed after 0.117 seconds.
+✔ Test linkedAudioRandomEditsKeepSync() passed after 0.122 seconds.
+✔ Test reorderInvariants() passed after 0.172 seconds.
+✔ Test connectedRandomVideoEditsNeverLoseMedia() passed after 0.168 seconds.
+✔ Test run with 162 tests in 1 suite passed after 0.173 seconds.

@@ -117,7 +117,7 @@ final class PreviewView: MTKView {
         self.model = model
         self.lastClips = model.project.clips
         self.lastCameraClips = model.project.cameraClips
-        self.lastVideoLayers = model.project.layers.filter { $0.kind == .video }
+        self.lastVideoLayers = model.project.layers.filter { $0.kind != .image }
         self.lastWindowShots = model.project.windowShots
         self.lastAudioClips = model.project.audioClips
         self.lastAudioTracks = model.project.audioTracks
@@ -520,9 +520,11 @@ final class PreviewView: MTKView {
                     return timing != previous
                 }
                 let mixChanged = audio != self.lastAudioClips || tracks != self.lastAudioTracks
-                let videos = self.model.project.layers.filter { $0.kind == .video }
+                let videos = self.model.project.layers.filter { $0.kind != .image }
                 let videoChanged = videos.count != self.lastVideoLayers.count || zip(videos, self.lastVideoLayers).contains {
-                    $0.id != $1.id || $0.file != $1.file || $0.start != $1.start || $0.end != $1.end || $0.mediaStart != $1.mediaStart || $0.track != $1.track
+                    $0.id != $1.id || $0.kind != $1.kind || $0.file != $1.file || $0.start != $1.start || $0.end != $1.end || $0.mediaStart != $1.mediaStart || $0.track != $1.track
+                        || $0.mediaRate != $1.mediaRate || $0.scene?.windowShots != $1.scene?.windowShots
+                        || $0.scene?.cameraContext?.windowShots != $1.scene?.cameraContext?.windowShots || $0.scene?.cameraContext?.clip != $1.scene?.cameraContext?.clip
                 }
                 self.lastVideoLayers = videos
                 let rebuild = clips != self.lastClips || self.model.project.cameraClips != self.lastCameraClips
@@ -688,7 +690,7 @@ final class PreviewView: MTKView {
             return (decoder.player, decoder.output, nil, nil)
         }
         layerTransforms = transforms
-        lastVideoLayers = model.project.layers.filter { $0.kind == .video }
+        lastVideoLayers = model.project.layers.filter { $0.kind != .image }
         for (lane, decoder) in layerPlayers {
             if let item = decoder.player.currentItem {
                 layerObservations.append(item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
@@ -775,7 +777,8 @@ final class PreviewView: MTKView {
         let viewportRect = screenRect(output: drawableSize, cropAspect: aspect, padding: 0)
 
         let pixelBuffer = currentScreenPixelBuffer()
-        if pixelBuffer != nil {
+        let screenExpected = model.playhead < model.timeMap.outputDuration && model.project.clipIndex(atOutput: model.playhead).map { !model.project.clips[$0].isEmpty } == true
+        if pixelBuffer != nil || !screenExpected {
             statusStack.isHidden = true
             pendingFrameRetries = 0
         } else if !model.isPlaying {
@@ -833,17 +836,18 @@ final class PreviewView: MTKView {
         model.isPlaying = false; model.playhead = time
         framebufferOnly = false
         let source = model.timeMap.sourceTime(atOutput: time)
-        let cameraExpected = model.project.cameraClips.contains { source >= $0.start && source < $0.end }
+        let screenExpected = time < model.timeMap.outputDuration && model.project.clipIndex(atOutput: time).map { !model.project.clips[$0].isEmpty } == true
+        let cameraExpected = time < model.timeMap.outputDuration && model.project.cameraClips.contains { source >= $0.start && source < $0.end }
         let deadline = Date().addingTimeInterval(10)
         await Task.yield()
-        while isSeeking || player?.currentItem?.status != .readyToPlay || abs((player?.currentTime().seconds ?? -1) - time) > 0.002 || currentScreenPixelBuffer() == nil ||
+        while isSeeking || player?.currentItem?.status != .readyToPlay || abs((player?.currentTime().seconds ?? -1) - time) > 0.002 || (screenExpected && currentScreenPixelBuffer() == nil) ||
                 (cameraExpected && (abs((cameraPlayer?.currentTime().seconds ?? -1) - time) > 0.002 || currentCameraPixelBuffer() == nil)) {
             guard Date() < deadline else {
                 throw NSError(domain: "Recorder.PreviewSnapshot", code: 1, userInfo: [NSLocalizedDescriptionKey: "Preview did not settle: seeking=\(isSeeking), screen time=\(player?.currentTime().seconds ?? -1), camera time=\(cameraPlayer?.currentTime().seconds ?? -1), screen buffer=\(lastScreenPixelBuffer != nil), camera buffer=\(lastCameraPixelBuffer != nil)"])
             }
             try await Task.sleep(for: .milliseconds(20))
         }
-        let activeLanes = Set(model.project.layerStates(atOutput: time).filter { $0.block.kind == .video && layerTransforms[$0.block.file] != nil }.map { $0.block.track })
+        let activeLanes = Set(model.project.layerStates(atOutput: time).filter { $0.block.kind != .image && layerTransforms[$0.block.file] != nil }.map { $0.block.track })
         while !activeLanes.allSatisfy({ lane in
             guard let decoder = layerPlayers[lane] else { return false }
             return decoder.player.currentItem?.status == .readyToPlay && abs(decoder.player.currentTime().seconds - time) <= 0.002
@@ -923,13 +927,14 @@ final class PreviewView: MTKView {
 
     private func currentLayerTextures(at time: Double) -> [Int: FrameState.Texture] {
         var textures: [Int: FrameState.Texture] = [:]
-        for layer in model.project.layerStates(atOutput: time) where layer.block.kind == .video {
+        for layer in model.project.layerStates(atOutput: time) where layer.block.kind != .image {
             let lane = layer.block.track
             guard var decoder = layerPlayers[lane] else { continue }
             if decoder.block != layer.block.id { decoder.last = nil; decoder.block = layer.block.id; lastLayerPTS[lane] = nil }
             var pts = CMTime.invalid
             if let buffer = decoder.output.copyPixelBuffer(forItemTime: CMTime(seconds: time, preferredTimescale: 600), itemTimeForDisplay: &pts) {
                 decoder.last = buffer
+                if layer.block.kind == .recording { print("RECORDPTS preview request=\(time) display=\(pts.seconds) player=\(decoder.player.currentTime().seconds)") }
                 if onPresentedFrameForTest != nil { lastLayerPTS[lane] = pts.isNumeric ? pts.seconds : nil }
             }
             if let buffer = decoder.last { textures[lane] = textureCache.texture(from: buffer) }

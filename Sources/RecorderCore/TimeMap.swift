@@ -23,6 +23,7 @@ public struct Clip: Codable, Equatable, Sendable {
     public var mediaDuration: Double { (sourceEnd - sourceStart) * (speed / timeScale) }
     public var mediaEnd: Double { mediaIn + mediaDuration }
     public func mediaTime(atSource time: Double) -> Double { mediaIn + (time - sourceStart) * (speed / timeScale) }
+    public func sourceTime(atMedia time: Double) -> Double { sourceStart + (time - mediaIn) * (timeScale / speed) }
     public var mediaIn: Double { mediaStart ?? sourceStart }
     public var isEmpty: Bool { isGap == true }
     public init(sourceStart: Double, sourceEnd: Double, speed: Double = 1) {

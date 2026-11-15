@@ -136,6 +136,31 @@ import RecorderCore
     private(set) var cameraPath: CameraPath
     // shortcut: full-duration simulation per multi-window clip; narrow cached media ranges if long-project profiling requires it.
     private var windowCursorPaths: [Double: CursorPath] = [:]
+    private var recordingPaths: [String: (scene: SceneEffects?, mediaStart: Double, rate: Double?, duration: Double,
+                                        cursor: CursorStyle, hidden: [TimeRange], animation: Animation.Screen,
+                                        history: Project, clip: Clip, camera: CameraPath, path: CursorPath)] = [:]
+
+    func recordingSample(_ layer: LayerBlock, localTime: Double) -> (view: ViewTransform, previous: ViewTransform, cursor: CursorSample, masks: [Mask], sourceTime: Double) {
+        if recordingPaths[layer.id] == nil || (!isEditingGesture && (recordingPaths[layer.id]!.scene != layer.scene
+            || recordingPaths[layer.id]!.mediaStart != layer.mediaStart || recordingPaths[layer.id]!.rate != layer.mediaRate
+            || recordingPaths[layer.id]!.duration != layer.end - layer.start
+            || recordingPaths[layer.id]!.cursor != project.cursor || recordingPaths[layer.id]!.hidden != project.cursorHidden
+            || recordingPaths[layer.id]!.animation != project.animation.screen)) {
+            let scene = project.recordingScene(for: layer)
+            let (_, camera) = Self.buildPaths(project: scene.project, events: events)
+            let (mapped, outside) = remapWindowEvents(events, project: scene.project, clip: scene.clip)
+            let cursor = CursorPath(events: mapped, style: project.cursor, hidden: project.cursorHidden + outside, duration: project.source.duration)
+            recordingPaths[layer.id] = (layer.scene, layer.mediaStart, layer.mediaRate, layer.end - layer.start,
+                                        project.cursor, project.cursorHidden, project.animation.screen, scene.project, scene.clip, camera, cursor)
+        }
+        let cached = recordingPaths[layer.id]!
+        let media = layer.mediaStart + localTime * (layer.mediaRate ?? 1)
+        let time = cached.clip.sourceTime(atMedia: media)
+        let previous = cached.clip.sourceTime(atMedia: media - (layer.mediaRate ?? 1) / 60)
+        var cursor = cached.path.sample(atSource: media)
+        if layer.scene?.hideCursor == true { cursor.alpha = 0 }
+        return (cached.camera.sample(atSource: time), cached.camera.sample(atSource: previous), cursor, cached.history.masks, time)
+    }
 
     func cursorSample(atSource time: Double, clip: Clip?) -> CursorSample {
         let media = clip?.mediaTime(atSource: time) ?? time
@@ -329,6 +354,7 @@ import RecorderCore
     /// Only `zooms`/`cursor`/`animation.screen`/`cursorHidden` feed `CursorPath`/`CameraPath`
     /// (T-413) — everything else (background, frame, camera tab, …) skips the resimulation.
     private func rebuildPathsIfNeeded(from before: Project) {
+        recordingPaths = recordingPaths.filter { id, _ in project.layers.contains { $0.id == id } }
         guard before.clips != project.clips || before.zooms != project.zooms || before.cursor != project.cursor
             || before.animation.screen != project.animation.screen || before.cursorHidden != project.cursorHidden
             || before.windowShots != project.windowShots

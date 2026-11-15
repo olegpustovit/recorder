@@ -1,0 +1,1112 @@
+[0/1] Planning build
+Building for debugging...
+[0/6] Write sources
+[2/6] Write swift-version--58304C5D6DBC2206.txt
+[4/20] Compiling RecorderCore Preset.swift
+[5/20] Compiling RecorderCore Project.swift
+[6/20] Compiling RecorderCore KeyChips.swift
+[7/20] Compiling RecorderCore Layout.swift
+[8/20] Compiling RecorderCore WindowCorners.swift
+[9/20] Compiling RecorderCore Spring.swift
+[10/20] Compiling RecorderCore TimeMap.swift
+[11/20] Compiling RecorderCore CursorPath.swift
+[12/20] Compiling RecorderCore Events.swift
+[13/20] Compiling RecorderCore TimelineGeometry.swift
+[14/20] Compiling RecorderCore TimelineOps.swift
+[15/20] Emitting module RecorderCore
+[16/20] Compiling RecorderCore AutoZoom.swift
+[17/20] Compiling RecorderCore CameraPath.swift
+[18/21] Compiling RecorderCore WindowShots.swift
+[19/88] Compiling Recorder AreaSelectionOverlay.swift
+[20/88] Compiling Recorder CameraBubblePanel.swift
+[21/88] Compiling Recorder CameraCapture.swift
+[22/88] Compiling Recorder CaptureSession.swift
+[23/88] Compiling Recorder CaptureTarget.swift
+[24/88] Compiling Recorder CountdownOverlay.swift
+[25/88] Compiling Recorder EventRecorder.swift
+[26/88] Compiling Recorder FloatingPanel.swift
+[27/88] Compiling Recorder RecordingController.swift
+[28/97] Compiling Recorder RecordingRecovery.swift
+[29/97] Compiling Recorder RecordingSettings.swift
+[30/97] Compiling Recorder RecordingWidgetPanel.swift
+[31/97] Compiling Recorder SelectionRectView.swift
+[32/97] Compiling Recorder SourcePickerOverlay.swift
+[33/97] Compiling Recorder ToolbarController.swift
+[34/97] Compiling Recorder ToolbarView.swift
+[35/97] Compiling Recorder WindowResizer.swift
+[36/97] Compiling Recorder AudioMixSelfTest.swift
+[37/97] Compiling Recorder EditorModel.swift
+[38/97] Compiling Recorder EditorWindowController.swift
+[39/97] Compiling Recorder ExportSheet.swift
+[40/97] Compiling Recorder AnimationsTab.swift
+[41/97] Compiling Recorder AudioPanel.swift
+[42/97] Compiling Recorder AudioTab.swift
+[43/97] Compiling Recorder BackgroundTab.swift
+[44/97] Compiling Recorder CameraTab.swift
+[45/97] Compiling Recorder ClipPanel.swift
+[46/97] Compiling Recorder CursorTab.swift
+[47/97] Compiling Recorder SettingsView.swift
+/Users/snowbear/projects/recorder/Sources/Recorder/Editor/CropSheet.swift:27:61: warning: 'weak' ownership of capture 'model' differs from implicitly-captured strong reference in outer scope [#ImplicitStrongCapture]
+ 20 |         let packageURL = model.packageURL
+ 21 | 
+ 22 |         Task { @MainActor in
+    |              |- note: 'model' implicitly strongly captured here
+    |              `- note: add 'model' as a capture list item to silence
+ 23 |             let image: CGImage?
+ 24 |             if let sourceTime { image = await Self.frame(at: sourceTime, in: packageURL) }
+ 25 |             else { image = nil }
+ 26 |             let sheet = CropSheetWindow(initialCrop: project.crop, sourceSize: sourceSize, image: image,
+ 27 |                                          onConfirm: { [weak model] newCrop in
+    |                                                             |- warning: 'weak' ownership of capture 'model' differs from implicitly-captured strong reference in outer scope [#ImplicitStrongCapture]
+    |                                                             `- note: explicitly assign the capture list item to silence
+ 28 |                 guard let model else { return }
+ 29 |                 CropSheet.confirm(newCrop, on: model)
+
+[#ImplicitStrongCapture]: <https://docs.swift.org/compiler/documentation/diagnostics/implicit-strong-capture>
+[48/97] Compiling Recorder StateSnapshot.swift
+/Users/snowbear/projects/recorder/Sources/Recorder/Editor/CropSheet.swift:27:61: warning: 'weak' ownership of capture 'model' differs from implicitly-captured strong reference in outer scope [#ImplicitStrongCapture]
+ 20 |         let packageURL = model.packageURL
+ 21 | 
+ 22 |         Task { @MainActor in
+    |              |- note: 'model' implicitly strongly captured here
+    |              `- note: add 'model' as a capture list item to silence
+ 23 |             let image: CGImage?
+ 24 |             if let sourceTime { image = await Self.frame(at: sourceTime, in: packageURL) }
+ 25 |             else { image = nil }
+ 26 |             let sheet = CropSheetWindow(initialCrop: project.crop, sourceSize: sourceSize, image: image,
+ 27 |                                          onConfirm: { [weak model] newCrop in
+    |                                                             |- warning: 'weak' ownership of capture 'model' differs from implicitly-captured strong reference in outer scope [#ImplicitStrongCapture]
+    |                                                             `- note: explicitly assign the capture list item to silence
+ 28 |                 guard let model else { return }
+ 29 |                 CropSheet.confirm(newCrop, on: model)
+
+[#ImplicitStrongCapture]: <https://docs.swift.org/compiler/documentation/diagnostics/implicit-strong-capture>
+[49/97] Compiling Recorder Theme.swift
+/Users/snowbear/projects/recorder/Sources/Recorder/Editor/CropSheet.swift:27:61: warning: 'weak' ownership of capture 'model' differs from implicitly-captured strong reference in outer scope [#ImplicitStrongCapture]
+ 20 |         let packageURL = model.packageURL
+ 21 | 
+ 22 |         Task { @MainActor in
+    |              |- note: 'model' implicitly strongly captured here
+    |              `- note: add 'model' as a capture list item to silence
+ 23 |             let image: CGImage?
+ 24 |             if let sourceTime { image = await Self.frame(at: sourceTime, in: packageURL) }
+ 25 |             else { image = nil }
+ 26 |             let sheet = CropSheetWindow(initialCrop: project.crop, sourceSize: sourceSize, image: image,
+ 27 |                                          onConfirm: { [weak model] newCrop in
+    |                                                             |- warning: 'weak' ownership of capture 'model' differs from implicitly-captured strong reference in outer scope [#ImplicitStrongCapture]
+    |                                                             `- note: explicitly assign the capture list item to silence
+ 28 |                 guard let model else { return }
+ 29 |                 CropSheet.confirm(newCrop, on: model)
+
+[#ImplicitStrongCapture]: <https://docs.swift.org/compiler/documentation/diagnostics/implicit-strong-capture>
+[50/97] Compiling Recorder TimelineInteractionPrototype.swift
+/Users/snowbear/projects/recorder/Sources/Recorder/Editor/CropSheet.swift:27:61: warning: 'weak' ownership of capture 'model' differs from implicitly-captured strong reference in outer scope [#ImplicitStrongCapture]
+ 20 |         let packageURL = model.packageURL
+ 21 | 
+ 22 |         Task { @MainActor in
+    |              |- note: 'model' implicitly strongly captured here
+    |              `- note: add 'model' as a capture list item to silence
+ 23 |             let image: CGImage?
+ 24 |             if let sourceTime { image = await Self.frame(at: sourceTime, in: packageURL) }
+ 25 |             else { image = nil }
+ 26 |             let sheet = CropSheetWindow(initialCrop: project.crop, sourceSize: sourceSize, image: image,
+ 27 |                                          onConfirm: { [weak model] newCrop in
+    |                                                             |- warning: 'weak' ownership of capture 'model' differs from implicitly-captured strong reference in outer scope [#ImplicitStrongCapture]
+    |                                                             `- note: explicitly assign the capture list item to silence
+ 28 |                 guard let model else { return }
+ 29 |                 CropSheet.confirm(newCrop, on: model)
+
+[#ImplicitStrongCapture]: <https://docs.swift.org/compiler/documentation/diagnostics/implicit-strong-capture>
+[51/97] Compiling Recorder UIComponents.swift
+/Users/snowbear/projects/recorder/Sources/Recorder/Editor/CropSheet.swift:27:61: warning: 'weak' ownership of capture 'model' differs from implicitly-captured strong reference in outer scope [#ImplicitStrongCapture]
+ 20 |         let packageURL = model.packageURL
+ 21 | 
+ 22 |         Task { @MainActor in
+    |              |- note: 'model' implicitly strongly captured here
+    |              `- note: add 'model' as a capture list item to silence
+ 23 |             let image: CGImage?
+ 24 |             if let sourceTime { image = await Self.frame(at: sourceTime, in: packageURL) }
+ 25 |             else { image = nil }
+ 26 |             let sheet = CropSheetWindow(initialCrop: project.crop, sourceSize: sourceSize, image: image,
+ 27 |                                          onConfirm: { [weak model] newCrop in
+    |                                                             |- warning: 'weak' ownership of capture 'model' differs from implicitly-captured strong reference in outer scope [#ImplicitStrongCapture]
+    |                                                             `- note: explicitly assign the capture list item to silence
+ 28 |                 guard let model else { return }
+ 29 |                 CropSheet.confirm(newCrop, on: model)
+
+[#ImplicitStrongCapture]: <https://docs.swift.org/compiler/documentation/diagnostics/implicit-strong-capture>
+[52/97] Compiling Recorder UIDriver.swift
+/Users/snowbear/projects/recorder/Sources/Recorder/Editor/CropSheet.swift:27:61: warning: 'weak' ownership of capture 'model' differs from implicitly-captured strong reference in outer scope [#ImplicitStrongCapture]
+ 20 |         let packageURL = model.packageURL
+ 21 | 
+ 22 |         Task { @MainActor in
+    |              |- note: 'model' implicitly strongly captured here
+    |              `- note: add 'model' as a capture list item to silence
+ 23 |             let image: CGImage?
+ 24 |             if let sourceTime { image = await Self.frame(at: sourceTime, in: packageURL) }
+ 25 |             else { image = nil }
+ 26 |             let sheet = CropSheetWindow(initialCrop: project.crop, sourceSize: sourceSize, image: image,
+ 27 |                                          onConfirm: { [weak model] newCrop in
+    |                                                             |- warning: 'weak' ownership of capture 'model' differs from implicitly-captured strong reference in outer scope [#ImplicitStrongCapture]
+    |                                                             `- note: explicitly assign the capture list item to silence
+ 28 |                 guard let model else { return }
+ 29 |                 CropSheet.confirm(newCrop, on: model)
+
+[#ImplicitStrongCapture]: <https://docs.swift.org/compiler/documentation/diagnostics/implicit-strong-capture>
+[53/97] Compiling Recorder UIKitGallery.swift
+/Users/snowbear/projects/recorder/Sources/Recorder/Editor/CropSheet.swift:27:61: warning: 'weak' ownership of capture 'model' differs from implicitly-captured strong reference in outer scope [#ImplicitStrongCapture]
+ 20 |         let packageURL = model.packageURL
+ 21 | 
+ 22 |         Task { @MainActor in
+    |              |- note: 'model' implicitly strongly captured here
+    |              `- note: add 'model' as a capture list item to silence
+ 23 |             let image: CGImage?
+ 24 |             if let sourceTime { image = await Self.frame(at: sourceTime, in: packageURL) }
+ 25 |             else { image = nil }
+ 26 |             let sheet = CropSheetWindow(initialCrop: project.crop, sourceSize: sourceSize, image: image,
+ 27 |                                          onConfirm: { [weak model] newCrop in
+    |                                                             |- warning: 'weak' ownership of capture 'model' differs from implicitly-captured strong reference in outer scope [#ImplicitStrongCapture]
+    |                                                             `- note: explicitly assign the capture list item to silence
+ 28 |                 guard let model else { return }
+ 29 |                 CropSheet.confirm(newCrop, on: model)
+
+[#ImplicitStrongCapture]: <https://docs.swift.org/compiler/documentation/diagnostics/implicit-strong-capture>
+[54/97] Compiling Recorder WorkspaceMedia.swift
+/Users/snowbear/projects/recorder/Sources/Recorder/Editor/CropSheet.swift:27:61: warning: 'weak' ownership of capture 'model' differs from implicitly-captured strong reference in outer scope [#ImplicitStrongCapture]
+ 20 |         let packageURL = model.packageURL
+ 21 | 
+ 22 |         Task { @MainActor in
+    |              |- note: 'model' implicitly strongly captured here
+    |              `- note: add 'model' as a capture list item to silence
+ 23 |             let image: CGImage?
+ 24 |             if let sourceTime { image = await Self.frame(at: sourceTime, in: packageURL) }
+ 25 |             else { image = nil }
+ 26 |             let sheet = CropSheetWindow(initialCrop: project.crop, sourceSize: sourceSize, image: image,
+ 27 |                                          onConfirm: { [weak model] newCrop in
+    |                                                             |- warning: 'weak' ownership of capture 'model' differs from implicitly-captured strong reference in outer scope [#ImplicitStrongCapture]
+    |                                                             `- note: explicitly assign the capture list item to silence
+ 28 |                 guard let model else { return }
+ 29 |                 CropSheet.confirm(newCrop, on: model)
+
+[#ImplicitStrongCapture]: <https://docs.swift.org/compiler/documentation/diagnostics/implicit-strong-capture>
+[55/97] Compiling Recorder main.swift
+/Users/snowbear/projects/recorder/Sources/Recorder/Editor/CropSheet.swift:27:61: warning: 'weak' ownership of capture 'model' differs from implicitly-captured strong reference in outer scope [#ImplicitStrongCapture]
+ 20 |         let packageURL = model.packageURL
+ 21 | 
+ 22 |         Task { @MainActor in
+    |              |- note: 'model' implicitly strongly captured here
+    |              `- note: add 'model' as a capture list item to silence
+ 23 |             let image: CGImage?
+ 24 |             if let sourceTime { image = await Self.frame(at: sourceTime, in: packageURL) }
+ 25 |             else { image = nil }
+ 26 |             let sheet = CropSheetWindow(initialCrop: project.crop, sourceSize: sourceSize, image: image,
+ 27 |                                          onConfirm: { [weak model] newCrop in
+    |                                                             |- warning: 'weak' ownership of capture 'model' differs from implicitly-captured strong reference in outer scope [#ImplicitStrongCapture]
+    |                                                             `- note: explicitly assign the capture list item to silence
+ 28 |                 guard let model else { return }
+ 29 |                 CropSheet.confirm(newCrop, on: model)
+
+[#ImplicitStrongCapture]: <https://docs.swift.org/compiler/documentation/diagnostics/implicit-strong-capture>
+[56/97] Compiling Recorder CropSheet.swift
+/Users/snowbear/projects/recorder/Sources/Recorder/Editor/CropSheet.swift:27:61: warning: 'weak' ownership of capture 'model' differs from implicitly-captured strong reference in outer scope [#ImplicitStrongCapture]
+ 20 |         let packageURL = model.packageURL
+ 21 | 
+ 22 |         Task { @MainActor in
+    |              |- note: 'model' implicitly strongly captured here
+    |              `- note: add 'model' as a capture list item to silence
+ 23 |             let image: CGImage?
+ 24 |             if let sourceTime { image = await Self.frame(at: sourceTime, in: packageURL) }
+ 25 |             else { image = nil }
+ 26 |             let sheet = CropSheetWindow(initialCrop: project.crop, sourceSize: sourceSize, image: image,
+ 27 |                                          onConfirm: { [weak model] newCrop in
+    |                                                             |- warning: 'weak' ownership of capture 'model' differs from implicitly-captured strong reference in outer scope [#ImplicitStrongCapture]
+    |                                                             `- note: explicitly assign the capture list item to silence
+ 28 |                 guard let model else { return }
+ 29 |                 CropSheet.confirm(newCrop, on: model)
+
+[#ImplicitStrongCapture]: <https://docs.swift.org/compiler/documentation/diagnostics/implicit-strong-capture>
+[57/97] Compiling Recorder ColorSelfTest.swift
+[58/97] Compiling Recorder Compositor.swift
+[59/97] Compiling Recorder Exporter.swift
+[60/97] Compiling Recorder FrameSource.swift
+[61/97] Compiling Recorder FrameState.swift
+[62/97] Compiling Recorder RecordingLayerSelfTest.swift
+[63/97] Compiling Recorder Shaders.swift
+[64/97] Compiling Recorder Waveform.swift
+[65/97] Compiling Recorder ZoomTargetMapping.swift
+[66/97] Emitting module Recorder
+/Users/snowbear/projects/recorder/Sources/Recorder/App/SelfTest.swift:2643:42: warning: conformance of 'Timer' to 'Sendable' is unavailable; this is an error in the Swift 6 language mode
+2641 |             let session = try await CaptureSession(target: .windows(windows), settings: settings, packageURL: packageURL)
+2642 |             try await session.start()
+2643 |             let ticker = await MainActor.run {
+     |                                          `- warning: conformance of 'Timer' to 'Sendable' is unavailable; this is an error in the Swift 6 language mode
+2644 |                 Timer.scheduledTimer(withTimeInterval: 1.0 / 60, repeats: true) { _ in
+2645 |                     MainActor.assumeIsolated {
+
+/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.2.sdk/System/Library/Frameworks/Foundation.framework/Headers/NSUserDefaults.h: 0:142 | /// - An app can modify settings for one of its app extensions.
+143 | /// - An app can modify settings for an app group to which it belongs.
+144 | @interface NSUserDefaults : NSObject {
+    +---  --------------------------------------------------------------
+    |1 | @_nonSendable(_assumed)
+    |  | `- note: conformance of 'Timer' to 'Sendable' has been explicitly marked unavailable here
+    +-------------------------------------------------------------------
+145 | @private
+146 |     id _kvo_;
+
+/Users/snowbear/projects/recorder/Sources/Recorder/App/SelfTest.swift:2655:35: warning: capture of 'ticker' with non-Sendable type 'Timer' in a '@Sendable' closure; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+2653 |             try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+2654 |             let avgCPU = (ProcStats.snapshot().cpuSeconds - startCPU) / Date().timeIntervalSince(started) * 100
+2655 |             await MainActor.run { ticker.invalidate() }
+     |                                   `- warning: capture of 'ticker' with non-Sendable type 'Timer' in a '@Sendable' closure; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+2656 |             let source = try await session.finish()
+2657 |             print("record-windows: \(count) animated windows, avg CPU \(String(format: "%.1f", avgCPU))% of one core (AC-REC-1 bar: < 25%)")
+
+/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.2.sdk/System/Library/Frameworks/Foundation.framework/Headers/NSTimer.h:45:12: note: class 'Timer' does not conform to the 'Sendable' protocol
+ 43 | ///
+ 44 | /// Do not subclass ``Timer``.
+ 45 | @interface NSTimer : NSObject
+    |            `- note: class 'Timer' does not conform to the 'Sendable' protocol
+ 46 | 
+ 47 | /// Initializes a timer object with the specified invocation object.
+
+/Users/snowbear/projects/recorder/Sources/Recorder/App/SelfTest.swift:5270:59: warning: conformance of 'TimelineHeaderDraggingInfo' to protocol 'NSDraggingInfo' crosses into main actor-isolated code and can cause data races; this is an error in the Swift 6 language mode [#ConformanceIsolation]
+5268 | 
+5269 | @MainActor
+5270 | private final class TimelineHeaderDraggingInfo: NSObject, NSDraggingInfo {
+     |                                                           |- warning: conformance of 'TimelineHeaderDraggingInfo' to protocol 'NSDraggingInfo' crosses into main actor-isolated code and can cause data races; this is an error in the Swift 6 language mode [#ConformanceIsolation]
+     |                                                           |- note: isolate this conformance to the main actor with '@MainActor'
+     |                                                           `- note: turn data races into runtime errors with '@preconcurrency'
+5271 |     let draggingPasteboard: NSPasteboard
+5272 |     let draggingLocation: NSPoint
+     :
+5274 |     var draggingSourceOperationMask: NSDragOperation { .copy }
+5275 |     var draggedImageLocation: NSPoint { draggingLocation }
+5276 |     var draggedImage: NSImage? { nil }
+     |         |- note: main actor-isolated property 'draggedImage' cannot satisfy nonisolated requirement
+     |         `- note: mark property 'draggedImage' 'nonisolated'
+5277 |     var draggingSource: Any? { nil }
+5278 |     var draggingSequenceNumber: Int { 1 }
+     :
+5286 |     }
+5287 |     func slideDraggedImage(to screenPoint: NSPoint) {}
+5288 |     override func namesOfPromisedFilesDropped(atDestination dropDestination: URL) -> [String]? { nil }
+     |                   |- note: main actor-isolated instance method 'namesOfPromisedFilesDropped(atDestination:)' cannot satisfy nonisolated requirement
+     |                   `- note: mark instance method 'namesOfPromisedFilesDropped(atDestination:)' 'nonisolated'
+5289 |     func resetSpringLoading() {}
+5290 |     func enumerateDraggingItems(options enumOpts: NSDraggingItemEnumerationOptions, for view: NSView?, classes classArray: [AnyClass],
+
+[#ConformanceIsolation]: <https://docs.swift.org/compiler/documentation/diagnostics/conformance-isolation>
+[#SendableClosureCaptures]: <https://docs.swift.org/compiler/documentation/diagnostics/sendable-closure-captures>
+[67/97] Compiling Recorder InspectorView.swift
+[68/97] Compiling Recorder KeysTab.swift
+[69/97] Compiling Recorder LabeledSlider.swift
+[70/97] Compiling Recorder LayerPanel.swift
+[71/97] Compiling Recorder LayoutPanel.swift
+[72/97] Compiling Recorder MaskPanel.swift
+[73/97] Compiling Recorder PlacementPad.swift
+[74/97] Compiling Recorder PresetsMenu.swift
+[75/97] Compiling Recorder TextPanel.swift
+[76/97] Compiling Recorder ZoomPanel.swift
+[77/97] Compiling Recorder MaskRectOverlay.swift
+[78/97] Compiling Recorder MediaImport.swift
+[79/97] Compiling Recorder PreviewView.swift
+[80/97] Compiling Recorder TimelineView.swift
+[81/97] Compiling Recorder Transcriber.swift
+[82/97] Compiling Recorder VoiceoverRecorder.swift
+[83/97] Compiling Recorder LibraryView.swift
+[84/97] Compiling Recorder ProjectStore.swift
+[85/97] Compiling Recorder AppDelegate.swift
+/Users/snowbear/projects/recorder/Sources/Recorder/App/SelfTest.swift:1933:100: warning: main actor-isolated property 'subviews' can not be referenced from a nonisolated autoclosure
+1931 |                 defer { frameOverlay?.removeFromSuperview(); window.orderOut(nil) }
+1932 |                 if let flag = args.firstIndex(of: "--time") {
+1933 |                     func preview(in view: NSView) -> PreviewView? { (view as? PreviewView) ?? view.subviews.compactMap { preview(in: $0) }.first }
+     |                                                                                                    `- warning: main actor-isolated property 'subviews' can not be referenced from a nonisolated autoclosure
+1934 |                     guard args.indices.contains(flag + 1), let time = Double(args[flag + 1]), let view = preview(in: capture) else { throw Fail(description: "editor-png --time requires a valid output time") }
+1935 |                     window.orderFront(nil)
+
+/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.2.sdk/System/Library/Frameworks/AppKit.framework/Headers/NSView.h:88:46: note: property declared here
+ 86 | @property (nullable, readonly, unsafe_unretained) NSWindow *window;
+ 87 | @property (nullable, readonly, unsafe_unretained) NSView *superview;
+ 88 | @property (copy) NSArray<__kindof NSView *> *subviews;
+    |                                              `- note: property declared here
+ 89 | - (BOOL)isDescendantOf:(NSView *)view;
+ 90 | - (nullable NSView *)ancestorSharedWithView:(NSView *)view;
+
+/Users/snowbear/projects/recorder/Sources/Recorder/App/SelfTest.swift:2643:42: warning: conformance of 'Timer' to 'Sendable' is unavailable; this is an error in the Swift 6 language mode
+2641 |             let session = try await CaptureSession(target: .windows(windows), settings: settings, packageURL: packageURL)
+2642 |             try await session.start()
+2643 |             let ticker = await MainActor.run {
+     |                                          `- warning: conformance of 'Timer' to 'Sendable' is unavailable; this is an error in the Swift 6 language mode
+2644 |                 Timer.scheduledTimer(withTimeInterval: 1.0 / 60, repeats: true) { _ in
+2645 |                     MainActor.assumeIsolated {
+
+/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.2.sdk/System/Library/Frameworks/Foundation.framework/Headers/NSTimer.h: 0: 43 | ///
+ 44 | /// Do not subclass ``Timer``.
+ 45 | @interface NSTimer : NSObject
+    +---  --------------------------------------------------------------
+    |1 | @_nonSendable(_assumed)
+    |  | `- note: conformance of 'Timer' to 'Sendable' has been explicitly marked unavailable here
+    +-------------------------------------------------------------------
+ 46 | 
+ 47 | /// Initializes a timer object with the specified invocation object.
+
+/Users/snowbear/projects/recorder/Sources/Recorder/App/SelfTest.swift:2655:35: warning: capture of 'ticker' with non-Sendable type 'Timer' in a '@Sendable' closure; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+2653 |             try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+2654 |             let avgCPU = (ProcStats.snapshot().cpuSeconds - startCPU) / Date().timeIntervalSince(started) * 100
+2655 |             await MainActor.run { ticker.invalidate() }
+     |                                   `- warning: capture of 'ticker' with non-Sendable type 'Timer' in a '@Sendable' closure; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+2656 |             let source = try await session.finish()
+2657 |             print("record-windows: \(count) animated windows, avg CPU \(String(format: "%.1f", avgCPU))% of one core (AC-REC-1 bar: < 25%)")
+
+/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.2.sdk/System/Library/Frameworks/Foundation.framework/Headers/NSTimer.h:45:12: note: class 'Timer' does not conform to the 'Sendable' protocol
+ 43 | ///
+ 44 | /// Do not subclass ``Timer``.
+ 45 | @interface NSTimer : NSObject
+    |            `- note: class 'Timer' does not conform to the 'Sendable' protocol
+ 46 | 
+ 47 | /// Initializes a timer object with the specified invocation object.
+
+/Users/snowbear/projects/recorder/Sources/Recorder/App/SelfTest.swift:5270:59: warning: conformance of 'TimelineHeaderDraggingInfo' to protocol 'NSDraggingInfo' crosses into main actor-isolated code and can cause data races; this is an error in the Swift 6 language mode [#ConformanceIsolation]
+5268 | 
+5269 | @MainActor
+5270 | private final class TimelineHeaderDraggingInfo: NSObject, NSDraggingInfo {
+     |                                                           |- warning: conformance of 'TimelineHeaderDraggingInfo' to protocol 'NSDraggingInfo' crosses into main actor-isolated code and can cause data races; this is an error in the Swift 6 language mode [#ConformanceIsolation]
+     |                                                           |- note: isolate this conformance to the main actor with '@MainActor'
+     |                                                           `- note: turn data races into runtime errors with '@preconcurrency'
+5271 |     let draggingPasteboard: NSPasteboard
+5272 |     let draggingLocation: NSPoint
+     :
+5274 |     var draggingSourceOperationMask: NSDragOperation { .copy }
+5275 |     var draggedImageLocation: NSPoint { draggingLocation }
+5276 |     var draggedImage: NSImage? { nil }
+     |         |- note: main actor-isolated property 'draggedImage' cannot satisfy nonisolated requirement
+     |         `- note: mark property 'draggedImage' 'nonisolated'
+5277 |     var draggingSource: Any? { nil }
+5278 |     var draggingSequenceNumber: Int { 1 }
+     :
+5286 |     }
+5287 |     func slideDraggedImage(to screenPoint: NSPoint) {}
+5288 |     override func namesOfPromisedFilesDropped(atDestination dropDestination: URL) -> [String]? { nil }
+     |                   |- note: main actor-isolated instance method 'namesOfPromisedFilesDropped(atDestination:)' cannot satisfy nonisolated requirement
+     |                   `- note: mark instance method 'namesOfPromisedFilesDropped(atDestination:)' 'nonisolated'
+5289 |     func resetSpringLoading() {}
+5290 |     func enumerateDraggingItems(options enumOpts: NSDraggingItemEnumerationOptions, for view: NSView?, classes classArray: [AnyClass],
+
+[#ConformanceIsolation]: <https://docs.swift.org/compiler/documentation/diagnostics/conformance-isolation>
+[#SendableClosureCaptures]: <https://docs.swift.org/compiler/documentation/diagnostics/sendable-closure-captures>
+[86/97] Compiling Recorder AppIdentity.swift
+/Users/snowbear/projects/recorder/Sources/Recorder/App/SelfTest.swift:1933:100: warning: main actor-isolated property 'subviews' can not be referenced from a nonisolated autoclosure
+1931 |                 defer { frameOverlay?.removeFromSuperview(); window.orderOut(nil) }
+1932 |                 if let flag = args.firstIndex(of: "--time") {
+1933 |                     func preview(in view: NSView) -> PreviewView? { (view as? PreviewView) ?? view.subviews.compactMap { preview(in: $0) }.first }
+     |                                                                                                    `- warning: main actor-isolated property 'subviews' can not be referenced from a nonisolated autoclosure
+1934 |                     guard args.indices.contains(flag + 1), let time = Double(args[flag + 1]), let view = preview(in: capture) else { throw Fail(description: "editor-png --time requires a valid output time") }
+1935 |                     window.orderFront(nil)
+
+/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.2.sdk/System/Library/Frameworks/AppKit.framework/Headers/NSView.h:88:46: note: property declared here
+ 86 | @property (nullable, readonly, unsafe_unretained) NSWindow *window;
+ 87 | @property (nullable, readonly, unsafe_unretained) NSView *superview;
+ 88 | @property (copy) NSArray<__kindof NSView *> *subviews;
+    |                                              `- note: property declared here
+ 89 | - (BOOL)isDescendantOf:(NSView *)view;
+ 90 | - (nullable NSView *)ancestorSharedWithView:(NSView *)view;
+
+/Users/snowbear/projects/recorder/Sources/Recorder/App/SelfTest.swift:2643:42: warning: conformance of 'Timer' to 'Sendable' is unavailable; this is an error in the Swift 6 language mode
+2641 |             let session = try await CaptureSession(target: .windows(windows), settings: settings, packageURL: packageURL)
+2642 |             try await session.start()
+2643 |             let ticker = await MainActor.run {
+     |                                          `- warning: conformance of 'Timer' to 'Sendable' is unavailable; this is an error in the Swift 6 language mode
+2644 |                 Timer.scheduledTimer(withTimeInterval: 1.0 / 60, repeats: true) { _ in
+2645 |                     MainActor.assumeIsolated {
+
+/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.2.sdk/System/Library/Frameworks/Foundation.framework/Headers/NSTimer.h: 0: 43 | ///
+ 44 | /// Do not subclass ``Timer``.
+ 45 | @interface NSTimer : NSObject
+    +---  --------------------------------------------------------------
+    |1 | @_nonSendable(_assumed)
+    |  | `- note: conformance of 'Timer' to 'Sendable' has been explicitly marked unavailable here
+    +-------------------------------------------------------------------
+ 46 | 
+ 47 | /// Initializes a timer object with the specified invocation object.
+
+/Users/snowbear/projects/recorder/Sources/Recorder/App/SelfTest.swift:2655:35: warning: capture of 'ticker' with non-Sendable type 'Timer' in a '@Sendable' closure; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+2653 |             try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+2654 |             let avgCPU = (ProcStats.snapshot().cpuSeconds - startCPU) / Date().timeIntervalSince(started) * 100
+2655 |             await MainActor.run { ticker.invalidate() }
+     |                                   `- warning: capture of 'ticker' with non-Sendable type 'Timer' in a '@Sendable' closure; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+2656 |             let source = try await session.finish()
+2657 |             print("record-windows: \(count) animated windows, avg CPU \(String(format: "%.1f", avgCPU))% of one core (AC-REC-1 bar: < 25%)")
+
+/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.2.sdk/System/Library/Frameworks/Foundation.framework/Headers/NSTimer.h:45:12: note: class 'Timer' does not conform to the 'Sendable' protocol
+ 43 | ///
+ 44 | /// Do not subclass ``Timer``.
+ 45 | @interface NSTimer : NSObject
+    |            `- note: class 'Timer' does not conform to the 'Sendable' protocol
+ 46 | 
+ 47 | /// Initializes a timer object with the specified invocation object.
+
+/Users/snowbear/projects/recorder/Sources/Recorder/App/SelfTest.swift:5270:59: warning: conformance of 'TimelineHeaderDraggingInfo' to protocol 'NSDraggingInfo' crosses into main actor-isolated code and can cause data races; this is an error in the Swift 6 language mode [#ConformanceIsolation]
+5268 | 
+5269 | @MainActor
+5270 | private final class TimelineHeaderDraggingInfo: NSObject, NSDraggingInfo {
+     |                                                           |- warning: conformance of 'TimelineHeaderDraggingInfo' to protocol 'NSDraggingInfo' crosses into main actor-isolated code and can cause data races; this is an error in the Swift 6 language mode [#ConformanceIsolation]
+     |                                                           |- note: isolate this conformance to the main actor with '@MainActor'
+     |                                                           `- note: turn data races into runtime errors with '@preconcurrency'
+5271 |     let draggingPasteboard: NSPasteboard
+5272 |     let draggingLocation: NSPoint
+     :
+5274 |     var draggingSourceOperationMask: NSDragOperation { .copy }
+5275 |     var draggedImageLocation: NSPoint { draggingLocation }
+5276 |     var draggedImage: NSImage? { nil }
+     |         |- note: main actor-isolated property 'draggedImage' cannot satisfy nonisolated requirement
+     |         `- note: mark property 'draggedImage' 'nonisolated'
+5277 |     var draggingSource: Any? { nil }
+5278 |     var draggingSequenceNumber: Int { 1 }
+     :
+5286 |     }
+5287 |     func slideDraggedImage(to screenPoint: NSPoint) {}
+5288 |     override func namesOfPromisedFilesDropped(atDestination dropDestination: URL) -> [String]? { nil }
+     |                   |- note: main actor-isolated instance method 'namesOfPromisedFilesDropped(atDestination:)' cannot satisfy nonisolated requirement
+     |                   `- note: mark instance method 'namesOfPromisedFilesDropped(atDestination:)' 'nonisolated'
+5289 |     func resetSpringLoading() {}
+5290 |     func enumerateDraggingItems(options enumOpts: NSDraggingItemEnumerationOptions, for view: NSView?, classes classArray: [AnyClass],
+
+[#ConformanceIsolation]: <https://docs.swift.org/compiler/documentation/diagnostics/conformance-isolation>
+[#SendableClosureCaptures]: <https://docs.swift.org/compiler/documentation/diagnostics/sendable-closure-captures>
+[87/97] Compiling Recorder CheatSheet.swift
+/Users/snowbear/projects/recorder/Sources/Recorder/App/SelfTest.swift:1933:100: warning: main actor-isolated property 'subviews' can not be referenced from a nonisolated autoclosure
+1931 |                 defer { frameOverlay?.removeFromSuperview(); window.orderOut(nil) }
+1932 |                 if let flag = args.firstIndex(of: "--time") {
+1933 |                     func preview(in view: NSView) -> PreviewView? { (view as? PreviewView) ?? view.subviews.compactMap { preview(in: $0) }.first }
+     |                                                                                                    `- warning: main actor-isolated property 'subviews' can not be referenced from a nonisolated autoclosure
+1934 |                     guard args.indices.contains(flag + 1), let time = Double(args[flag + 1]), let view = preview(in: capture) else { throw Fail(description: "editor-png --time requires a valid output time") }
+1935 |                     window.orderFront(nil)
+
+/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.2.sdk/System/Library/Frameworks/AppKit.framework/Headers/NSView.h:88:46: note: property declared here
+ 86 | @property (nullable, readonly, unsafe_unretained) NSWindow *window;
+ 87 | @property (nullable, readonly, unsafe_unretained) NSView *superview;
+ 88 | @property (copy) NSArray<__kindof NSView *> *subviews;
+    |                                              `- note: property declared here
+ 89 | - (BOOL)isDescendantOf:(NSView *)view;
+ 90 | - (nullable NSView *)ancestorSharedWithView:(NSView *)view;
+
+/Users/snowbear/projects/recorder/Sources/Recorder/App/SelfTest.swift:2643:42: warning: conformance of 'Timer' to 'Sendable' is unavailable; this is an error in the Swift 6 language mode
+2641 |             let session = try await CaptureSession(target: .windows(windows), settings: settings, packageURL: packageURL)
+2642 |             try await session.start()
+2643 |             let ticker = await MainActor.run {
+     |                                          `- warning: conformance of 'Timer' to 'Sendable' is unavailable; this is an error in the Swift 6 language mode
+2644 |                 Timer.scheduledTimer(withTimeInterval: 1.0 / 60, repeats: true) { _ in
+2645 |                     MainActor.assumeIsolated {
+
+/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.2.sdk/System/Library/Frameworks/Foundation.framework/Headers/NSTimer.h: 0: 43 | ///
+ 44 | /// Do not subclass ``Timer``.
+ 45 | @interface NSTimer : NSObject
+    +---  --------------------------------------------------------------
+    |1 | @_nonSendable(_assumed)
+    |  | `- note: conformance of 'Timer' to 'Sendable' has been explicitly marked unavailable here
+    +-------------------------------------------------------------------
+ 46 | 
+ 47 | /// Initializes a timer object with the specified invocation object.
+
+/Users/snowbear/projects/recorder/Sources/Recorder/App/SelfTest.swift:2655:35: warning: capture of 'ticker' with non-Sendable type 'Timer' in a '@Sendable' closure; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+2653 |             try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+2654 |             let avgCPU = (ProcStats.snapshot().cpuSeconds - startCPU) / Date().timeIntervalSince(started) * 100
+2655 |             await MainActor.run { ticker.invalidate() }
+     |                                   `- warning: capture of 'ticker' with non-Sendable type 'Timer' in a '@Sendable' closure; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+2656 |             let source = try await session.finish()
+2657 |             print("record-windows: \(count) animated windows, avg CPU \(String(format: "%.1f", avgCPU))% of one core (AC-REC-1 bar: < 25%)")
+
+/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.2.sdk/System/Library/Frameworks/Foundation.framework/Headers/NSTimer.h:45:12: note: class 'Timer' does not conform to the 'Sendable' protocol
+ 43 | ///
+ 44 | /// Do not subclass ``Timer``.
+ 45 | @interface NSTimer : NSObject
+    |            `- note: class 'Timer' does not conform to the 'Sendable' protocol
+ 46 | 
+ 47 | /// Initializes a timer object with the specified invocation object.
+
+/Users/snowbear/projects/recorder/Sources/Recorder/App/SelfTest.swift:5270:59: warning: conformance of 'TimelineHeaderDraggingInfo' to protocol 'NSDraggingInfo' crosses into main actor-isolated code and can cause data races; this is an error in the Swift 6 language mode [#ConformanceIsolation]
+5268 | 
+5269 | @MainActor
+5270 | private final class TimelineHeaderDraggingInfo: NSObject, NSDraggingInfo {
+     |                                                           |- warning: conformance of 'TimelineHeaderDraggingInfo' to protocol 'NSDraggingInfo' crosses into main actor-isolated code and can cause data races; this is an error in the Swift 6 language mode [#ConformanceIsolation]
+     |                                                           |- note: isolate this conformance to the main actor with '@MainActor'
+     |                                                           `- note: turn data races into runtime errors with '@preconcurrency'
+5271 |     let draggingPasteboard: NSPasteboard
+5272 |     let draggingLocation: NSPoint
+     :
+5274 |     var draggingSourceOperationMask: NSDragOperation { .copy }
+5275 |     var draggedImageLocation: NSPoint { draggingLocation }
+5276 |     var draggedImage: NSImage? { nil }
+     |         |- note: main actor-isolated property 'draggedImage' cannot satisfy nonisolated requirement
+     |         `- note: mark property 'draggedImage' 'nonisolated'
+5277 |     var draggingSource: Any? { nil }
+5278 |     var draggingSequenceNumber: Int { 1 }
+     :
+5286 |     }
+5287 |     func slideDraggedImage(to screenPoint: NSPoint) {}
+5288 |     override func namesOfPromisedFilesDropped(atDestination dropDestination: URL) -> [String]? { nil }
+     |                   |- note: main actor-isolated instance method 'namesOfPromisedFilesDropped(atDestination:)' cannot satisfy nonisolated requirement
+     |                   `- note: mark instance method 'namesOfPromisedFilesDropped(atDestination:)' 'nonisolated'
+5289 |     func resetSpringLoading() {}
+5290 |     func enumerateDraggingItems(options enumOpts: NSDraggingItemEnumerationOptions, for view: NSView?, classes classArray: [AnyClass],
+
+[#ConformanceIsolation]: <https://docs.swift.org/compiler/documentation/diagnostics/conformance-isolation>
+[#SendableClosureCaptures]: <https://docs.swift.org/compiler/documentation/diagnostics/sendable-closure-captures>
+[88/97] Compiling Recorder CommandMenu.swift
+/Users/snowbear/projects/recorder/Sources/Recorder/App/SelfTest.swift:1933:100: warning: main actor-isolated property 'subviews' can not be referenced from a nonisolated autoclosure
+1931 |                 defer { frameOverlay?.removeFromSuperview(); window.orderOut(nil) }
+1932 |                 if let flag = args.firstIndex(of: "--time") {
+1933 |                     func preview(in view: NSView) -> PreviewView? { (view as? PreviewView) ?? view.subviews.compactMap { preview(in: $0) }.first }
+     |                                                                                                    `- warning: main actor-isolated property 'subviews' can not be referenced from a nonisolated autoclosure
+1934 |                     guard args.indices.contains(flag + 1), let time = Double(args[flag + 1]), let view = preview(in: capture) else { throw Fail(description: "editor-png --time requires a valid output time") }
+1935 |                     window.orderFront(nil)
+
+/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.2.sdk/System/Library/Frameworks/AppKit.framework/Headers/NSView.h:88:46: note: property declared here
+ 86 | @property (nullable, readonly, unsafe_unretained) NSWindow *window;
+ 87 | @property (nullable, readonly, unsafe_unretained) NSView *superview;
+ 88 | @property (copy) NSArray<__kindof NSView *> *subviews;
+    |                                              `- note: property declared here
+ 89 | - (BOOL)isDescendantOf:(NSView *)view;
+ 90 | - (nullable NSView *)ancestorSharedWithView:(NSView *)view;
+
+/Users/snowbear/projects/recorder/Sources/Recorder/App/SelfTest.swift:2643:42: warning: conformance of 'Timer' to 'Sendable' is unavailable; this is an error in the Swift 6 language mode
+2641 |             let session = try await CaptureSession(target: .windows(windows), settings: settings, packageURL: packageURL)
+2642 |             try await session.start()
+2643 |             let ticker = await MainActor.run {
+     |                                          `- warning: conformance of 'Timer' to 'Sendable' is unavailable; this is an error in the Swift 6 language mode
+2644 |                 Timer.scheduledTimer(withTimeInterval: 1.0 / 60, repeats: true) { _ in
+2645 |                     MainActor.assumeIsolated {
+
+/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.2.sdk/System/Library/Frameworks/Foundation.framework/Headers/NSTimer.h: 0: 43 | ///
+ 44 | /// Do not subclass ``Timer``.
+ 45 | @interface NSTimer : NSObject
+    +---  --------------------------------------------------------------
+    |1 | @_nonSendable(_assumed)
+    |  | `- note: conformance of 'Timer' to 'Sendable' has been explicitly marked unavailable here
+    +-------------------------------------------------------------------
+ 46 | 
+ 47 | /// Initializes a timer object with the specified invocation object.
+
+/Users/snowbear/projects/recorder/Sources/Recorder/App/SelfTest.swift:2655:35: warning: capture of 'ticker' with non-Sendable type 'Timer' in a '@Sendable' closure; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+2653 |             try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+2654 |             let avgCPU = (ProcStats.snapshot().cpuSeconds - startCPU) / Date().timeIntervalSince(started) * 100
+2655 |             await MainActor.run { ticker.invalidate() }
+     |                                   `- warning: capture of 'ticker' with non-Sendable type 'Timer' in a '@Sendable' closure; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+2656 |             let source = try await session.finish()
+2657 |             print("record-windows: \(count) animated windows, avg CPU \(String(format: "%.1f", avgCPU))% of one core (AC-REC-1 bar: < 25%)")
+
+/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.2.sdk/System/Library/Frameworks/Foundation.framework/Headers/NSTimer.h:45:12: note: class 'Timer' does not conform to the 'Sendable' protocol
+ 43 | ///
+ 44 | /// Do not subclass ``Timer``.
+ 45 | @interface NSTimer : NSObject
+    |            `- note: class 'Timer' does not conform to the 'Sendable' protocol
+ 46 | 
+ 47 | /// Initializes a timer object with the specified invocation object.
+
+/Users/snowbear/projects/recorder/Sources/Recorder/App/SelfTest.swift:5270:59: warning: conformance of 'TimelineHeaderDraggingInfo' to protocol 'NSDraggingInfo' crosses into main actor-isolated code and can cause data races; this is an error in the Swift 6 language mode [#ConformanceIsolation]
+5268 | 
+5269 | @MainActor
+5270 | private final class TimelineHeaderDraggingInfo: NSObject, NSDraggingInfo {
+     |                                                           |- warning: conformance of 'TimelineHeaderDraggingInfo' to protocol 'NSDraggingInfo' crosses into main actor-isolated code and can cause data races; this is an error in the Swift 6 language mode [#ConformanceIsolation]
+     |                                                           |- note: isolate this conformance to the main actor with '@MainActor'
+     |                                                           `- note: turn data races into runtime errors with '@preconcurrency'
+5271 |     let draggingPasteboard: NSPasteboard
+5272 |     let draggingLocation: NSPoint
+     :
+5274 |     var draggingSourceOperationMask: NSDragOperation { .copy }
+5275 |     var draggedImageLocation: NSPoint { draggingLocation }
+5276 |     var draggedImage: NSImage? { nil }
+     |         |- note: main actor-isolated property 'draggedImage' cannot satisfy nonisolated requirement
+     |         `- note: mark property 'draggedImage' 'nonisolated'
+5277 |     var draggingSource: Any? { nil }
+5278 |     var draggingSequenceNumber: Int { 1 }
+     :
+5286 |     }
+5287 |     func slideDraggedImage(to screenPoint: NSPoint) {}
+5288 |     override func namesOfPromisedFilesDropped(atDestination dropDestination: URL) -> [String]? { nil }
+     |                   |- note: main actor-isolated instance method 'namesOfPromisedFilesDropped(atDestination:)' cannot satisfy nonisolated requirement
+     |                   `- note: mark instance method 'namesOfPromisedFilesDropped(atDestination:)' 'nonisolated'
+5289 |     func resetSpringLoading() {}
+5290 |     func enumerateDraggingItems(options enumOpts: NSDraggingItemEnumerationOptions, for view: NSView?, classes classArray: [AnyClass],
+
+[#ConformanceIsolation]: <https://docs.swift.org/compiler/documentation/diagnostics/conformance-isolation>
+[#SendableClosureCaptures]: <https://docs.swift.org/compiler/documentation/diagnostics/sendable-closure-captures>
+[89/97] Compiling Recorder EditorWorkspacePrototype.swift
+/Users/snowbear/projects/recorder/Sources/Recorder/App/SelfTest.swift:1933:100: warning: main actor-isolated property 'subviews' can not be referenced from a nonisolated autoclosure
+1931 |                 defer { frameOverlay?.removeFromSuperview(); window.orderOut(nil) }
+1932 |                 if let flag = args.firstIndex(of: "--time") {
+1933 |                     func preview(in view: NSView) -> PreviewView? { (view as? PreviewView) ?? view.subviews.compactMap { preview(in: $0) }.first }
+     |                                                                                                    `- warning: main actor-isolated property 'subviews' can not be referenced from a nonisolated autoclosure
+1934 |                     guard args.indices.contains(flag + 1), let time = Double(args[flag + 1]), let view = preview(in: capture) else { throw Fail(description: "editor-png --time requires a valid output time") }
+1935 |                     window.orderFront(nil)
+
+/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.2.sdk/System/Library/Frameworks/AppKit.framework/Headers/NSView.h:88:46: note: property declared here
+ 86 | @property (nullable, readonly, unsafe_unretained) NSWindow *window;
+ 87 | @property (nullable, readonly, unsafe_unretained) NSView *superview;
+ 88 | @property (copy) NSArray<__kindof NSView *> *subviews;
+    |                                              `- note: property declared here
+ 89 | - (BOOL)isDescendantOf:(NSView *)view;
+ 90 | - (nullable NSView *)ancestorSharedWithView:(NSView *)view;
+
+/Users/snowbear/projects/recorder/Sources/Recorder/App/SelfTest.swift:2643:42: warning: conformance of 'Timer' to 'Sendable' is unavailable; this is an error in the Swift 6 language mode
+2641 |             let session = try await CaptureSession(target: .windows(windows), settings: settings, packageURL: packageURL)
+2642 |             try await session.start()
+2643 |             let ticker = await MainActor.run {
+     |                                          `- warning: conformance of 'Timer' to 'Sendable' is unavailable; this is an error in the Swift 6 language mode
+2644 |                 Timer.scheduledTimer(withTimeInterval: 1.0 / 60, repeats: true) { _ in
+2645 |                     MainActor.assumeIsolated {
+
+/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.2.sdk/System/Library/Frameworks/Foundation.framework/Headers/NSTimer.h: 0: 43 | ///
+ 44 | /// Do not subclass ``Timer``.
+ 45 | @interface NSTimer : NSObject
+    +---  --------------------------------------------------------------
+    |1 | @_nonSendable(_assumed)
+    |  | `- note: conformance of 'Timer' to 'Sendable' has been explicitly marked unavailable here
+    +-------------------------------------------------------------------
+ 46 | 
+ 47 | /// Initializes a timer object with the specified invocation object.
+
+/Users/snowbear/projects/recorder/Sources/Recorder/App/SelfTest.swift:2655:35: warning: capture of 'ticker' with non-Sendable type 'Timer' in a '@Sendable' closure; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+2653 |             try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+2654 |             let avgCPU = (ProcStats.snapshot().cpuSeconds - startCPU) / Date().timeIntervalSince(started) * 100
+2655 |             await MainActor.run { ticker.invalidate() }
+     |                                   `- warning: capture of 'ticker' with non-Sendable type 'Timer' in a '@Sendable' closure; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+2656 |             let source = try await session.finish()
+2657 |             print("record-windows: \(count) animated windows, avg CPU \(String(format: "%.1f", avgCPU))% of one core (AC-REC-1 bar: < 25%)")
+
+/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.2.sdk/System/Library/Frameworks/Foundation.framework/Headers/NSTimer.h:45:12: note: class 'Timer' does not conform to the 'Sendable' protocol
+ 43 | ///
+ 44 | /// Do not subclass ``Timer``.
+ 45 | @interface NSTimer : NSObject
+    |            `- note: class 'Timer' does not conform to the 'Sendable' protocol
+ 46 | 
+ 47 | /// Initializes a timer object with the specified invocation object.
+
+/Users/snowbear/projects/recorder/Sources/Recorder/App/SelfTest.swift:5270:59: warning: conformance of 'TimelineHeaderDraggingInfo' to protocol 'NSDraggingInfo' crosses into main actor-isolated code and can cause data races; this is an error in the Swift 6 language mode [#ConformanceIsolation]
+5268 | 
+5269 | @MainActor
+5270 | private final class TimelineHeaderDraggingInfo: NSObject, NSDraggingInfo {
+     |                                                           |- warning: conformance of 'TimelineHeaderDraggingInfo' to protocol 'NSDraggingInfo' crosses into main actor-isolated code and can cause data races; this is an error in the Swift 6 language mode [#ConformanceIsolation]
+     |                                                           |- note: isolate this conformance to the main actor with '@MainActor'
+     |                                                           `- note: turn data races into runtime errors with '@preconcurrency'
+5271 |     let draggingPasteboard: NSPasteboard
+5272 |     let draggingLocation: NSPoint
+     :
+5274 |     var draggingSourceOperationMask: NSDragOperation { .copy }
+5275 |     var draggedImageLocation: NSPoint { draggingLocation }
+5276 |     var draggedImage: NSImage? { nil }
+     |         |- note: main actor-isolated property 'draggedImage' cannot satisfy nonisolated requirement
+     |         `- note: mark property 'draggedImage' 'nonisolated'
+5277 |     var draggingSource: Any? { nil }
+5278 |     var draggingSequenceNumber: Int { 1 }
+     :
+5286 |     }
+5287 |     func slideDraggedImage(to screenPoint: NSPoint) {}
+5288 |     override func namesOfPromisedFilesDropped(atDestination dropDestination: URL) -> [String]? { nil }
+     |                   |- note: main actor-isolated instance method 'namesOfPromisedFilesDropped(atDestination:)' cannot satisfy nonisolated requirement
+     |                   `- note: mark instance method 'namesOfPromisedFilesDropped(atDestination:)' 'nonisolated'
+5289 |     func resetSpringLoading() {}
+5290 |     func enumerateDraggingItems(options enumOpts: NSDraggingItemEnumerationOptions, for view: NSView?, classes classArray: [AnyClass],
+
+[#ConformanceIsolation]: <https://docs.swift.org/compiler/documentation/diagnostics/conformance-isolation>
+[#SendableClosureCaptures]: <https://docs.swift.org/compiler/documentation/diagnostics/sendable-closure-captures>
+[90/97] Compiling Recorder Hotkeys.swift
+/Users/snowbear/projects/recorder/Sources/Recorder/App/SelfTest.swift:1933:100: warning: main actor-isolated property 'subviews' can not be referenced from a nonisolated autoclosure
+1931 |                 defer { frameOverlay?.removeFromSuperview(); window.orderOut(nil) }
+1932 |                 if let flag = args.firstIndex(of: "--time") {
+1933 |                     func preview(in view: NSView) -> PreviewView? { (view as? PreviewView) ?? view.subviews.compactMap { preview(in: $0) }.first }
+     |                                                                                                    `- warning: main actor-isolated property 'subviews' can not be referenced from a nonisolated autoclosure
+1934 |                     guard args.indices.contains(flag + 1), let time = Double(args[flag + 1]), let view = preview(in: capture) else { throw Fail(description: "editor-png --time requires a valid output time") }
+1935 |                     window.orderFront(nil)
+
+/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.2.sdk/System/Library/Frameworks/AppKit.framework/Headers/NSView.h:88:46: note: property declared here
+ 86 | @property (nullable, readonly, unsafe_unretained) NSWindow *window;
+ 87 | @property (nullable, readonly, unsafe_unretained) NSView *superview;
+ 88 | @property (copy) NSArray<__kindof NSView *> *subviews;
+    |                                              `- note: property declared here
+ 89 | - (BOOL)isDescendantOf:(NSView *)view;
+ 90 | - (nullable NSView *)ancestorSharedWithView:(NSView *)view;
+
+/Users/snowbear/projects/recorder/Sources/Recorder/App/SelfTest.swift:2643:42: warning: conformance of 'Timer' to 'Sendable' is unavailable; this is an error in the Swift 6 language mode
+2641 |             let session = try await CaptureSession(target: .windows(windows), settings: settings, packageURL: packageURL)
+2642 |             try await session.start()
+2643 |             let ticker = await MainActor.run {
+     |                                          `- warning: conformance of 'Timer' to 'Sendable' is unavailable; this is an error in the Swift 6 language mode
+2644 |                 Timer.scheduledTimer(withTimeInterval: 1.0 / 60, repeats: true) { _ in
+2645 |                     MainActor.assumeIsolated {
+
+/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.2.sdk/System/Library/Frameworks/Foundation.framework/Headers/NSTimer.h: 0: 43 | ///
+ 44 | /// Do not subclass ``Timer``.
+ 45 | @interface NSTimer : NSObject
+    +---  --------------------------------------------------------------
+    |1 | @_nonSendable(_assumed)
+    |  | `- note: conformance of 'Timer' to 'Sendable' has been explicitly marked unavailable here
+    +-------------------------------------------------------------------
+ 46 | 
+ 47 | /// Initializes a timer object with the specified invocation object.
+
+/Users/snowbear/projects/recorder/Sources/Recorder/App/SelfTest.swift:2655:35: warning: capture of 'ticker' with non-Sendable type 'Timer' in a '@Sendable' closure; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+2653 |             try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+2654 |             let avgCPU = (ProcStats.snapshot().cpuSeconds - startCPU) / Date().timeIntervalSince(started) * 100
+2655 |             await MainActor.run { ticker.invalidate() }
+     |                                   `- warning: capture of 'ticker' with non-Sendable type 'Timer' in a '@Sendable' closure; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+2656 |             let source = try await session.finish()
+2657 |             print("record-windows: \(count) animated windows, avg CPU \(String(format: "%.1f", avgCPU))% of one core (AC-REC-1 bar: < 25%)")
+
+/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.2.sdk/System/Library/Frameworks/Foundation.framework/Headers/NSTimer.h:45:12: note: class 'Timer' does not conform to the 'Sendable' protocol
+ 43 | ///
+ 44 | /// Do not subclass ``Timer``.
+ 45 | @interface NSTimer : NSObject
+    |            `- note: class 'Timer' does not conform to the 'Sendable' protocol
+ 46 | 
+ 47 | /// Initializes a timer object with the specified invocation object.
+
+/Users/snowbear/projects/recorder/Sources/Recorder/App/SelfTest.swift:5270:59: warning: conformance of 'TimelineHeaderDraggingInfo' to protocol 'NSDraggingInfo' crosses into main actor-isolated code and can cause data races; this is an error in the Swift 6 language mode [#ConformanceIsolation]
+5268 | 
+5269 | @MainActor
+5270 | private final class TimelineHeaderDraggingInfo: NSObject, NSDraggingInfo {
+     |                                                           |- warning: conformance of 'TimelineHeaderDraggingInfo' to protocol 'NSDraggingInfo' crosses into main actor-isolated code and can cause data races; this is an error in the Swift 6 language mode [#ConformanceIsolation]
+     |                                                           |- note: isolate this conformance to the main actor with '@MainActor'
+     |                                                           `- note: turn data races into runtime errors with '@preconcurrency'
+5271 |     let draggingPasteboard: NSPasteboard
+5272 |     let draggingLocation: NSPoint
+     :
+5274 |     var draggingSourceOperationMask: NSDragOperation { .copy }
+5275 |     var draggedImageLocation: NSPoint { draggingLocation }
+5276 |     var draggedImage: NSImage? { nil }
+     |         |- note: main actor-isolated property 'draggedImage' cannot satisfy nonisolated requirement
+     |         `- note: mark property 'draggedImage' 'nonisolated'
+5277 |     var draggingSource: Any? { nil }
+5278 |     var draggingSequenceNumber: Int { 1 }
+     :
+5286 |     }
+5287 |     func slideDraggedImage(to screenPoint: NSPoint) {}
+5288 |     override func namesOfPromisedFilesDropped(atDestination dropDestination: URL) -> [String]? { nil }
+     |                   |- note: main actor-isolated instance method 'namesOfPromisedFilesDropped(atDestination:)' cannot satisfy nonisolated requirement
+     |                   `- note: mark instance method 'namesOfPromisedFilesDropped(atDestination:)' 'nonisolated'
+5289 |     func resetSpringLoading() {}
+5290 |     func enumerateDraggingItems(options enumOpts: NSDraggingItemEnumerationOptions, for view: NSView?, classes classArray: [AnyClass],
+
+[#ConformanceIsolation]: <https://docs.swift.org/compiler/documentation/diagnostics/conformance-isolation>
+[#SendableClosureCaptures]: <https://docs.swift.org/compiler/documentation/diagnostics/sendable-closure-captures>
+[91/97] Compiling Recorder OnboardingView.swift
+/Users/snowbear/projects/recorder/Sources/Recorder/App/SelfTest.swift:1933:100: warning: main actor-isolated property 'subviews' can not be referenced from a nonisolated autoclosure
+1931 |                 defer { frameOverlay?.removeFromSuperview(); window.orderOut(nil) }
+1932 |                 if let flag = args.firstIndex(of: "--time") {
+1933 |                     func preview(in view: NSView) -> PreviewView? { (view as? PreviewView) ?? view.subviews.compactMap { preview(in: $0) }.first }
+     |                                                                                                    `- warning: main actor-isolated property 'subviews' can not be referenced from a nonisolated autoclosure
+1934 |                     guard args.indices.contains(flag + 1), let time = Double(args[flag + 1]), let view = preview(in: capture) else { throw Fail(description: "editor-png --time requires a valid output time") }
+1935 |                     window.orderFront(nil)
+
+/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.2.sdk/System/Library/Frameworks/AppKit.framework/Headers/NSView.h:88:46: note: property declared here
+ 86 | @property (nullable, readonly, unsafe_unretained) NSWindow *window;
+ 87 | @property (nullable, readonly, unsafe_unretained) NSView *superview;
+ 88 | @property (copy) NSArray<__kindof NSView *> *subviews;
+    |                                              `- note: property declared here
+ 89 | - (BOOL)isDescendantOf:(NSView *)view;
+ 90 | - (nullable NSView *)ancestorSharedWithView:(NSView *)view;
+
+/Users/snowbear/projects/recorder/Sources/Recorder/App/SelfTest.swift:2643:42: warning: conformance of 'Timer' to 'Sendable' is unavailable; this is an error in the Swift 6 language mode
+2641 |             let session = try await CaptureSession(target: .windows(windows), settings: settings, packageURL: packageURL)
+2642 |             try await session.start()
+2643 |             let ticker = await MainActor.run {
+     |                                          `- warning: conformance of 'Timer' to 'Sendable' is unavailable; this is an error in the Swift 6 language mode
+2644 |                 Timer.scheduledTimer(withTimeInterval: 1.0 / 60, repeats: true) { _ in
+2645 |                     MainActor.assumeIsolated {
+
+/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.2.sdk/System/Library/Frameworks/Foundation.framework/Headers/NSTimer.h: 0: 43 | ///
+ 44 | /// Do not subclass ``Timer``.
+ 45 | @interface NSTimer : NSObject
+    +---  --------------------------------------------------------------
+    |1 | @_nonSendable(_assumed)
+    |  | `- note: conformance of 'Timer' to 'Sendable' has been explicitly marked unavailable here
+    +-------------------------------------------------------------------
+ 46 | 
+ 47 | /// Initializes a timer object with the specified invocation object.
+
+/Users/snowbear/projects/recorder/Sources/Recorder/App/SelfTest.swift:2655:35: warning: capture of 'ticker' with non-Sendable type 'Timer' in a '@Sendable' closure; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+2653 |             try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+2654 |             let avgCPU = (ProcStats.snapshot().cpuSeconds - startCPU) / Date().timeIntervalSince(started) * 100
+2655 |             await MainActor.run { ticker.invalidate() }
+     |                                   `- warning: capture of 'ticker' with non-Sendable type 'Timer' in a '@Sendable' closure; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+2656 |             let source = try await session.finish()
+2657 |             print("record-windows: \(count) animated windows, avg CPU \(String(format: "%.1f", avgCPU))% of one core (AC-REC-1 bar: < 25%)")
+
+/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.2.sdk/System/Library/Frameworks/Foundation.framework/Headers/NSTimer.h:45:12: note: class 'Timer' does not conform to the 'Sendable' protocol
+ 43 | ///
+ 44 | /// Do not subclass ``Timer``.
+ 45 | @interface NSTimer : NSObject
+    |            `- note: class 'Timer' does not conform to the 'Sendable' protocol
+ 46 | 
+ 47 | /// Initializes a timer object with the specified invocation object.
+
+/Users/snowbear/projects/recorder/Sources/Recorder/App/SelfTest.swift:5270:59: warning: conformance of 'TimelineHeaderDraggingInfo' to protocol 'NSDraggingInfo' crosses into main actor-isolated code and can cause data races; this is an error in the Swift 6 language mode [#ConformanceIsolation]
+5268 | 
+5269 | @MainActor
+5270 | private final class TimelineHeaderDraggingInfo: NSObject, NSDraggingInfo {
+     |                                                           |- warning: conformance of 'TimelineHeaderDraggingInfo' to protocol 'NSDraggingInfo' crosses into main actor-isolated code and can cause data races; this is an error in the Swift 6 language mode [#ConformanceIsolation]
+     |                                                           |- note: isolate this conformance to the main actor with '@MainActor'
+     |                                                           `- note: turn data races into runtime errors with '@preconcurrency'
+5271 |     let draggingPasteboard: NSPasteboard
+5272 |     let draggingLocation: NSPoint
+     :
+5274 |     var draggingSourceOperationMask: NSDragOperation { .copy }
+5275 |     var draggedImageLocation: NSPoint { draggingLocation }
+5276 |     var draggedImage: NSImage? { nil }
+     |         |- note: main actor-isolated property 'draggedImage' cannot satisfy nonisolated requirement
+     |         `- note: mark property 'draggedImage' 'nonisolated'
+5277 |     var draggingSource: Any? { nil }
+5278 |     var draggingSequenceNumber: Int { 1 }
+     :
+5286 |     }
+5287 |     func slideDraggedImage(to screenPoint: NSPoint) {}
+5288 |     override func namesOfPromisedFilesDropped(atDestination dropDestination: URL) -> [String]? { nil }
+     |                   |- note: main actor-isolated instance method 'namesOfPromisedFilesDropped(atDestination:)' cannot satisfy nonisolated requirement
+     |                   `- note: mark instance method 'namesOfPromisedFilesDropped(atDestination:)' 'nonisolated'
+5289 |     func resetSpringLoading() {}
+5290 |     func enumerateDraggingItems(options enumOpts: NSDraggingItemEnumerationOptions, for view: NSView?, classes classArray: [AnyClass],
+
+[#ConformanceIsolation]: <https://docs.swift.org/compiler/documentation/diagnostics/conformance-isolation>
+[#SendableClosureCaptures]: <https://docs.swift.org/compiler/documentation/diagnostics/sendable-closure-captures>
+[92/97] Compiling Recorder PerfSelfTest.swift
+/Users/snowbear/projects/recorder/Sources/Recorder/App/SelfTest.swift:1933:100: warning: main actor-isolated property 'subviews' can not be referenced from a nonisolated autoclosure
+1931 |                 defer { frameOverlay?.removeFromSuperview(); window.orderOut(nil) }
+1932 |                 if let flag = args.firstIndex(of: "--time") {
+1933 |                     func preview(in view: NSView) -> PreviewView? { (view as? PreviewView) ?? view.subviews.compactMap { preview(in: $0) }.first }
+     |                                                                                                    `- warning: main actor-isolated property 'subviews' can not be referenced from a nonisolated autoclosure
+1934 |                     guard args.indices.contains(flag + 1), let time = Double(args[flag + 1]), let view = preview(in: capture) else { throw Fail(description: "editor-png --time requires a valid output time") }
+1935 |                     window.orderFront(nil)
+
+/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.2.sdk/System/Library/Frameworks/AppKit.framework/Headers/NSView.h:88:46: note: property declared here
+ 86 | @property (nullable, readonly, unsafe_unretained) NSWindow *window;
+ 87 | @property (nullable, readonly, unsafe_unretained) NSView *superview;
+ 88 | @property (copy) NSArray<__kindof NSView *> *subviews;
+    |                                              `- note: property declared here
+ 89 | - (BOOL)isDescendantOf:(NSView *)view;
+ 90 | - (nullable NSView *)ancestorSharedWithView:(NSView *)view;
+
+/Users/snowbear/projects/recorder/Sources/Recorder/App/SelfTest.swift:2643:42: warning: conformance of 'Timer' to 'Sendable' is unavailable; this is an error in the Swift 6 language mode
+2641 |             let session = try await CaptureSession(target: .windows(windows), settings: settings, packageURL: packageURL)
+2642 |             try await session.start()
+2643 |             let ticker = await MainActor.run {
+     |                                          `- warning: conformance of 'Timer' to 'Sendable' is unavailable; this is an error in the Swift 6 language mode
+2644 |                 Timer.scheduledTimer(withTimeInterval: 1.0 / 60, repeats: true) { _ in
+2645 |                     MainActor.assumeIsolated {
+
+/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.2.sdk/System/Library/Frameworks/Foundation.framework/Headers/NSTimer.h: 0: 43 | ///
+ 44 | /// Do not subclass ``Timer``.
+ 45 | @interface NSTimer : NSObject
+    +---  --------------------------------------------------------------
+    |1 | @_nonSendable(_assumed)
+    |  | `- note: conformance of 'Timer' to 'Sendable' has been explicitly marked unavailable here
+    +-------------------------------------------------------------------
+ 46 | 
+ 47 | /// Initializes a timer object with the specified invocation object.
+
+/Users/snowbear/projects/recorder/Sources/Recorder/App/SelfTest.swift:2655:35: warning: capture of 'ticker' with non-Sendable type 'Timer' in a '@Sendable' closure; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+2653 |             try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+2654 |             let avgCPU = (ProcStats.snapshot().cpuSeconds - startCPU) / Date().timeIntervalSince(started) * 100
+2655 |             await MainActor.run { ticker.invalidate() }
+     |                                   `- warning: capture of 'ticker' with non-Sendable type 'Timer' in a '@Sendable' closure; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+2656 |             let source = try await session.finish()
+2657 |             print("record-windows: \(count) animated windows, avg CPU \(String(format: "%.1f", avgCPU))% of one core (AC-REC-1 bar: < 25%)")
+
+/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.2.sdk/System/Library/Frameworks/Foundation.framework/Headers/NSTimer.h:45:12: note: class 'Timer' does not conform to the 'Sendable' protocol
+ 43 | ///
+ 44 | /// Do not subclass ``Timer``.
+ 45 | @interface NSTimer : NSObject
+    |            `- note: class 'Timer' does not conform to the 'Sendable' protocol
+ 46 | 
+ 47 | /// Initializes a timer object with the specified invocation object.
+
+/Users/snowbear/projects/recorder/Sources/Recorder/App/SelfTest.swift:5270:59: warning: conformance of 'TimelineHeaderDraggingInfo' to protocol 'NSDraggingInfo' crosses into main actor-isolated code and can cause data races; this is an error in the Swift 6 language mode [#ConformanceIsolation]
+5268 | 
+5269 | @MainActor
+5270 | private final class TimelineHeaderDraggingInfo: NSObject, NSDraggingInfo {
+     |                                                           |- warning: conformance of 'TimelineHeaderDraggingInfo' to protocol 'NSDraggingInfo' crosses into main actor-isolated code and can cause data races; this is an error in the Swift 6 language mode [#ConformanceIsolation]
+     |                                                           |- note: isolate this conformance to the main actor with '@MainActor'
+     |                                                           `- note: turn data races into runtime errors with '@preconcurrency'
+5271 |     let draggingPasteboard: NSPasteboard
+5272 |     let draggingLocation: NSPoint
+     :
+5274 |     var draggingSourceOperationMask: NSDragOperation { .copy }
+5275 |     var draggedImageLocation: NSPoint { draggingLocation }
+5276 |     var draggedImage: NSImage? { nil }
+     |         |- note: main actor-isolated property 'draggedImage' cannot satisfy nonisolated requirement
+     |         `- note: mark property 'draggedImage' 'nonisolated'
+5277 |     var draggingSource: Any? { nil }
+5278 |     var draggingSequenceNumber: Int { 1 }
+     :
+5286 |     }
+5287 |     func slideDraggedImage(to screenPoint: NSPoint) {}
+5288 |     override func namesOfPromisedFilesDropped(atDestination dropDestination: URL) -> [String]? { nil }
+     |                   |- note: main actor-isolated instance method 'namesOfPromisedFilesDropped(atDestination:)' cannot satisfy nonisolated requirement
+     |                   `- note: mark instance method 'namesOfPromisedFilesDropped(atDestination:)' 'nonisolated'
+5289 |     func resetSpringLoading() {}
+5290 |     func enumerateDraggingItems(options enumOpts: NSDraggingItemEnumerationOptions, for view: NSView?, classes classArray: [AnyClass],
+
+[#ConformanceIsolation]: <https://docs.swift.org/compiler/documentation/diagnostics/conformance-isolation>
+[#SendableClosureCaptures]: <https://docs.swift.org/compiler/documentation/diagnostics/sendable-closure-captures>
+[93/97] Compiling Recorder Permissions.swift
+/Users/snowbear/projects/recorder/Sources/Recorder/App/SelfTest.swift:1933:100: warning: main actor-isolated property 'subviews' can not be referenced from a nonisolated autoclosure
+1931 |                 defer { frameOverlay?.removeFromSuperview(); window.orderOut(nil) }
+1932 |                 if let flag = args.firstIndex(of: "--time") {
+1933 |                     func preview(in view: NSView) -> PreviewView? { (view as? PreviewView) ?? view.subviews.compactMap { preview(in: $0) }.first }
+     |                                                                                                    `- warning: main actor-isolated property 'subviews' can not be referenced from a nonisolated autoclosure
+1934 |                     guard args.indices.contains(flag + 1), let time = Double(args[flag + 1]), let view = preview(in: capture) else { throw Fail(description: "editor-png --time requires a valid output time") }
+1935 |                     window.orderFront(nil)
+
+/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.2.sdk/System/Library/Frameworks/AppKit.framework/Headers/NSView.h:88:46: note: property declared here
+ 86 | @property (nullable, readonly, unsafe_unretained) NSWindow *window;
+ 87 | @property (nullable, readonly, unsafe_unretained) NSView *superview;
+ 88 | @property (copy) NSArray<__kindof NSView *> *subviews;
+    |                                              `- note: property declared here
+ 89 | - (BOOL)isDescendantOf:(NSView *)view;
+ 90 | - (nullable NSView *)ancestorSharedWithView:(NSView *)view;
+
+/Users/snowbear/projects/recorder/Sources/Recorder/App/SelfTest.swift:2643:42: warning: conformance of 'Timer' to 'Sendable' is unavailable; this is an error in the Swift 6 language mode
+2641 |             let session = try await CaptureSession(target: .windows(windows), settings: settings, packageURL: packageURL)
+2642 |             try await session.start()
+2643 |             let ticker = await MainActor.run {
+     |                                          `- warning: conformance of 'Timer' to 'Sendable' is unavailable; this is an error in the Swift 6 language mode
+2644 |                 Timer.scheduledTimer(withTimeInterval: 1.0 / 60, repeats: true) { _ in
+2645 |                     MainActor.assumeIsolated {
+
+/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.2.sdk/System/Library/Frameworks/Foundation.framework/Headers/NSTimer.h: 0: 43 | ///
+ 44 | /// Do not subclass ``Timer``.
+ 45 | @interface NSTimer : NSObject
+    +---  --------------------------------------------------------------
+    |1 | @_nonSendable(_assumed)
+    |  | `- note: conformance of 'Timer' to 'Sendable' has been explicitly marked unavailable here
+    +-------------------------------------------------------------------
+ 46 | 
+ 47 | /// Initializes a timer object with the specified invocation object.
+
+/Users/snowbear/projects/recorder/Sources/Recorder/App/SelfTest.swift:2655:35: warning: capture of 'ticker' with non-Sendable type 'Timer' in a '@Sendable' closure; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+2653 |             try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+2654 |             let avgCPU = (ProcStats.snapshot().cpuSeconds - startCPU) / Date().timeIntervalSince(started) * 100
+2655 |             await MainActor.run { ticker.invalidate() }
+     |                                   `- warning: capture of 'ticker' with non-Sendable type 'Timer' in a '@Sendable' closure; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+2656 |             let source = try await session.finish()
+2657 |             print("record-windows: \(count) animated windows, avg CPU \(String(format: "%.1f", avgCPU))% of one core (AC-REC-1 bar: < 25%)")
+
+/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.2.sdk/System/Library/Frameworks/Foundation.framework/Headers/NSTimer.h:45:12: note: class 'Timer' does not conform to the 'Sendable' protocol
+ 43 | ///
+ 44 | /// Do not subclass ``Timer``.
+ 45 | @interface NSTimer : NSObject
+    |            `- note: class 'Timer' does not conform to the 'Sendable' protocol
+ 46 | 
+ 47 | /// Initializes a timer object with the specified invocation object.
+
+/Users/snowbear/projects/recorder/Sources/Recorder/App/SelfTest.swift:5270:59: warning: conformance of 'TimelineHeaderDraggingInfo' to protocol 'NSDraggingInfo' crosses into main actor-isolated code and can cause data races; this is an error in the Swift 6 language mode [#ConformanceIsolation]
+5268 | 
+5269 | @MainActor
+5270 | private final class TimelineHeaderDraggingInfo: NSObject, NSDraggingInfo {
+     |                                                           |- warning: conformance of 'TimelineHeaderDraggingInfo' to protocol 'NSDraggingInfo' crosses into main actor-isolated code and can cause data races; this is an error in the Swift 6 language mode [#ConformanceIsolation]
+     |                                                           |- note: isolate this conformance to the main actor with '@MainActor'
+     |                                                           `- note: turn data races into runtime errors with '@preconcurrency'
+5271 |     let draggingPasteboard: NSPasteboard
+5272 |     let draggingLocation: NSPoint
+     :
+5274 |     var draggingSourceOperationMask: NSDragOperation { .copy }
+5275 |     var draggedImageLocation: NSPoint { draggingLocation }
+5276 |     var draggedImage: NSImage? { nil }
+     |         |- note: main actor-isolated property 'draggedImage' cannot satisfy nonisolated requirement
+     |         `- note: mark property 'draggedImage' 'nonisolated'
+5277 |     var draggingSource: Any? { nil }
+5278 |     var draggingSequenceNumber: Int { 1 }
+     :
+5286 |     }
+5287 |     func slideDraggedImage(to screenPoint: NSPoint) {}
+5288 |     override func namesOfPromisedFilesDropped(atDestination dropDestination: URL) -> [String]? { nil }
+     |                   |- note: main actor-isolated instance method 'namesOfPromisedFilesDropped(atDestination:)' cannot satisfy nonisolated requirement
+     |                   `- note: mark instance method 'namesOfPromisedFilesDropped(atDestination:)' 'nonisolated'
+5289 |     func resetSpringLoading() {}
+5290 |     func enumerateDraggingItems(options enumOpts: NSDraggingItemEnumerationOptions, for view: NSView?, classes classArray: [AnyClass],
+
+[#ConformanceIsolation]: <https://docs.swift.org/compiler/documentation/diagnostics/conformance-isolation>
+[#SendableClosureCaptures]: <https://docs.swift.org/compiler/documentation/diagnostics/sendable-closure-captures>
+[94/97] Compiling Recorder SelfTest.swift
+/Users/snowbear/projects/recorder/Sources/Recorder/App/SelfTest.swift:1933:100: warning: main actor-isolated property 'subviews' can not be referenced from a nonisolated autoclosure
+1931 |                 defer { frameOverlay?.removeFromSuperview(); window.orderOut(nil) }
+1932 |                 if let flag = args.firstIndex(of: "--time") {
+1933 |                     func preview(in view: NSView) -> PreviewView? { (view as? PreviewView) ?? view.subviews.compactMap { preview(in: $0) }.first }
+     |                                                                                                    `- warning: main actor-isolated property 'subviews' can not be referenced from a nonisolated autoclosure
+1934 |                     guard args.indices.contains(flag + 1), let time = Double(args[flag + 1]), let view = preview(in: capture) else { throw Fail(description: "editor-png --time requires a valid output time") }
+1935 |                     window.orderFront(nil)
+
+/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.2.sdk/System/Library/Frameworks/AppKit.framework/Headers/NSView.h:88:46: note: property declared here
+ 86 | @property (nullable, readonly, unsafe_unretained) NSWindow *window;
+ 87 | @property (nullable, readonly, unsafe_unretained) NSView *superview;
+ 88 | @property (copy) NSArray<__kindof NSView *> *subviews;
+    |                                              `- note: property declared here
+ 89 | - (BOOL)isDescendantOf:(NSView *)view;
+ 90 | - (nullable NSView *)ancestorSharedWithView:(NSView *)view;
+
+/Users/snowbear/projects/recorder/Sources/Recorder/App/SelfTest.swift:2643:42: warning: conformance of 'Timer' to 'Sendable' is unavailable; this is an error in the Swift 6 language mode
+2641 |             let session = try await CaptureSession(target: .windows(windows), settings: settings, packageURL: packageURL)
+2642 |             try await session.start()
+2643 |             let ticker = await MainActor.run {
+     |                                          `- warning: conformance of 'Timer' to 'Sendable' is unavailable; this is an error in the Swift 6 language mode
+2644 |                 Timer.scheduledTimer(withTimeInterval: 1.0 / 60, repeats: true) { _ in
+2645 |                     MainActor.assumeIsolated {
+
+/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.2.sdk/System/Library/Frameworks/Foundation.framework/Headers/NSTimer.h: 0: 43 | ///
+ 44 | /// Do not subclass ``Timer``.
+ 45 | @interface NSTimer : NSObject
+    +---  --------------------------------------------------------------
+    |1 | @_nonSendable(_assumed)
+    |  | `- note: conformance of 'Timer' to 'Sendable' has been explicitly marked unavailable here
+    +-------------------------------------------------------------------
+ 46 | 
+ 47 | /// Initializes a timer object with the specified invocation object.
+
+/Users/snowbear/projects/recorder/Sources/Recorder/App/SelfTest.swift:2655:35: warning: capture of 'ticker' with non-Sendable type 'Timer' in a '@Sendable' closure; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+2653 |             try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+2654 |             let avgCPU = (ProcStats.snapshot().cpuSeconds - startCPU) / Date().timeIntervalSince(started) * 100
+2655 |             await MainActor.run { ticker.invalidate() }
+     |                                   `- warning: capture of 'ticker' with non-Sendable type 'Timer' in a '@Sendable' closure; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+2656 |             let source = try await session.finish()
+2657 |             print("record-windows: \(count) animated windows, avg CPU \(String(format: "%.1f", avgCPU))% of one core (AC-REC-1 bar: < 25%)")
+
+/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.2.sdk/System/Library/Frameworks/Foundation.framework/Headers/NSTimer.h:45:12: note: class 'Timer' does not conform to the 'Sendable' protocol
+ 43 | ///
+ 44 | /// Do not subclass ``Timer``.
+ 45 | @interface NSTimer : NSObject
+    |            `- note: class 'Timer' does not conform to the 'Sendable' protocol
+ 46 | 
+ 47 | /// Initializes a timer object with the specified invocation object.
+
+/Users/snowbear/projects/recorder/Sources/Recorder/App/SelfTest.swift:5270:59: warning: conformance of 'TimelineHeaderDraggingInfo' to protocol 'NSDraggingInfo' crosses into main actor-isolated code and can cause data races; this is an error in the Swift 6 language mode [#ConformanceIsolation]
+5268 | 
+5269 | @MainActor
+5270 | private final class TimelineHeaderDraggingInfo: NSObject, NSDraggingInfo {
+     |                                                           |- warning: conformance of 'TimelineHeaderDraggingInfo' to protocol 'NSDraggingInfo' crosses into main actor-isolated code and can cause data races; this is an error in the Swift 6 language mode [#ConformanceIsolation]
+     |                                                           |- note: isolate this conformance to the main actor with '@MainActor'
+     |                                                           `- note: turn data races into runtime errors with '@preconcurrency'
+5271 |     let draggingPasteboard: NSPasteboard
+5272 |     let draggingLocation: NSPoint
+     :
+5274 |     var draggingSourceOperationMask: NSDragOperation { .copy }
+5275 |     var draggedImageLocation: NSPoint { draggingLocation }
+5276 |     var draggedImage: NSImage? { nil }
+     |         |- note: main actor-isolated property 'draggedImage' cannot satisfy nonisolated requirement
+     |         `- note: mark property 'draggedImage' 'nonisolated'
+5277 |     var draggingSource: Any? { nil }
+5278 |     var draggingSequenceNumber: Int { 1 }
+     :
+5286 |     }
+5287 |     func slideDraggedImage(to screenPoint: NSPoint) {}
+5288 |     override func namesOfPromisedFilesDropped(atDestination dropDestination: URL) -> [String]? { nil }
+     |                   |- note: main actor-isolated instance method 'namesOfPromisedFilesDropped(atDestination:)' cannot satisfy nonisolated requirement
+     |                   `- note: mark instance method 'namesOfPromisedFilesDropped(atDestination:)' 'nonisolated'
+5289 |     func resetSpringLoading() {}
+5290 |     func enumerateDraggingItems(options enumOpts: NSDraggingItemEnumerationOptions, for view: NSView?, classes classArray: [AnyClass],
+
+[#ConformanceIsolation]: <https://docs.swift.org/compiler/documentation/diagnostics/conformance-isolation>
+[#SendableClosureCaptures]: <https://docs.swift.org/compiler/documentation/diagnostics/sendable-closure-captures>
+[94/97] Write Objects.LinkFileList
+[95/97] Linking Recorder
+[96/97] Applying Recorder
+Build complete! (16.26s)
+warning: '--build-system native' has been deprecated and will be removed in a future release; please report an issue at https://github.com/swiftlang/swift-package-manager/issues if you are unable to adopt the default build system.

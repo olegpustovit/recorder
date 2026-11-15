@@ -1,0 +1,4 @@
+Recording fixture/proofs: /var/folders/km/z2_l_55s52dd6vwhkkqj5m000000gn/T/recorder-layer-recording-parity-2267D73E-F937-4F61-864C-063BF0D951E6.recorder
+sandbox_extension_issue_file_to_process failed for /tmp/Recorder-T713-Check.app: 1 (Operation not permitted)
+layer-recording-parity mixed-rate-0-t4.0167 maxDelta=127
+SELFTEST layer-recording-parity failed: layer-recording-parity mixed-rate-0-t4.0167 maxDelta=127

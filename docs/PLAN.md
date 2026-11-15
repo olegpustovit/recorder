@@ -3,6 +3,11 @@
 This file is **both the plan and the progress tracker**. `docs/SPEC.md` says *what* (mockups, behaviour, `AC-*`);
 this file says *in what order, in which file, with what code, and how to prove it*.
 
+**Paused handoff (2026-11-15):** the user requested a saved checkpoint for another agent. Read
+[RESUME.md](RESUME.md) before continuing. Last completed task: T-712. T-713 is saved as unfinished WIP: Core
+162/162 and lift identity 49 samples pass, but actual preview/export parity fails maxDelta=127 at the first
+mixed-speed sample. It remains unchecked. No automatic continuation while paused.
+
 ## 0. Protocol (read every session)
 
 User update (2026-10-16): visual deviations are accepted ("idc about deviations feel free to go"). Do not hold
@@ -508,6 +513,11 @@ older builds ignore those points and cannot preserve their phase. Recording laye
     neither padding nor retained neighbors. Audio collisions may change lanes while preserving volume/mute/gain.
     Rendering and vertical gestures remain T-713/T-714; no recording-layer visual acceptance inferred yet.
 - [ ] **T-713 Render: recording layers through the screen pass**
+  - PAUSED WIP 2026-11-15: renderer/cache/composition and native tests are saved in the handoff checkpoint.
+    `make test` last passed 162/162; `lift-identity` passed 49 samples at maxDelta=0. `layer-recording-parity`
+    fails `mixed-rate-0-t4.0167` at maxDelta=127. Temporary PTS diagnostics remain; their build was interrupted.
+    Rebuild, diagnose preview/reader frame selection, and keep strict parity assertions. See `docs/RESUME.md`
+    and durable logs/PNG pairs under `docs/handoff/2026-11-15-recording-layers/`. No task completion claimed.
   - `FrameSource.makeComposition`: a `.recording` layer inserts from the already-open screen asset (keep-alive rule
     in that file applies) into its layer track at `mediaStart … + duration × mediaRate`, scaled for `mediaRate`.
   - `EditorModel.rebuildPathsIfNeeded`: one `CameraPath(zooms: scene.zooms, cursor:, spring:, duration:)` per
@@ -1422,3 +1432,5 @@ T-705c · 2026-11-15 · Corrected reversed red/green bands in orientation fixtur
 T-711 · 2026-11-15 · Added opt-in native dual4K60 benchmark with actual presented timestamps and sampled main/layer PTS, standard framebuffer-only playback, full2160p60HEVC export validation/reporting and native event-loop dispatch. Native build and ordinary menu-actions/tracks pass. Two3600-frame moving fixtures generated; actual playback attempts correctly refused occluded windows. Final LaunchServices preflight plus read-onlyCGSession confirmed lockedconsole; no wake/unlock attempted. Task remains[~]: noASpreviewFPS/dualexporttime orIntelresult claimed. User requested no further prompts, so continuing software tasks while hardware/visible-session evidence remains outstanding.
 
 T-712 · 2026-11-15 · Added recording layers/mediaRate/scene and original camera context, lift/insert using shared clock/slicing/paste/collision operations, conditional v4 saves with v3 defaults and future-header refusal. Preserved fades/color/hidecursor, carried screen audio envelopes/settings, independent global-lane output positions and safe owned padding. Copies clear ownership and refresh scene IDs; unchanged spanning effects can rejoin while later neighbor edits survive. Trim context remains immutable and insertion clips scene tails. Native targetedlift4/4/full160/160 pass; app compiles and diffcheck clean. Audio collision routing can choose another lane; recording render/gestures still pending713/714. Unrelated config modifications remain untouched.
+
+T-713 paused handoff · 2026-11-15 · User paused goal and requested a repository handoff usable by another agent. Saved unfinished renderer/native tests and temporary PTS diagnostics as explicit WIP; T713 stays unchecked. Last full Core162/162 and lift-identity49 exact samples pass; actual Preview/export parity fails first mixed2xsample at4.0167,maxDelta127. Diagnostic build interrupted, so rebuild first. Durable logs and PNG pairs copied into docs/handoff; docs/RESUME.md records code map, commands, user review waiver, pending hardware measurements and next tasks. No agent compiler/test remained active at handoff; unrelated CLAUDE.md/Makefile/pack.lock edits preserved.

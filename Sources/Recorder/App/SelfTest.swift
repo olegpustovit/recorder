@@ -3473,6 +3473,8 @@ enum SelfTest {
                 guard model.project.keystrokeClips.isEmpty, model.project.zooms.count == 1 else { throw Fail(message: "Undo full-length layer") }
             }
         },
+        "layer-recording-parity": { @MainActor args in try await RecordingLayerSelfTest.runParity(args) },
+        "lift-identity": { @MainActor args in try await RecordingLayerSelfTest.runLiftIdentity(args) },
         "timeline-reorder": { @MainActor args in try await runTimelineReorderSelfTest(args) },
         "timeline-selection": { @MainActor args in
             try runLaneGroupSelectionSelfTest()

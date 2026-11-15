@@ -137,12 +137,40 @@ func makeComposition(package: URL, project: Project, micURL: URL? = nil) async t
     let map = TimeMap(project.clips)
     for lane in project.videoLayerLanes {
         var previousEnd = 0.0
-        for layer in project.layers.filter({ $0.kind == .video && $0.track == lane }).sorted(by: { $0.start < $1.start }) {
+        for layer in project.layers.filter({ $0.kind != .image && $0.track == lane }).sorted(by: { $0.start < $1.start }) {
             guard lane >= 0, layer.start.isFinite, layer.end.isFinite, layer.end - layer.start >= 0.5 - 1e-9,
                   layer.mediaStart.isFinite, layer.mediaStart >= 0, let output = map.outputTime(atSource: layer.start), output >= previousEnd - 1e-9 else {
                 throw FrameSourceError.invalidProject("Invalid video layer \(layer.id)")
             }
             previousEnd = output + layer.end - layer.start
+            if layer.kind == .recording {
+                let rate = layer.mediaRate ?? 1, length = layer.end - layer.start
+                guard layer.file == "screen.mov", rate.isFinite, rate > 0,
+                      layer.mediaStart + length * rate <= project.source.duration + 1.0 / 600 else {
+                    throw FrameSourceError.invalidProject("Recording layer exceeds its media")
+                }
+                if layerTracks[lane] == nil {
+                    guard let track = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else { throw FrameSourceError.trackCreationFailed }
+                    layerTracks[lane] = track
+                }
+                let scene = project.recordingScene(for: layer)
+                let edges = scene.project.windowShots.flatMap { [$0.start, $0.end] }
+                    .map { ($0 - scene.sourceStart) / scene.sourceRate }.filter { $0 > 0 && $0 < length }.sorted()
+                var local = 0.0
+                let outputEnd = CMTime(seconds: output + length, preferredTimescale: timescale)
+                var at = CMTime(seconds: output, preferredTimescale: timescale)
+                for end in edges + [length] where end > local + 1e-9 {
+                    let range = CMTimeRange(start: CMTime(seconds: layer.mediaStart + local * rate, preferredTimescale: timescale),
+                                            end: CMTime(seconds: layer.mediaStart + end * rate, preferredTimescale: timescale))
+                    let duration = end >= length - 1e-9 ? outputEnd - at : CMTime(seconds: output + end, preferredTimescale: timescale) - at
+                    let window = scene.project.windowIndex(atSource: scene.sourceStart + local * scene.sourceRate)
+                    try layerTracks[lane]!.insertTimeRange(range, of: windowSources[window], at: at)
+                    layerTracks[lane]!.scaleTimeRange(CMTimeRange(start: at, duration: range.duration), toDuration: duration)
+                    at = at + duration; local = end
+                }
+                layerTransforms[layer.file] = .identity
+                continue
+            }
             let url = package.appendingPathComponent(layer.file).standardizedFileURL.resolvingSymlinksInPath()
             guard layer.file.hasPrefix("media/"), !layer.file.split(separator: "/").contains(".."), url.path.hasPrefix(packageRoot) else { throw FrameSourceError.invalidMediaPath(layer.file) }
             guard FileManager.default.fileExists(atPath: url.path) else { continue }

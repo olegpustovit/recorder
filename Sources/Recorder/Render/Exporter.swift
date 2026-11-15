@@ -528,6 +528,7 @@ final class FrameHold {
             }
         }
         guard let current else { return nil }
+        print("RECORDPTS reader request=\(t) display=\(CMSampleBufferGetPresentationTimeStamp(current).seconds) track=\(output.track.trackID)")
         return CMSampleBufferGetImageBuffer(current)
     }
 }
@@ -652,9 +653,23 @@ enum ExporterSelfTest {
             times.insert(start + length / 2)
             times.insert(start + min(layer.fadeIn ?? 0, length) / 2)
             times.insert(start + length - min(layer.fadeOut ?? 0, length) / 2)
-            if layer.kind == .video, length > 1.1 {
+            if layer.kind != .image, length > 1.1 {
                 times.insert(start + 1 - 1.0 / 60)
                 times.insert(start + 1 + 1.0 / 60)
+            }
+            if layer.kind == .recording {
+                let history = project.recordingScene(for: layer)
+                var edges: [Double] = history.project.zooms.flatMap { [$0.start, $0.end] }
+                for mask in history.project.masks {
+                    edges += [mask.start, mask.end, mask.start + mask.transition / 2, mask.end - mask.transition / 2]
+                }
+                edges += history.project.windowShots.flatMap { [$0.start, $0.end] }
+                for edge in edges {
+                    let local = (edge - history.sourceStart) / history.sourceRate
+                    for offset in [-1.0 / 60, 0, 1.0 / 60, 0.1] where local + offset > 0 && local + offset < length {
+                        times.insert(start + local + offset)
+                    }
+                }
             }
         }
         let orderedTimes = times.filter { $0 >= 0 && $0 < duration }.sorted()
@@ -749,20 +764,23 @@ enum ExporterSelfTest {
             await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
                 player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero) { _ in cont.resume() }
             }
-            guard let previewPB = previewOutput.copyPixelBuffer(forItemTime: time, itemTimeForDisplay: nil),
-                  let previewTex = textureCache.texture(from: previewPB) else {
-                throw SelfTestArgError.usage("no preview-path pixel buffer at t=\(t)")
-            }
-            guard let exportPB = hold.imageBuffer(upTo: t), let exportTex = textureCache.texture(from: exportPB) else {
-                throw SelfTestArgError.usage("no export-path pixel buffer at t=\(t)")
+            let previewPB = previewOutput.copyPixelBuffer(forItemTime: time, itemTimeForDisplay: nil)
+            let exportPB = hold.imageBuffer(upTo: t)
+            let previewTex = previewPB.flatMap { textureCache.texture(from: $0) }
+            let exportTex = exportPB.flatMap { textureCache.texture(from: $0) }
+            let screenExpected = t < timeMap.outputDuration && project.clipIndex(atOutput: t).map { !project.clips[$0].isEmpty } == true
+            guard !screenExpected || (previewTex != nil && exportTex != nil) else {
+                throw SelfTestArgError.usage("no required main pixel buffer at t=\(t)")
             }
 
             // (2) pixel format / range: both request identical 420v + Metal-compat settings above;
             // confirm no implicit scaling snuck in by checking the decoded buffer dimensions match.
-            let previewSize = (CVPixelBufferGetWidth(previewPB), CVPixelBufferGetHeight(previewPB))
-            let exportSize = (CVPixelBufferGetWidth(exportPB), CVPixelBufferGetHeight(exportPB))
-            guard previewSize == exportSize else {
-                throw SelfTestArgError.usage("decoded size mismatch at t=\(t): preview=\(previewSize) export=\(exportSize)")
+            if let previewPB, let exportPB {
+                let previewSize = (CVPixelBufferGetWidth(previewPB), CVPixelBufferGetHeight(previewPB))
+                let exportSize = (CVPixelBufferGetWidth(exportPB), CVPixelBufferGetHeight(exportPB))
+                guard previewSize == exportSize else {
+                    throw SelfTestArgError.usage("decoded size mismatch at t=\(t): preview=\(previewSize) export=\(exportSize)")
+                }
             }
 
             var previewCameraTex: FrameState.Texture?
@@ -783,7 +801,7 @@ enum ExporterSelfTest {
 
             // (3) both call `makeFrameState` with the identical outputTime/size (see `render` above).
             var previewLayers: [Int: FrameState.Texture] = [:]
-            let activeLanes = Set(project.layerStates(atOutput: t).filter { $0.block.kind == .video }.map { $0.block.track })
+            let activeLanes = Set(project.layerStates(atOutput: t).filter { $0.block.kind != .image }.map { $0.block.track })
             for (lane, decoder) in layerPlayers where activeLanes.contains(lane) {
                 _ = await decoder.player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
                 guard let buffer = decoder.output.copyPixelBuffer(forItemTime: time, itemTimeForDisplay: nil), let texture = textureCache.texture(from: buffer) else { throw SelfTestArgError.usage("No layer preview frame on lane \(lane) at \(t)") }
