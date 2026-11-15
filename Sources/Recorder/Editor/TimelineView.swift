@@ -144,7 +144,24 @@ final class TimelineView: NSView {
         needsDisplay = true
     }
 
-    func selectTool() { exitSplitMode(); exitEraser() }
+    func selectTool() { exitSplitMode(); exitEraser(); exitPencil() }
+
+    // MARK: - Pencil (2026-11-15): `P` / toolbar pencil; drag in an effect lane to draw a block that long.
+    // The pointer only selects (click, or box-select across every lane), so drawing needs its own tool.
+    private(set) var pencilMode = false
+
+    func togglePencil() {
+        if pencilMode { exitPencil(); return }
+        exitSplitMode(); exitEraser()
+        pencilMode = true
+        onNavigationChange?()
+    }
+
+    private func exitPencil() {
+        guard pencilMode else { return }
+        pencilMode = false
+        onNavigationChange?()
+    }
 
     // MARK: - Pause eraser (2026-10-16): `E` / toolbar eraser; drag across the timeline to remove the mic pauses it touches.
     private(set) var eraserMode = false
@@ -152,7 +169,7 @@ final class TimelineView: NSView {
 
     func toggleEraser() {
         if eraserMode { exitEraser(); return }
-        exitSplitMode()
+        exitSplitMode(); exitPencil()
         eraserMode = true
         needsDisplay = true
         onNavigationChange?()
@@ -1065,15 +1082,24 @@ final class TimelineView: NSView {
         for (i, clip) in clips.enumerated() {
             let outEnd = outStart + clip.outputDuration
             defer { outStart = outEnd }
-            var rect = targetRects[i]
-            if let eased, let fromRects, i < fromRects.count { rect = lerp(fromRects[i], targetRects[i], eased) }
-            guard rect.width > 0.5, !clip.isEmpty else { continue }
-            let label = "Clip \(i + 1)  ·  \(formatSpeed(clip.speed))×"
+            // Joined clips (⌘J) draw once, from the group's first clip, as one block with faint seams.
+            let run = project.clipGroup(containing: i)
+            guard run.lowerBound == i else { continue }
+            func animatedRect(_ j: Int) -> CGRect {
+                guard let eased, let fromRects, j < fromRects.count else { return targetRects[j] }
+                return lerp(fromRects[j], targetRects[j], eased)
+            }
+            let pieces = run.map(animatedRect)
+            let rect = pieces.dropFirst().reduce(pieces[0]) { $0.union($1) }
+            guard rect.width > 0.5, run.count > 1 || !clip.isEmpty else { continue }
+            let label = run.count > 1 ? "Clip \(i + 1)  ·  \(run.count) joined" : "Clip \(i + 1)  ·  \(formatSpeed(clip.speed))×"
             let landing = clipDragActive && clipDragLanding.contains(i)
             NSGraphicsContext.saveGraphicsState()
             if landing { NSGraphicsContext.current?.cgContext.setAlpha(0.45) }
             drawBlock(rect, fill: Theme.clip, tornLeft: false, tornRight: false, label: label,
                       selected: !clipDragActive && model?.selectedClips.contains(i) == true, tag: clip.color)
+            Theme.textPrimary.withAlphaComponent(0.18).setFill()
+            for piece in pieces.dropFirst() { CGRect(x: piece.minX - 1.5, y: rect.minY + 4, width: 1, height: rect.height - 8).fill() }
             NSGraphicsContext.restoreGraphicsState()
             if landing {
                 Theme.accent.setStroke()
@@ -1484,7 +1510,7 @@ final class TimelineView: NSView {
 
     /// `Esc` exits split mode; the ✂ toolbar button and `S` toggle the sticky half of it.
     func toggleSplitModeSticky() {
-        if splitModeSticky { exitSplitMode() } else { exitEraser(); splitModeSticky = true; needsDisplay = true; updateHoverCallback() }
+        if splitModeSticky { exitSplitMode() } else { exitEraser(); exitPencil(); splitModeSticky = true; needsDisplay = true; updateHoverCallback() }
         onNavigationChange?()
     }
 
@@ -1627,22 +1653,12 @@ final class TimelineView: NSView {
         if let cut = hitCutBubble(p, model) { return cut }
 
         if let hit = hitClipLane(p, model) { return hit }
-        for layer in model.project.layers {
-            guard let id = UUID(uuidString: layer.id), let rect = mediaLayerRect(layer), rect.contains(p) else { continue }
+        for (id, rect) in blockRects(model) where p.x >= rect.minX && p.x <= rect.maxX && p.y >= rect.minY && p.y <= rect.maxY {
             let zone = edgeZone(width: rect.width)
             if p.x <= rect.minX + zone { return .blockEdge(id, .leading) }
             if p.x >= rect.maxX - zone { return .blockEdge(id, .trailing) }
             return .blockBody(id)
         }
-        if model.project.source.hasCamera, let hit = hitBlockLane(p, model, lane: .camera, blocks: model.project.cameraClips.map { ($0.id, $0.start, $0.end) }) { return hit }
-        if let hit = hitBlockLane(p, model, lane: .zoom, blocks: zoomLaneBlocks(model.project).map { ($0.id, $0.start, $0.end) }) { return hit }
-        if let hit = hitBlockLane(p, model, lane: .keys, blocks: model.project.keystrokeClips.map { ($0.id, $0.start, $0.end) }) { return hit }
-        if hasLayoutLane, let hit = hitBlockLane(p, model, lane: .layout, blocks: model.project.layouts.map { ($0.id, $0.start, $0.end) }) {
-            return hit
-        }
-        if let hit = hitBlockLane(p, model, lane: .mask, blocks: model.project.masks.map { ($0.id, $0.start, $0.end) }) { return hit }
-        if let hit = hitBlockLane(p, model, lane: .text, blocks: model.project.texts.map { ($0.id, $0.start, $0.end) }) { return hit }
-        if laneHeight(.window) > 0, let hit = hitBlockLane(p, model, lane: .window, blocks: model.project.windowShots.map { ($0.id, $0.start, $0.end) }) { return hit }
         for audio in model.project.audioClips {
             guard let id = UUID(uuidString: audio.id) else { continue }
             for segment in model.project.audioSegments(audio) {
@@ -1670,32 +1686,41 @@ final class TimelineView: NSView {
             guard !clip.isEmpty else { continue }
             let x0 = x(forOutput: outStart), x1 = x(forOutput: outEnd)
             guard p.x >= x0, p.x <= x1 else { continue }
-            let zone = edgeZone(width: x1 - x0)
-            if p.x <= x0 + zone { return .clipEdge(i, .leading) }
-            if p.x >= x1 - zone { return .clipEdge(i, .trailing) }
+            let zone = edgeZone(width: x1 - x0), run = model.project.clipGroup(containing: i)
+            if p.x <= x0 + zone, i == run.lowerBound { return .clipEdge(i, .leading) }
+            if p.x >= x1 - zone, i == run.upperBound { return .clipEdge(i, .trailing) }
             return .clipBody(i)
         }
         return nil
     }
 
-    /// Shared by the zoom/layout lanes: `blocks` visible span(s) come from the same
-    /// `visibleSegments` the drawing code uses, so you can only grab what's actually on screen.
-    private func hitBlockLane(_ p: CGPoint, _ model: EditorModel, lane: Lane, blocks: [(id: String, start: Double, end: Double)]) -> TimelineHit? {
-        let row = laneRow(lane)
-        guard p.y >= row.minY, p.y <= row.maxY else { return nil }
-        let timeMap = model.timeMap
-        for b in blocks {
-            for segment in lane == .zoom ? zoomSegments(start: b.start, end: b.end, project: model.project, timeMap: timeMap)
-                                         : visibleSegments(start: b.start, end: b.end, project: model.project, timeMap: timeMap) {
-                let x0 = x(forOutput: segment.outStart), x1 = x(forOutput: segment.outEnd)
-                guard p.x >= x0, p.x <= x1, let uuid = UUID(uuidString: b.id) else { continue }
-                let zone = edgeZone(width: x1 - x0)
-                if p.x <= x0 + zone { return .blockEdge(uuid, .leading) }
-                if p.x >= x1 - zone { return .blockEdge(uuid, .trailing) }
-                return .blockBody(uuid)
+    /// Every visible block span on the media-layer and effect lanes (hit-testing and box selection). Each span comes
+    /// from the same `visibleSegments`/`zoomSegments` the drawing code uses, so you can only grab what's on screen.
+    private func blockRects(_ model: EditorModel) -> [(id: UUID, rect: CGRect)] {
+        let project = model.project, timeMap = model.timeMap
+        var result = project.layers.compactMap { layer in
+            UUID(uuidString: layer.id).flatMap { id in mediaLayerRect(layer).map { (id, $0) } }
+        }
+        var lanes: [(Lane, [(id: String, start: Double, end: Double)])] = []
+        if project.source.hasCamera { lanes.append((.camera, project.cameraClips.map { ($0.id, $0.start, $0.end) })) }
+        lanes.append((.zoom, zoomLaneBlocks(project).map { ($0.id, $0.start, $0.end) }))
+        lanes.append((.keys, project.keystrokeClips.map { ($0.id, $0.start, $0.end) }))
+        if hasLayoutLane { lanes.append((.layout, project.layouts.map { ($0.id, $0.start, $0.end) })) }
+        lanes.append((.mask, project.masks.map { ($0.id, $0.start, $0.end) }))
+        lanes.append((.text, project.texts.map { ($0.id, $0.start, $0.end) }))
+        if laneHeight(.window) > 0 { lanes.append((.window, project.windowShots.map { ($0.id, $0.start, $0.end) })) }
+        for (lane, blocks) in lanes {
+            let row = laneRow(lane)
+            for b in blocks {
+                guard let id = UUID(uuidString: b.id) else { continue }
+                for segment in lane == .zoom ? zoomSegments(start: b.start, end: b.end, project: project, timeMap: timeMap)
+                                             : visibleSegments(start: b.start, end: b.end, project: project, timeMap: timeMap) {
+                    let x0 = x(forOutput: segment.outStart), x1 = x(forOutput: segment.outEnd)
+                    result.append((id, CGRect(x: x0, y: row.minY, width: x1 - x0, height: row.height)))
+                }
             }
         }
-        return nil
+        return result
     }
 
     /// Every seam with a cut/trim to restore, as (which clip it follows, `-1` = the head, its
@@ -1764,7 +1789,7 @@ final class TimelineView: NSView {
         case .playhead, .clipEdge, .blockEdge: return .resizeLeftRight
         case .blockBody, .clipBody: return .openHand
         case .cutBubble: return .pointingHand
-        case .emptyLane: return .crosshair
+        case .emptyLane: return pencilMode ? .crosshair : .arrow
         case .ruler, .none: return .arrow
         }
     }
@@ -1879,6 +1904,7 @@ final class TimelineView: NSView {
             let menu = NSMenu()
             menu.addItem(colorMenuItem())
             if canJoinSelection { menu.addItem(actionItem("Join Clips (⌘J)", action: #selector(joinSelection))) }
+        if canUngroupSelection { menu.addItem(actionItem("Ungroup Clips (⇧⌘J)", action: #selector(ungroupSelection))) }
             if model.selectedClips.isEmpty, model.selection.allSatisfy({ id in model.project.audioClips.contains { $0.id == id.uuidString } }) {
                 let move = actionItem("Move to New Track", action: #selector(menuMoveAudioToNewTrack))
                 move.image = NSImage(systemSymbolName: "rectangle.stack.badge.plus", accessibilityDescription: nil)
@@ -2044,6 +2070,7 @@ final class TimelineView: NSView {
         let menu = NSMenu()
         menu.addItem(actionItem("Split at Playhead (C)", action: #selector(menuSplitAtPlayhead)))
         if canJoinSelection { menu.addItem(actionItem("Join Clips (⌘J)", action: #selector(joinSelection))) }
+        if canUngroupSelection { menu.addItem(actionItem("Ungroup Clips (⇧⌘J)", action: #selector(ungroupSelection))) }
         let speed = NSMenuItem(title: "Speed", action: nil, keyEquivalent: "")
         speed.submenu = speedSubmenu(index: index)
         menu.addItem(speed)
@@ -2094,6 +2121,16 @@ final class TimelineView: NSView {
     }
 
     var canJoinSelection: Bool { joinedSelection() != nil }
+    var canUngroupSelection: Bool {
+        guard let model else { return false }
+        return model.selectedClips.contains { model.project.clips.indices.contains($0) && model.project.clips[$0].group != nil }
+    }
+
+    @objc func ungroupSelection() {
+        guard let model, canUngroupSelection else { NSSound.beep(); return }
+        let selected = model.selectedClips
+        model.edit("Ungroup Clips") { $0.ungroupClips(selected) }
+    }
 
     @objc func joinSelection() {
         guard let model, let joined = joinedSelection() else { NSSound.beep(); return }
@@ -2512,6 +2549,8 @@ final class TimelineView: NSView {
             selectTool()
         } else if !cmd, chars?.lowercased() == "e" { // `E` = pause eraser
             toggleEraser()
+        } else if !cmd, chars?.lowercased() == "p" { // `P` = pencil: draw blocks
+            togglePencil()
         } else if !cmd, !shift, chars?.lowercased() == "z" { // `Z` = add a zoom at the playhead
             addZoom(atOutput: model?.playhead ?? 0)
         } else if !cmd, !shift, chars?.lowercased() == "t", let model { // `T` = add text at the playhead
@@ -2643,7 +2682,7 @@ final class TimelineView: NSView {
         case .clipBody(let i):
             guard let model else { return }
             if event.modifierFlags.contains(.shift) {
-                if model.selectedClips.contains(i) { model.selectedClips.remove(i) }
+                if model.selectedClips.contains(i) { model.selectedClips.subtract(model.project.clipGroup(containing: i)) }
                 else { model.selectedClips.insert(i) }
                 model.selection = []
                 return
@@ -2675,7 +2714,7 @@ final class TimelineView: NSView {
         case .cutBubble(let afterClip):
             showRestorePopover(afterClip: afterClip, at: p)
         case .emptyLane(let lane, let source):
-            if !event.modifierFlags.contains(.shift), lane != .clip, let model {
+            if pencilMode, !event.modifierFlags.contains(.shift), lane != .clip, let model {
                 model.beginGesture()
                 var id: UUID?
                 let sceneID = sceneZoomLayer?.id
@@ -2927,7 +2966,8 @@ final class TimelineView: NSView {
             let audio = model.project.audioClips.filter { audio in
                 model.project.audioSegments(audio).contains { audioRect(audio, output: $0.output).intersects(rect) }
             }.compactMap { UUID(uuidString: $0.id) }
-            model.selection = (NSEvent.modifierFlags.contains(.shift) ? marqueeOriginalSelection.blocks : []).union(audio)
+            let blocks = blockRects(model).filter { $0.rect.intersects(rect) }.map(\.id)
+            model.selection = (NSEvent.modifierFlags.contains(.shift) ? marqueeOriginalSelection.blocks : []).union(audio).union(blocks)
             needsDisplay = true
             return
         }
@@ -3098,6 +3138,7 @@ final class TimelineView: NSView {
         if isSplitMode { exitSplitMode(); return }
         if eraserDrag != nil { eraserDrag = nil; needsDisplay = true; return }
         if eraserMode { exitEraser(); return }
+        if pencilMode { exitPencil(); return }
         deselect()
     }
 
@@ -3153,11 +3194,13 @@ final class TimelineView: NSView {
         let (snapped, didSnap) = snappedOutput(raw, disabled: snapDisabled)
         snapGuideX = didSnap ? x(forOutput: snapped) : nil
         let target = beginSourceStart + (snapped - priorOutput) * speed
+        var placed: Int?
         model.update { project in
             if let dragProject { project = dragProject }
-            model.selectedClip = project.placeClip(index, start: edge == .leading ? target : beginSourceStart,
-                                                   end: edge == .trailing ? target : beginSourceEnd, propagate: true)
+            placed = project.placeClip(index, start: edge == .leading ? target : beginSourceStart,
+                                       end: edge == .trailing ? target : beginSourceEnd, propagate: true)
         }
+        model.selectedClip = placed
         let index = model.selectedClip ?? index
 
         guard model.project.clips.indices.contains(index) else { return }
@@ -3756,7 +3799,9 @@ final class TimelineView: NSView {
         guard let model, model.project.clips.indices.contains(i) else { return }
         let clip = model.project.clips[i]
         let delta = Double(frames) * Self.axFrameSeconds * clip.timeScale // OUTPUT-frame nudge -> SOURCE delta
-        model.edit("Trim Clip") { model.selectedClip = $0.placeClip(i, start: clip.sourceStart, end: clip.sourceEnd + delta) }
+        var placed: Int?
+        model.edit("Trim Clip") { placed = $0.placeClip(i, start: clip.sourceStart, end: clip.sourceEnd + delta) }
+        model.selectedClip = placed
     }
 }
 
@@ -4168,6 +4213,7 @@ extension TimelineView {
         guard let model, let clip = model.project.audioClips.first(where: { $0.id == id.uuidString }) else { return menu }
         menu.addItem(actionItem("Split at Playhead (C)", action: #selector(menuSplitAtPlayhead)))
         if canJoinSelection { menu.addItem(actionItem("Join Clips (⌘J)", action: #selector(joinSelection))) }
+        if canUngroupSelection { menu.addItem(actionItem("Ungroup Clips (⇧⌘J)", action: #selector(ungroupSelection))) }
         if clip.link != nil { menu.addItem(actionItem("Unlink (⌘L)", action: #selector(menuAudioLink(_:)), represented: "none")) }
         menu.addItem(actionItem("Link to Screen", action: #selector(menuAudioLink(_:)), represented: "screen"))
         if model.project.source.hasCamera { menu.addItem(actionItem("Link to Camera", action: #selector(menuAudioLink(_:)), represented: "camera")) }
@@ -4584,6 +4630,7 @@ final class TimelineToolbar: NSView {
     private let pointerButton = NSButton(title: "", target: nil, action: nil)
     private let splitButton = ScissorsButton(title: "", target: nil, action: nil)
     private let eraserButton = OptionsButton(title: "", target: nil, action: nil)
+    private let pencilButton = NSButton(title: "", target: nil, action: nil)
     private var eraserPopover: NSPopover?
     private let rippleButton = NSButton(title: "", target: nil, action: nil)
     private let linkButton = NSButton(title: "", target: nil, action: nil)
@@ -4597,7 +4644,8 @@ final class TimelineToolbar: NSView {
         super.init(frame: frameRect)
         TechAppKit.styleSurface(self)
         let buttons: [(NSButton, Selector, String)] = [
-            (pointerButton, #selector(pointerTapped), "Select tool (V). Drag empty video space or below tracks to box-select video; Shift-click to add or remove clips."),
+            (pointerButton, #selector(pointerTapped), "Select tool (V). Drag a clip to move it; drag anywhere else to box-select across all lanes; Shift-click to add or remove."),
+            (pencilButton, #selector(pencilTapped), "Pencil (P). Drag in a zoom, mask, text or other effect lane to draw a block that long."),
             (splitButton, #selector(splitTapped), "Blade tool (S). Command-click splits the clip at the playhead without changing tools. C splits the selection."),
             (eraserButton, #selector(eraserTapped), "Pause eraser (E). Drag across the timeline to remove the microphone pauses it touches, leaving silent gaps. Right-click or press and hold for Tail and Fade."),
             (snapButton, #selector(snapTapped), "Toggle snapping (N). Hold Command while dragging to bypass."),
@@ -4618,7 +4666,7 @@ final class TimelineToolbar: NSView {
             button.widthAnchor.constraint(equalToConstant: 28).isActive = true
             button.setAccessibilityLabel(help)
         }
-        for (button, symbol) in [(pointerButton, "cursorarrow"), (splitButton, "scissors"), (eraserButton, "eraser"),
+        for (button, symbol) in [(pointerButton, "cursorarrow"), (splitButton, "scissors"), (eraserButton, "eraser"), (pencilButton, "pencil"),
                                   (snapButton, "align.horizontal.center"), (linkButton, "link"), (rippleButton, "arrow.left.to.line"), (focusButton, "viewfinder"), (fitButton, "arrow.left.and.right"),
                                   (zoomOutButton, "minus"), (zoomInButton, "plus")] {
             button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: button.toolTip)?
@@ -4630,7 +4678,7 @@ final class TimelineToolbar: NSView {
         eraserButton.setAccessibilityCustomActions([NSAccessibilityCustomAction(name: "Eraser Tail and Fade") { [weak self] in
             self?.showEraserOptions(); return true
         }])
-        let left = NSStackView(views: [pointerButton, splitButton, eraserButton, snapButton, linkButton, rippleButton])
+        let left = NSStackView(views: [pointerButton, splitButton, eraserButton, pencilButton, snapButton, linkButton, rippleButton])
         let right = NSStackView(views: [focusButton, fitButton, zoomOutButton, zoomInButton])
         for stack in [left, right] {
             stack.orientation = .horizontal
@@ -4651,9 +4699,10 @@ final class TimelineToolbar: NSView {
 
     func syncSlider() {
         guard let timelineView else { return }
-        for (button, selected) in [(pointerButton, !timelineView.debugSplitMode && !timelineView.eraserMode),
+        for (button, selected) in [(pointerButton, !timelineView.debugSplitMode && !timelineView.eraserMode && !timelineView.pencilMode),
                                    (splitButton, timelineView.debugSplitMode),
                                    (eraserButton, timelineView.eraserMode),
+                                   (pencilButton, timelineView.pencilMode),
                                    (snapButton, timelineView.snappingEnabled),
                                    (linkButton, timelineView.linkedVideoEdits),
                                    (rippleButton, timelineView.rippleDeleteEnabled)] {
@@ -4668,13 +4717,14 @@ final class TimelineToolbar: NSView {
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         Theme.textPrimary.setFill()
-        for button in [pointerButton, splitButton, eraserButton, snapButton, linkButton, rippleButton] where button.state == .on {
+        for button in [pointerButton, splitButton, eraserButton, pencilButton, snapButton, linkButton, rippleButton] where button.state == .on {
             let rect = convert(button.bounds, from: button)
             CGRect(x: rect.midX - 5, y: 1, width: 10, height: 1).fill()
         }
     }
 
     @objc private func pointerTapped() { timelineView?.selectTool(); syncSlider() }
+    @objc private func pencilTapped() { timelineView?.togglePencil(); syncSlider() }
     @objc private func eraserTapped() {
         timelineView?.toggleEraser(); syncSlider()
         timelineView?.window?.makeFirstResponder(timelineView)

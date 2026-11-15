@@ -387,22 +387,46 @@ public extension Project {
         return true
     }
 
-    /// Join Clips (⌘J): merges each run of neighbouring selected video clips that continue the same media at the same
-    /// speed (undoing a split). Returns the surviving indices; empty (project untouched) when nothing is joinable.
+    /// Join Clips (⌘J): merges neighbouring selected video clips that continue the same media at the same speed
+    /// (undoing a split), then groups everything from the first to the last selected clip into one clip that keeps
+    /// its pieces' speeds and cuts. Returns the resulting indices; empty (project untouched) when nothing changes.
     @discardableResult
     mutating func joinClips(_ indices: Set<Int>) -> Set<Int> {
         var kept = indices.filter { clips.indices.contains($0) }, joined = false
         for i in indices.sorted(by: >) where kept.contains(i) && kept.contains(i + 1) {
             let a = clips[i], b = clips[i + 1]
             guard !a.isEmpty, !b.isEmpty, abs(a.sourceEnd - b.sourceStart) < 1e-6, a.speed == b.speed, a.clockSpeed == b.clockSpeed, a.file == b.file,
-                  (a.hideCursor == true) == (b.hideCursor == true),
+                  (a.hideCursor == true) == (b.hideCursor == true), a.group == b.group,
                   abs(a.mediaTime(atSource: a.sourceEnd) - b.mediaIn) < 1e-6 else { continue }
             clips[i].sourceEnd = b.sourceEnd; clips[i].fadeOut = b.fadeOut
             clips.remove(at: i + 1)
             kept = Set(kept.filter { $0 != i + 1 }.map { $0 > i + 1 ? $0 - 1 : $0 })
             joined = true
         }
-        return joined ? kept : []
+        for i in kept where clipGroup(containing: i).count == 1 { clips[i].group = nil }
+        guard let first = kept.min(), let last = kept.max() else { return [] }
+        let run = clipGroup(containing: first).lowerBound...clipGroup(containing: last).upperBound
+        guard run.count > 1, !clips[first].isEmpty, !clips[last].isEmpty, Set(run.map { clips[$0].group }).count > 1 || clips[first].group == nil else { return joined ? kept : [] }
+        let id = UUID().uuidString
+        for i in run { clips[i].group = id }
+        return Set(run)
+    }
+
+    /// The neighbouring clips that show as one clip with `index` (just `index` when it isn't grouped).
+    func clipGroup(containing index: Int) -> ClosedRange<Int> {
+        guard clips.indices.contains(index), let id = clips[index].group else { return index...index }
+        var lo = index, hi = index
+        while lo > 0, clips[lo - 1].group == id { lo -= 1 }
+        while hi < clips.count - 1, clips[hi + 1].group == id { hi += 1 }
+        return lo...hi
+    }
+
+    /// Ungroup (⇧⌘J): the groups touching `indices` fall back to separate clips. false when none was grouped.
+    @discardableResult
+    mutating func ungroupClips(_ indices: Set<Int>) -> Bool {
+        let members = indices.flatMap { clipGroup(containing: $0) }.filter { clips[$0].group != nil }
+        for i in members { clips[i].group = nil }
+        return !members.isEmpty
     }
 
     /// Join Clips for audio: merges selected clips on one track that continue the same media with the same link, gain
@@ -1081,6 +1105,7 @@ public extension Project {
             }
         }
         var pastedClips: Set<Int> = []
+        var pastedGroups: [String: String] = [:]
         for clip in copied.clips {
             let start = t + clip.sourceStart
             let previousEnd = before.last?.sourceEnd ?? 0
@@ -1090,6 +1115,11 @@ public extension Project {
             }
             var pasted = clip
             pasted.sourceStart += t; pasted.sourceEnd += t
+            // A pasted copy is its own group, never a continuation of the one it was copied from.
+            if !preservingIDs, let group = clip.group {
+                if pastedGroups[group] == nil { pastedGroups[group] = UUID().uuidString }
+                pasted.group = pastedGroups[group]
+            }
             pastedClips.insert(before.count)
             before.append(pasted)
         }

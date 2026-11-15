@@ -370,6 +370,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         edit.addItem(item("Add Media…", action: #selector(EditorWindowController.addMedia(_:))))
         edit.addItem(item("Split", "c", [], action: #selector(EditorWindowController.splitAtPlayhead(_:))))
         edit.addItem(item("Join Clips", "j", action: #selector(EditorWindowController.joinClips(_:))))
+        edit.addItem(item("Ungroup Clips", "j", [.command, .shift], action: #selector(EditorWindowController.ungroupClips(_:))))
         edit.addItem(item("Link / Unlink Audio", "l", action: #selector(EditorWindowController.toggleAudioLink(_:))))
         edit.addItem(item("Record / Re-record Voiceover", "r", [.shift], action: #selector(EditorWindowController.recordVoiceover(_:))))
         edit.addItem(item("Remove", "\u{8}", [], action: #selector(EditorWindowController.removeSelected(_:))))

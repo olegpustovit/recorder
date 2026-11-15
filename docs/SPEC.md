@@ -479,6 +479,9 @@ Rules:
 - Chosen backdrop images use immutable `background-<id>.<ext>` files beside `project.json`; `background.imagePath`
   selects the current copy. Replacing a backdrop never overwrites the file a previous undo state references.
 - **Version rule.** Save `"version": 4` only when the project has a `layers` entry with `kind: "recording"` or a clip with `file`; otherwise save `3`. Older builds reject a newer version with the alert above and never rewrite it, so projects that don't use free editing stay openable in them. Opening a v3 project needs no migration.
+- **Clip `group`**: optional string. Neighbouring clips with the same `group` show, select, move and trim as one clip
+  (Join Clips ⌘J); each keeps its own `speed`, cuts and fades. Absent = not grouped. Older builds ignore it, so no
+  version bump. A paste gets a fresh id so a copy never merges into the group it came from.
 - **Clip `file`** (v4): optional. `nil` = `screen.mov` (the default, and what every existing clip means). A string names an imported `media/` file that this clip plays instead; such clips have no cursor or zoom.
 - **Recording layer** (v4): `kind: "recording"` is a lifted clip (§7.2 Free editing). `file` is `"screen.mov"`, `mediaStart` is the in-point into it, `mediaRate` as for audio (default 1), `rect` is the full output canvas, and `scene` holds the carried effects: `{ "zooms": [...], "masks": [...], "hideCursor": false }`, with times **relative to the layer's `start`** (not the timeline clock). `scene` is `null` for image and video layers. Its cursor and zooms are drawn through the same screen pass as the Main footage.
 - `audioTracks`/`audioClips`/`layers` are additive version-3 keys; no version bump for them. The v4 kind and clip file above are the only additions that need one. When `audioClips` is absent, derive
@@ -772,7 +775,8 @@ Lane order top to bottom: `+ New track` row, Video N … Video 2 (free, ○), Vi
 | Block left/right edge | resize ⇔ | trim (clip) / resize (zoom, layout, mask) |
 | Block body | open hand → closed | Video: reorder in Magnet, place in Free; other blocks: move |
 | ✂ bubble | pointing hand | click = restore that cut/trim |
-| Empty zoom/layout/mask lane | + | click = add block (ghost preview shown under pointer, default 3 s or the free gap if smaller) |
+| Empty space, any lane (Select tool `V`) | arrow | drag = box-select every clip and block it touches, across lanes (⇧ adds) |
+| Empty effect lane (Pencil tool `P`) | + | drag = draw a block that long; click = add block (ghost preview, default 3 s or the free gap if smaller) |
 | Anything, in Split mode | blade ✂ line | click = split |
 
 **Selection**: click selects one block (2 px white outline + glow; inspector swaps, §6.6). `⇧`-click adds same-track blocks. Clicking a track header (or `⌘A` with a block selected) selects every block in that lane; `⌘A` with nothing selected selects all clips; double-clicking the Zoom header selects only auto zooms. Click on empty space or `Esc` deselects. `⌫` removes the selection. Selection survives undo/redo when the ids still exist.
@@ -1097,9 +1101,15 @@ PLAN T-640…T-650.
   it (Color, Move to New Track for audio-only, Remove N Items). Inspector selection headers show a Color row.
 - **Multi-select inspector:** several audio clips → shared Gain, Mute, Fade in, Fade out ("Mixed" until changed, one undo
   per gesture); any other mix → Color and Remove N items.
-- **Box selection + Join:** dragging from empty timeline space selects the video and audio clips it touches (⇧ adds).
-  Dragging a selected audio clip moves all selected audio clips together (links ignored; stops at collisions; one undo).
+- **Box selection + Join:** with the Select tool, dragging from anywhere that isn't a clip or block selects every clip
+  and block it touches, across all lanes (⇧ adds); dragging a clip still moves it. Drawing blocks is the Pencil tool's
+  job (`P`, toolbar pencil). Dragging a selected audio clip moves all selected audio clips together (links ignored;
+  stops at collisions; one undo).
   **Join Clips** (⌘J, Edit menu, right-click) merges selected neighbours that continue the same media at the same
   speed/gain — the inverse of a split; a single selected clip joins its next neighbour. Gaps (erased pauses) don't join.
+  Video clips that can't merge (different speeds or sources) are **grouped** instead: everything from the first to the
+  last selected clip becomes one clip on the timeline (one block, faint inner seams, label "Clip N · k joined") that
+  selects, moves and trims (outer edges only) as one, while each piece keeps its speed and cuts. **Ungroup Clips**
+  (⇧⌘J) splits it back.
 - **Transcription engine:** macOS 26+ uses `SpeechAnalyzer` + `SpeechTranscriber` (long-form, always on-device, model
   installed by the system on first use per language); macOS 15 uses `SFSpeechRecognizer` with on-device required.

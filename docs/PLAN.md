@@ -548,6 +548,15 @@ older builds ignore those points and cannot preserve their phase. Recording laye
 - [x] **T-723 Docs** — SPEC §5 (v4 keys, version rule), §7.1 anatomy mockup, §7.2 gestures (from the prototype), §7.3
   keys (⌥ copy, ⌥↑/⌥↓, ⌘D on clips), cheat sheet. Verify: `--selftest menu-actions`.
 
+## Requested timeline tools — 2026-11-15
+
+- [x] **T-731 Pencil tool + box select across lanes** · SPEC §7.2 — `P`/toolbar pencil draws blocks in effect lanes
+  (the old pointer empty-lane add); the Select tool box-selects clips and blocks across every lane from any empty
+  start point. Verify: `--selftest timeline-ops`.
+- [x] **T-732 Join Clips groups mixed clips** · SPEC §5, §7.2 — `Clip.group`; ⌘J groups non-mergeable neighbours
+  (keeps speeds/cuts), selection/move/trim treat a group as one clip, ⇧⌘J ungroups, paste gets a fresh group id.
+  Verify: `make test FILTER=joinClips`; `--selftest timeline-ops`.
+
 ---
 
 ## Requested Nudge fixes — 2026-09-22
@@ -1452,3 +1461,5 @@ Free-editing merge · 2026-11-15 · Combined T-713/714/721/722/723 verified on d
 T-711 · 2026-11-15 · Apple Silicon measured: preview 59.85 fps presented, 58.95/57.27 distinct PTS/s (main/layer), dual-decode 4K60 export 69.3 s for 60 s; selftest OK after floating the benchmark window and counting only non-empty sample buffers. Intel BLOCKED (no hardware); task stays [~].
 
 T-711 close · 2026-11-15 · User chose to drop the Intel measurement; T-711 closed on the Apple Silicon result.
+
+T-731 T-732 · 2026-11-15 · Pencil tool (P), cross-lane box select, ⌘J grouping with ⇧⌘J ungroup. make test 168/168 (with Xcode's DEVELOPER_DIR; CLT toolchain can't load SwiftUI macros here); selftests timeline-ops (new pointer/pencil/group/box checks), timeline-selection/-lift/-clipboard/-tracks/-full-layers, menus, menu-actions, audio-lanes, command-scissors OK. Fixed two selection writes inside `model.update` closures (exclusive-access crash once `selectedClips` reads `project`).

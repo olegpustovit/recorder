@@ -514,6 +514,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
     }
 
     @objc func joinClips(_ sender: Any?) { coreTimelineView.joinSelection() }
+    @objc func ungroupClips(_ sender: Any?) { coreTimelineView.ungroupSelection() }
     @objc func toggleAudioLink(_ sender: Any?) { coreTimelineView.toggleAudioLink() }
     @objc func recordVoiceover(_ sender: Any?) { model.voiceover.toggle() }
     @objc func toggleCompactTrackHeaders(_ sender: Any?) { coreTimelineView.toggleCompactTrackHeaders() }
@@ -608,6 +609,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
             return !isTextEditing && (model.selectedClip != nil || !model.selection.isEmpty)
         case #selector(joinClips):
             return !isTextEditing && coreTimelineView.canJoinSelection
+        case #selector(ungroupClips):
+            return !isTextEditing && coreTimelineView.canUngroupSelection
         case #selector(toggleAudioLink):
             return !isTextEditing && model.selection.count == 1 && model.project.audioClips.contains { UUID(uuidString: $0.id).map(model.selection.contains) ?? false }
         case #selector(toggleCompactTrackHeaders):

@@ -109,7 +109,12 @@ import RecorderCore
 
     var cameraInspectorRequested = false
     var selectedClips: Set<Int> = [] {
-        didSet { if selectedClips != oldValue { inspectorShowsProject = false; previewShowsResult = false; stopEffectPreview() } }
+        didSet {
+            // Joined clips (⌘J) select as one: any member selects its whole group.
+            let grouped = Set(selectedClips.flatMap { project.clipGroup(containing: $0) })
+            if grouped != selectedClips { selectedClips = grouped }
+            if selectedClips != oldValue { inspectorShowsProject = false; previewShowsResult = false; stopEffectPreview() }
+        }
     }
     var selectedClip: Int? {
         get { selectedClips.min() }

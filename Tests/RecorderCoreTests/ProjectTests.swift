@@ -60,8 +60,10 @@ import Testing
     #expect(pasted.clips.allSatisfy { project.clips[$0].hideCursor == true })
     project.clips[1].hideCursor = nil
     let beforeJoin = project
-    let refused = project.joinClips([0, 1])
-    #expect(refused.isEmpty)
+    // Different cursor visibility can't merge into one piece, so ⌘J groups them instead.
+    let grouped = project.joinClips([0, 1])
+    #expect(grouped == [0, 1] && project.clips.count == beforeJoin.clips.count && project.clips[0].group != nil && project.clips[0].group == project.clips[1].group)
+    project.ungroupClips([1])
     #expect(project == beforeJoin)
     project.clips[1].hideCursor = true
     let joined = project.joinClips([0, 1])

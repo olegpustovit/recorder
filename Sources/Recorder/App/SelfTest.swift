@@ -4565,7 +4565,7 @@ private func runTimelineReorderSelfTest(_ args: [String]) async throws {
         try await Task.sleep(nanoseconds: 600_000_000)
         view.mouseDragged(with: synthMouse(.leftMouseDragged, view.convert(CGPoint(x: view.bounds.maxX - 2, y: view.laneMidY(.clip)), to: nil)))
         try await Task.sleep(nanoseconds: 80_000_000)
-        try check(view.geometry.scrollX > 0 && model.project == original, "edge drag scrolls without mutating project")
+        try check(view.geometry.scrollX > 0 && model.project == original, "edge drag scrolls without mutating project: scroll \(view.geometry.scrollX), clips equal \(model.project.clips == original.clips)")
         view.cancelOperation(nil)
     }
 }
@@ -4719,6 +4719,13 @@ private func runTimelineOpsSelfTest() async throws {
     do {
         let (model, view, px, py, cleanup) = try makeTimelineOpsFixture()
         defer { cleanup() }
+        // The pointer only box-selects in an empty effect lane; drawing blocks is the pencil's job (P).
+        let untouched = model.project
+        view.mouseDown(with: synthMouse(.leftMouseDown, CGPoint(x: px(2), y: py(view.laneMidY(.zoom)))))
+        view.mouseDragged(with: synthMouse(.leftMouseDragged, CGPoint(x: px(8), y: py(view.laneMidY(.zoom)))))
+        view.mouseUp(with: synthMouse(.leftMouseUp, CGPoint(x: px(8), y: py(view.laneMidY(.zoom)))))
+        guard model.project == untouched else { throw TimelineOpsFail(description: "pointer drew a block instead of box-selecting") }
+        view.togglePencil()
         for y in [py(view.laneMidY(.zoom)), py(view.laneMidY(.mask))] {
             for (start, end) in [(2.0, 8.0), (8.0, 2.0)] {
                 let before = model.project
@@ -4739,6 +4746,38 @@ private func runTimelineOpsSelfTest() async throws {
             view.mouseDragged(with: synthMouse(.leftMouseDragged, CGPoint(x: px(8), y: y)))
             view.cancelOperation(nil)
             guard model.project == before else { throw TimelineOpsFail(description: "creation Escape failed") }
+        }
+    }
+    do { // ⌘J groups mixed-speed clips into one; box selection spans lanes.
+        let (model, view, px, py, cleanup) = try makeTimelineOpsFixture()
+        defer { cleanup() }
+        model.edit("Split") { _ = $0.split(atOutput: 4); _ = $0.split(atOutput: 8) }
+        model.edit("Speed") { $0.setSpeed(1, 2) } // clip 1 now plays output 4–6
+        model.selectedClips = [0, 2]
+        view.joinSelection()
+        guard model.project.clipGroup(containing: 0) == 0...2, model.project.clips.map(\.speed) == [1, 2, 1] else {
+            throw TimelineOpsFail(description: "⌘J must group mixed-speed clips and keep their speeds")
+        }
+        model.selectedClips = []
+        view.mouseDown(with: synthMouse(.leftMouseDown, CGPoint(x: px(5), y: py(view.laneMidY(.clip)))))
+        view.mouseUp(with: synthMouse(.leftMouseUp, CGPoint(x: px(5), y: py(view.laneMidY(.clip)))))
+        guard model.selectedClips == [0, 1, 2] else { throw TimelineOpsFail(description: "clicking a joined clip must select the group: \(model.selectedClips)") }
+        guard case .clipBody = view.hitTest(at: CGPoint(x: px(4) - 2, y: view.laneMidY(.clip))) else {
+            throw TimelineOpsFail(description: "a seam inside a joined clip must not be a trim edge")
+        }
+        guard view.canUngroupSelection, !view.canJoinSelection else { throw TimelineOpsFail(description: "join/ungroup enablement") }
+        view.ungroupSelection()
+        guard model.project.clips.allSatisfy({ $0.group == nil }) else { throw TimelineOpsFail(description: "⇧⌘J ungroup") }
+        model.undo(); model.undo()
+        guard model.project.clips.allSatisfy({ $0.group == nil }) else { throw TimelineOpsFail(description: "join undo") }
+        var zoom: UUID?
+        model.edit("Zoom") { zoom = $0.addZoom(atSource: 1, length: 2, mode: .manual) }
+        model.selectedClips = []; model.selection = []
+        view.mouseDown(with: synthMouse(.leftMouseDown, CGPoint(x: px(0.5), y: py(view.laneMidY(.zoom)))))
+        view.mouseDragged(with: synthMouse(.leftMouseDragged, CGPoint(x: px(5), y: py(view.laneMidY(.clip)))))
+        view.mouseUp(with: synthMouse(.leftMouseUp, CGPoint(x: px(5), y: py(view.laneMidY(.clip)))))
+        guard let zoom, model.selection.contains(zoom), model.selectedClips == [0, 1] else {
+            throw TimelineOpsFail(description: "box selection across lanes: \(model.selection) \(model.selectedClips)")
         }
     }
     do {
@@ -5068,6 +5107,7 @@ private func runTrimRemoveRestoreSpeedSelfTest(model: EditorModel, view: Timelin
 /// duplicate, and the Disable/Remove context-menu items.
 @MainActor
 private func runZoomBlockSelfTest(model: EditorModel, view: TimelineView, px: (Double) -> CGFloat, py: (CGFloat) -> CGFloat) throws {
+    view.togglePencil() // empty-lane clicks/drags below add blocks
     // The fixture has no camera, so the zoom lane is the second row: ruler(22) + clip(44) = 66...98.
     let zoomLaneY = py(view.laneMidY(.zoom))
 
@@ -5216,6 +5256,7 @@ private func runZoomBlockSelfTest(model: EditorModel, view: TimelineView, px: (D
 /// `runZoomBlockSelfTest` above already exercises for the zoom lane, just parametrised to `.layout`.
 @MainActor
 private func runLayoutBlockSelfTest(model: EditorModel, view: TimelineView, px: (Double) -> CGFloat, py: (CGFloat) -> CGFloat) throws {
+    view.togglePencil() // empty-lane clicks/drags below add blocks
     // With a camera, lane order is ruler(22) + clip(44) + zoom(32) + layout(28) = 98...126.
     let layoutLaneY = py(view.laneMidY(.keys))
 
@@ -5300,6 +5341,7 @@ private func runLayoutBlockSelfTest(model: EditorModel, view: TimelineView, px: 
 /// `.mask`. The mask lane needs no camera and is always shown (unlike layout).
 @MainActor
 private func runMaskBlockSelfTest(model: EditorModel, view: TimelineView, px: (Double) -> CGFloat, py: (CGFloat) -> CGFloat) throws {
+    view.togglePencil() // empty-lane clicks/drags below add blocks
     // No camera ⇒ layout lane is 0 pt, so mask is the third lane: ruler(22) + clip(44) + zoom(32) = 98...126.
     let maskLaneY = py(view.laneMidY(.mask))
 

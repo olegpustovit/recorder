@@ -365,8 +365,10 @@ private struct LCG: RandomNumberGenerator {
     _ = p.split(atOutput: 5); _ = p.split(atOutput: 10)
     p.clips.remove(at: 1) // 0–5 then 10–20: not continuous media
     let cut = p
-    let refused = p.joinClips([0, 1])
-    #expect(refused.isEmpty && p == cut)
+    let grouped = p.joinClips([0, 1])
+    #expect(grouped == [0, 1] && p.clips.count == cut.clips.count && p.clips[0].group == p.clips[1].group)
+    p.ungroupClips([0])
+    #expect(p == cut)
 
     var a = Project(source: Source(duration: 20, hasMic: true), clips: [Clip(sourceStart: 0, sourceEnd: 20, speed: 1)])
     let mic = UUID(uuidString: a.audioClips[0].id)!
@@ -719,4 +721,24 @@ private func audioEnvelopeGain(_ project: Project, _ audio: AudioClip, media: Do
         #expect(abs(try audioEnvelopeGain(p, joined, media: sample) - gain) < 1e-8)
     }
     #expect(p.checkInvariants() == nil)
+}
+
+@Test func joinClipsGroupsMixedSpeeds() {
+    var p = Project(source: Source(duration: 30), clips: [Clip(sourceStart: 0, sourceEnd: 30, speed: 1)])
+    _ = p.split(atOutput: 10); _ = p.split(atOutput: 20)
+    p.setSpeed(1, 2)
+    let before = p
+    // Selecting the outer clips groups everything between them, speeds untouched.
+    let grouped = p.joinClips([0, 2])
+    #expect(grouped == [0, 1, 2] && p.clips.map(\.speed) == before.clips.map(\.speed))
+    #expect(p.clips[0].group != nil && Set(p.clips.map(\.group)).count == 1 && p.clipGroup(containing: 1) == 0...2)
+    #expect(TimeMap(p.clips).outputDuration == TimeMap(before.clips).outputDuration && p.checkInvariants() == nil)
+    #expect(p.joinClips([0, 1, 2]).isEmpty) // already one group
+    // A pasted copy becomes its own group, so it never merges with the original next to it.
+    let copied = p.copySelection(clips: [0, 1, 2], blocks: [])!
+    let pasted = p.pasteSelection(copied, atOutput: TimeMap(p.clips).outputDuration)!.clips
+    #expect(pasted.count == 3 && p.clipGroup(containing: 0) == 0...2 && p.clips[pasted.min()!].group != p.clips[0].group)
+    p = before
+    _ = p.joinClips([0, 1])
+    #expect(p.ungroupClips([1]) && p == before && !p.ungroupClips([0]))
 }

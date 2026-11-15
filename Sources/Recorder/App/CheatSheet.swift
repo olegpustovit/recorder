@@ -41,6 +41,8 @@ enum CheatSheetContent {
         Row(key: "1 – 6", action: "inspector tabs"),
         Row(key: "C", action: "split at playhead"),
         Row(key: "⌥ hold / S", action: "split mode (non-audio)"),
+        Row(key: "P", action: "pencil: drag in an effect lane to draw a block"),
+        Row(key: "⌘J ⇧⌘J", action: "join selected clips into one / ungroup"),
         Row(key: "⌘L", action: "link/unlink selected audio"),
         Row(key: "⇧R", action: "record/re-record voiceover; stop take"),
         Row(key: "⌥⌫", action: "delete ignoring linked audio"),
