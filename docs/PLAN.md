@@ -204,7 +204,8 @@ Lanes run in worktrees `../recorder-voice-{e,t,c}` (branches `voice-*`), merged 
     `audio-mix-abutting` OK. HUMAN: drag the eraser over a pause with tail 200 ms — voice decays naturally.
 - [x] **T-655 Lanes on demand: hide empty lanes, "+" menu, Move to New Track** (lane t)
   - Fixed lanes with no blocks are hidden unless revealed this session; lanes with content always show. A "+" button at
-    the top of the track-header gutter opens an NSMenu: "Audio Track" (appends `Audio N`, one undo) then each hidden
+    the top of the track-header gutter opens an NSMenu: "Video Track" (reveals an empty `Layer N` lane on top; click it to choose media or drop a file on
+    it; not saved until it holds a layer), "Audio Track" (appends `Audio N`, one undo) then each hidden
     lane type; choosing reveals that lane and scrolls it into view. Empty revealed lanes' header menu: "Hide Lane".
   - Core `moveAudioToNewTrack(_ ids:)` (new `Audio N` with the source track's volume/mute, one undo) via audio clip
     context menu "Move to New Track" (applies to the selection).
@@ -285,7 +286,7 @@ older builds ignore those points and cannot preserve their phase. Recording laye
 
 | Scope | Tasks | Done |
 |---|---|---|
-| Phase 1 | T-701, T-701b, T-702, T-702b, T-703…T-705 | 4/7 |
+| Phase 1 | T-701, T-701b, T-702, T-702b, T-703…T-705 | 5/7 |
 | Phase 2 | T-711…T-714 | 0/4 |
 | Phase 3 | T-721…T-723 | 0/3 |
 
@@ -364,7 +365,7 @@ older builds ignore those points and cannot preserve their phase. Recording laye
     roundtrip. Gain/mute retain points; explicit fade edits clear them. Preview mix refresh and timeline outlines use
     shared ramps. Near-equal floating-point segment boundaries coalesce before strict metadata validation.
     Version stays 3; older builds ignore the optional metadata and cannot preserve partial fade phase on rewrite.
-- [ ] **T-703 Timeline: lift-and-follow drag with live reflow**
+- [x] **T-703 Timeline: lift-and-follow drag with live reflow**
   - `TimelineView` `DragKind.moveClip` gets two behaviours by `project.rippleDelete`: Magnet → on every
     `mouseDragged` compute the caret index (pointer x vs. midpoints of the *other* clips), build
     `trial = model.project; trial.reorderClips(selection, to: caret)` (or the paste path when `⌥` is held), set
@@ -383,6 +384,18 @@ older builds ignore those points and cannot preserve their phase. Recording laye
     HUMAN: drag feel against the prototype.
   - Existing `timeline-ops` failure observed 2026-11-15: its + menu fixture omits the already-added "Video Track"
     item; update the fixture when verifying these timeline changes. Not evidence of a passing native timeline gate.
+  - Verified 2026-11-15: 154/154 Core tests and every current `timeline-*` selftest pass, including the new
+    `timeline-reorder` on both the compiled executable and assembled app. Checks include physical modifier events,
+    release-only copy toggles, group moves, Escape/no-op undo, independent copied effects, noncontiguous ⌘D,
+    layer collision placement, idle-then-edge scrolling, trial collision lanes and height-only layout growth.
+    Existing offset-move fixtures now explicitly select Free; the PNG check covers both equal/unequal-speed seams.
+  - Rendered/inspected `/tmp/recorder-t703-{drag,collision,timeline}.png` and `build/signal-ui-gallery.png`;
+    `make -o build gallery gallery-png CONFIG=debug` reused the freshly verified native binary (default build-engine
+    limitations remain as T-701). Reference-board files are absent; existing Theme/UI kit and artifact v6 followed.
+    The local review fixture is `/tmp/Recorder-T703-Review.recorder`. User explicitly confirmed "Feel is right"
+    for horizontal dragging, ⌥ copy toggling and Escape; this closes T-703's HUMAN check, not later vertical lifts.
+  - Long debug-timeline diagnostic: 1800 s / 200 zooms / 60 edge updates mean 17.13 ms, max 19.74 ms,
+    zoom commit 8560.27 ms. This excludes preview decode/presentation and is not AC-TL-3 or a hardware gate pass.
 - [ ] **T-704 Timeline: lane selection + group moves**
   - Header click / ⌘A lane select already ships (`selectLane`). Make a drag that starts on any selected Video clip move
     the whole selection: Magnet → `reorderClips(selection, …)` (lands as one block in timeline order); Free →
@@ -1321,3 +1334,5 @@ T-701b · 2026-11-15 · Completed artifact A8 media-order fixes: recorded typing
 T-702 · 2026-11-15 · Added group reorderClips with original-array carets, stable group order, no-op/invalid guards, simultaneous linked-content slicing/shifts, whole connected anchors and layer-owned audio deltas, existing link semantics, collision settlement and invariant rollback. Made explicit output-clock normalization idempotent. Seven targeted reorder tests pass; full make test 150/150 with Xcode native/platform Testing flags, including 1000 seeded requested-permutation checks and rollback on invalid audio slivers. Documented canonical-vs-legacy roundtrip representation and existing trailing-gap export trimming; added T-702b for reviewer-found repeated spanning-audio fades before UI integration. No native drag behavior, physical performance or release acceptance claimed. Unrelated worktree changes preserved.
 
 T-702b · 2026-11-15 · Added optional validated media-time audio-envelope points, captured before slicing/clock changes and evaluated through the shared volume-ramp path; explicit fades reset points, gain/mute retain them, compatible joins preserve them. Preview audio-only refresh and timeline ramp outlines include stored envelopes. Eleven targeted reorder/envelope tests pass; final full make test 154/154 and native audio-mix-abutting, clip-fades, menu-actions pass. Regressions compare gains at matching media samples through uniform/mixed/fractional rates, reordered/roundtripped cuts inside fades, copy/trim/rate edits, mixed-clock audio move, split/join and JSON; malformed/nonfinite metadata rejected, floating segment boundaries coalesced. Xcode native/platform Testing flags as T-701. Version-3 additive metadata documented; old builds ignore phase preservation on rewrite. No hardware/listening/performance acceptance or release claimed; unrelated edits preserved.
+
+T-703 · 2026-11-15 · Integrated trial-only magnetic reordering and Free placement with pointer-following ghosts, 45% landing slots, identity-aware 0.18s neighbor motion, continuous40pt edge scroll, release-time Option copying and one-edit commit; no-op/Escape leave no undo. Option-click still blades after release; sticky blade stays immediate. Added Video ⌘D per selected clip and retained layer collision-aware duplication. New trial tracks/headers/layer mapping render correctly; layout height growth preserves drag and stale source-selection outlines are suppressed. All154 Core tests and all9 current timeline-* selftests pass (new reorder also passes from assembled app); gallery and drag/collision/timeline renders inspected. User confirmed horizontal feel is right in local review fixture. Recorded debug long-timeline timing above without presentation/hardware claim. Existing Video Track/header-selection baseline is retained in this commit; unrelated config changes remain untouched. No vertical lift/recording-layer/performance acceptance or release claimed.

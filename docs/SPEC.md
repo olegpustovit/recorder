@@ -738,16 +738,19 @@ The x-axis is **output time** (what the viewer sees) — removed segments take n
 |---|---|---|
 | Playhead cap | ↔ | scrub |
 | Block left/right edge | resize ⇔ | trim (clip) / resize (zoom, layout, mask) |
-| Block body | open hand → closed | move (zoom/layout/mask only; clips don't reorder) |
+| Block body | open hand → closed | Video: reorder in Magnet, place in Free; other blocks: move |
 | ✂ bubble | pointing hand | click = restore that cut/trim |
 | Empty zoom/layout/mask lane | + | click = add block (ghost preview shown under pointer, default 3 s or the free gap if smaller) |
 | Anything, in Split mode | blade ✂ line | click = split |
 
-**Selection**: click selects one block (2 px white outline + glow; inspector swaps, §6.6). `⇧`-click adds same-track blocks. Click on empty space or `Esc` deselects. `⌫` removes the selection. Selection survives undo/redo when the ids still exist.
+**Selection**: click selects one block (2 px white outline + glow; inspector swaps, §6.6). `⇧`-click adds same-track blocks. Clicking a track header (or `⌘A` with a block selected) selects every block in that lane; `⌘A` with nothing selected selects all clips; double-clicking the Zoom header selects only auto zooms. Click on empty space or `Esc` deselects. `⌫` removes the selection. Selection survives undo/redo when the ids still exist.
 
 **Split (the headline interaction)**
 - `C` = split the clip under the **playhead** immediately. No mode, no selection needed.
 - Hold `⌥` (momentary) or press `S`/click ✂ (sticky until `Esc`) = **Split mode**: a full-height dashed accent blade line follows the mouse, **snapped**; timecode chip on the blade; the preview shows the frame under the blade (hover-scrub) so you can see where you cut. Click = split there. The playhead does not move.
+- On a Video body, `⌥`-click splits on release; moving at least 3 pt instead starts a copy drag. The modifier at
+  release decides copy versus move, even when changed after the last mouse movement. Sticky split mode keeps its
+  immediate blade behavior. Link Layers controls whether linked content follows; `⌥` no longer ignores links in drags.
 - Command-click ✂ splits the screen clip at the current output playhead without changing sticky blade mode. The selected clip is used if it spans the playhead; otherwise the screen clip under the playhead is used. The left split piece remains selected. Gap/edge clicks use the existing refused-split feedback and create no undo entry. The Command modifier is captured on mouse-down; ordinary clicks still toggle the blade.
 - A split produces two clips with identical speed; it is invisible in output until one side is changed. Splitting within 2 frames of an existing edge does nothing (shake animation on the blade, no error dialog).
 - After a split, a 0.25 s "cut flash" (white line fading) confirms it. Undo is one step.
@@ -757,6 +760,13 @@ The x-axis is **output time** (what the viewer sees) — removed segments take n
 **Trim** = drag a clip edge. The clip's other edge stays fixed **on screen**; following clips ripple live. While dragging: preview shows the frame at the edge, a chip shows `new duration (Δ ±0:01.20)`. Can extend back up to the neighbour's source boundary (never overlap source ranges). Min clip length 0.1 s.
 
 Video clip movement uses output-time distances across mixed playback speeds, including gaps and grouped selections. Camera and keystroke media rates are preserved when the editing clock is rebased; linking controls whether those layers follow the move.
+
+With Magnet enabled, dragging Video past another clip's midpoint previews a reordered slot; Free mode retains
+time-based placement. Floating clips follow the pointer, with a white outline and shadow; landing slots remain at
+45% opacity with an inset accent outline. Neighbors reflow over 0.18 s (immediate with Reduce Motion). The model
+stays unchanged until drop; Escape discards the trial, unchanged drops add no undo, and each successful drop is one
+undo step. Holding the pointer within 40 pt of an edge scrolls until moved away or released. `⌘D` duplicates each
+selected Video clip immediately after itself, with independent effects; layers duplicate at their end on a free track.
 
 Recorded click, typing and silence times map through each kept occurrence of footage, including reordered and copied
 clips at different rates. Regenerating zooms preserves continuous effects across harmless splits; copies own separate
@@ -789,7 +799,7 @@ against each copy's selected window; edits and undo invalidate that cursor looku
 | `Home` `End` | start/end | `⌘Z` `⇧⌘Z` | undo/redo |
 | `↑` `↓` | prev/next edit point | `⌘=` `⌘-` `⇧Z` | timeline zoom in/out/fit |
 | `Esc` | cancel drag → exit split mode → deselect | `⌘E` `⌘S` `⌘K` `⌘/` | export · save · command menu · cheat sheet |
-| `1`–`6` | inspector tabs | `⌘D` | duplicate selected zoom/mask after itself |
+| `1`–`6` | inspector tabs | `⌘D` | duplicate selected Video clips or supported blocks after themselves |
 | `⇧R` | record/re-record voiceover; stop take | `⌘L` | link/unlink selected audio |
 
 During voiceover, `Esc` discards the pending take without an undo entry; ordinary editing shortcuts are locked.

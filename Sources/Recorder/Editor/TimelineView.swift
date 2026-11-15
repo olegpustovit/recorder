@@ -48,7 +48,13 @@ final class TimelineView: NSView {
     }
 
     var geometry = TimelineGeometry(pxPerSecond: 60, scrollX: 0, width: 0) {
-        didSet { onNavigationChange?() }
+        didSet {
+            let shift = oldValue.scrollX - geometry.scrollX
+            if clipDragActive, shift != 0 {
+                for key in Array(clipDragFromRects.keys) { clipDragFromRects[key] = clipDragFromRects[key]?.offsetBy(dx: shift, dy: 0) }
+            }
+            onNavigationChange?()
+        }
     }
     var onNavigationChange: (() -> Void)?
     private(set) var snappingEnabled = true
@@ -180,25 +186,29 @@ final class TimelineView: NSView {
     static let gutter: CGFloat = 132
     private(set) var compactTrackHeaders = false
     var gutterWidth: CGFloat { compactTrackHeaders ? 16 : Self.gutter }
+    private var displayProject: Project? { clipDragActive ? dragProject ?? model?.project : model?.project }
+
     var lanes: [Lane] {
-        guard let model else { return Lane.allCases }
-        var tracks = model.project.audioTracks.indices.filter { track in
-                model.project.audioClips.contains { $0.track == track } || revealedLanes.contains(.audio(track)) ||
+        guard let model, let project = displayProject else { return Lane.allCases }
+        var tracks = project.audioTracks.indices.filter { track in
+                project.audioClips.contains { $0.track == track } || revealedLanes.contains(.audio(track)) ||
                     (dragKind != nil && dragProject?.audioClips.contains { $0.track == track } == true)
         }
         if model.voiceover.isActive, !tracks.contains(model.voiceover.track) { tracks.append(model.voiceover.track) }
         func order(_ track: Int) -> Int {
-            let name = model.project.audioTracks.indices.contains(track) ? model.project.audioTracks[track].name : model.voiceover.trackName
+            let name = project.audioTracks.indices.contains(track) ? project.audioTracks[track].name : model.voiceover.trackName
             return name == "Mic" ? 0 : name == "System" ? 1 : name.hasPrefix("Voiceover ") ? 2 : 3
         }
-        var layerTracks = Set((dragKindIsLayer ? dragProject?.layers ?? model.project.layers : model.project.layers).map(\.track))
+        var layerTracks = Set((dragKindIsLayer ? dragProject?.layers ?? project.layers : project.layers).map(\.track))
         if !model.idleSlots.isEmpty { layerTracks.insert(0) }
+        for case .layer(let track) in revealedLanes { layerTracks.insert(track) }
         if mediaDragActive { layerTracks.insert((layerTracks.max() ?? -1) + 1) }
         return [.clip, .camera] + layerTracks.sorted(by: >).map(Lane.layer) + Array(Lane.allCases.dropFirst(2))
             + tracks.sorted { order($0) == order($1) ? $0 < $1 : order($0) < order($1) }.map(Lane.audio)
     }
     private var timelineDuration: Double {
-        model.map { max($0.timeMap.outputDuration, $0.project.exportDuration,
+        model.map { max(clipDragActive ? dragProject.map { max(TimeMap($0.clips).outputDuration, $0.exportDuration) } ?? 0 : 0,
+                         $0.timeMap.outputDuration, $0.project.exportDuration,
                          $0.voiceover.isActive ? max($0.playhead + 1, $0.voiceover.liveRange?.end ?? 0) : 0) } ?? 0
     }
 
@@ -228,6 +238,19 @@ final class TimelineView: NSView {
     private var dragClips: [Clip] = []
     private var dragProject: Project?
     private var dragSelection: Set<Int> = []
+    private var clipDragSource: Project?
+    private var clipDragStart: CGPoint?
+    private var clipDragPoint: CGPoint?
+    private var clipDragActive = false
+    private var clipDragCopy = false
+    private var clipDragOptionBlade = false
+    private var clipDragModifiers: NSEvent.ModifierFlags = []
+    private var clipDragLanding: Set<Int> = []
+    private var clipDragOrder: [Int] = []
+    private var clipDragFromRects: [Int: CGRect] = [:]
+    private var clipDragAnimationStart: CFTimeInterval?
+    private var clipDragDestination: Double?
+    private var clipDragClipboard: Project?
     private var marqueeStart: CGPoint?
     private var marqueeRect: CGRect?
     private var marqueeSelection: Set<Int> = []
@@ -255,7 +278,6 @@ final class TimelineView: NSView {
         case layer(id: UUID, edge: RecorderCore.Edge?, grabOffset: Double)
         case layerFade(id: UUID, edge: RecorderCore.Edge)
     }
-    private var dragIgnoresLinks = false
     private var mediaDragActive = false
     private var layerThumbnails: [String: [Int: CGImage]] = [:]
     private var loadingThumbnails: Set<String> = []
@@ -278,7 +300,7 @@ final class TimelineView: NSView {
     /// The audio track holding `mic.m4a` while it is being transcribed.
     private var transcribingTrack: Int? {
         guard let model, model.isTranscribing else { return nil }
-        return model.project.audioClips.first { $0.file == "mic.m4a" }?.track
+        return displayProject?.audioClips.first { $0.file == "mic.m4a" }?.track
     }
     private var hoverX: CGFloat?
     private var hoverY: CGFloat?
@@ -355,6 +377,10 @@ final class TimelineView: NSView {
 
     // MARK: - T-610 state snapshot accessors (`isSplitMode`/`dragKind` stay private otherwise)
 
+    var debugClipDragProject: Project? { clipDragActive ? dragProject : nil }
+    var debugClipDragLanding: Set<Int> { clipDragLanding }
+    var debugClipDragGhostRects: [CGRect] { clipDragGhostRects() }
+    var debugClipDragIsCopy: Bool { clipDragCopy }
     var debugSplitMode: Bool { isSplitMode }
     var debugIsAnimating: Bool { animationLink != nil }
     var debugDragKind: String? {
@@ -436,6 +462,7 @@ final class TimelineView: NSView {
             item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
             menu.addItem(item)
         }
+        item("Video Track", "film", #selector(menuAddVideoTrack), nil)
         item("Audio Track", "waveform", #selector(menuAddAudioTrack), nil)
         let hidden = Self.addableLanes.filter { entry in
             !laneShown(entry.lane) && (model?.project.source.hasCamera == true || (entry.lane != .camera && entry.lane != .layout))
@@ -447,6 +474,12 @@ final class TimelineView: NSView {
 
     @objc private func addTrackTapped(_ sender: NSButton) {
         addTrackMenu().popUp(positioning: nil, at: CGPoint(x: sender.frame.minX, y: sender.frame.maxY + 2), in: self)
+    }
+
+    /// An empty layer lane above the others; click it or drop a file on it to fill it.
+    @objc private func menuAddVideoTrack() {
+        let tracks = lanes.compactMap { lane -> Int? in if case .layer(let track) = lane { return track }; return nil }
+        revealLane(.layer((tracks.max() ?? -1) + 1))
     }
 
     @objc private func menuAddAudioTrack() {
@@ -470,7 +503,9 @@ final class TimelineView: NSView {
     }
 
     override func setFrameSize(_ newSize: NSSize) {
-        if newSize != frame.size, dragKind != nil { cancelActiveDrag(); dragOrigin = nil }
+        if newSize != frame.size, dragKind != nil, !clipDragActive || newSize.width != frame.width {
+            cancelActiveDrag(); dragOrigin = nil
+        }
         super.setFrameSize(newSize)
         geometry.width = max(0, newSize.width - gutterWidth)
         maybeFitOnFirstLayout()
@@ -505,6 +540,18 @@ final class TimelineView: NSView {
         }
         if let start = rippleStart {
             if now - start < Self.rippleDuration { active = true } else { rippleStart = nil; rippleFromClips = nil }
+        }
+        if let start = clipDragAnimationStart {
+            if now - start < Self.rippleDuration { active = true } else { clipDragAnimationStart = nil }
+        }
+        if clipDragActive, let point = clipDragPoint {
+            let amount: Double
+            if point.x < gutterWidth + 40 { amount = -min(16, max(1, Double(gutterWidth + 40 - point.x) / 3)) }
+            else if point.x > bounds.width - 40 { amount = min(16, max(1, Double(point.x - bounds.width + 40) / 3)) }
+            else { amount = 0 }
+            let previous = geometry.scrollX
+            geometry.scrollX = clampScrollX(previous + amount)
+            if previous != geometry.scrollX { updateClipDrag(point: point, modifiers: clipDragModifiers); active = true }
         }
         needsDisplay = true
         if !active {
@@ -587,9 +634,10 @@ final class TimelineView: NSView {
     private var revealFlash: (lane: Lane, start: CFTimeInterval)?
 
     private func laneHasContent(_ lane: Lane) -> Bool {
-        guard let p = model?.project else { return true }
+        guard let p = displayProject else { return true }
         switch lane {
-        case .clip, .layer: return true
+        case .clip: return true
+        case .layer(let track): return p.layers.contains { $0.track == track }
         case .camera: return !p.cameraClips.isEmpty
         case .zoom: return !p.zooms.isEmpty
         case .keys: return !p.keystrokeClips.isEmpty
@@ -602,7 +650,7 @@ final class TimelineView: NSView {
     }
 
     private func laneShown(_ lane: Lane) -> Bool {
-        if lane == .camera || lane == .layout, model?.project.source.hasCamera != true { return false }
+        if lane == .camera || lane == .layout, displayProject?.source.hasCamera != true { return false }
         return laneHasContent(lane) || revealedLanes.contains(lane)
     }
 
@@ -636,7 +684,7 @@ final class TimelineView: NSView {
         case .audio(let track):
             // Transcript (or transcription status) line under the waveform (2026-10-16) on the track holding mic.m4a.
             let line = model?.transcript?.isEmpty == false || model?.transcriptStatus != nil
-            return line && model?.project.audioClips.contains { $0.track == track && $0.file == "mic.m4a" } == true ? 50 : 36
+            return line && displayProject?.audioClips.contains { $0.track == track && $0.file == "mic.m4a" } == true ? 50 : 36
         case .layer: return 36
         }
     }
@@ -670,8 +718,8 @@ final class TimelineView: NSView {
         bounds.fill()
 
         guard let model else { return }
-        let project = model.project
-        let timeMap = model.timeMap
+        let project = displayProject ?? model.project
+        let timeMap = TimeMap(project.clips)
 
         NSGraphicsContext.saveGraphicsState()
         CGRect(x: gutterWidth, y: 0, width: max(0, bounds.width - gutterWidth), height: contentHeight + 2).clip()
@@ -701,7 +749,7 @@ final class TimelineView: NSView {
         // behind them — the ✂ bubble is an actionable affordance, the chip is informational.
         drawCutBubbles(project)
         drawHover()
-        if isSplitMode { drawSplitBlade() }
+        if isSplitMode && !clipDragActive { drawSplitBlade() }
         drawEraser()
         drawCutFlash()
         // SPEC §7.2 "Snapping": "a 1 px accent guide line spans all tracks while snapped" — applies
@@ -709,6 +757,7 @@ final class TimelineView: NSView {
         if !isSplitMode, let snapGuideX { drawSnapGuide(at: snapGuideX) }
         drawTrimChip()
         drawDragOrigin()
+        drawClipDragGhosts()
         if let marqueeRect {
             Theme.textPrimary.withAlphaComponent(0.1).setFill(); marqueeRect.fill()
             Theme.textPrimary.setStroke(); NSBezierPath(rect: marqueeRect).stroke()
@@ -761,8 +810,7 @@ final class TimelineView: NSView {
         let labels: [Lane: String] = [.clip: "Video", .camera: "Camera", .zoom: "Zoom", .layout: "Layout", .keys: "Keys", .mask: "Mask", .text: "Text", .window: "Window"]
         let colors: [Lane: NSColor] = [.clip: Theme.clip, .camera: Theme.layout, .keys: Theme.layout, .zoom: Theme.zoom, .layout: Theme.layout, .mask: Theme.mask, .text: Theme.text, .window: Theme.clip]
         // Lane.allCases order. Typed per element: one long `?? 0` array literal times out CI's type checker.
-        let counts: [Int] = model.map { m -> [Int] in
-            let p = m.project
+        let counts: [Int] = displayProject.map { p -> [Int] in
             let clipCount: Int = p.clips.filter { !$0.isEmpty }.count
             return [clipCount, p.cameraClips.count, p.zooms.count, p.keystrokeClips.count, p.layouts.count, p.masks.count, p.texts.count, p.windowShots.count]
         } ?? [Int](repeating: 0, count: Lane.allCases.count)
@@ -924,7 +972,7 @@ final class TimelineView: NSView {
     private func drawClipLane(_ project: Project, _ timeMap: TimeMap) {
         let row = laneRow(.clip)
         let clips = project.clips
-        let targetRects = clipRects(clips, row: row)
+        let targetRects = clipDragActive ? clipDragRects() : clipRects(clips, row: row)
         // T-408 "Ripple animation": ease from the pre-change geometry, keyed by index —
         // ponytail: animate by index; fine because ops change at most one seam.
         let eased = dragKind == nil ? rippleEasedProgress() : nil
@@ -938,7 +986,16 @@ final class TimelineView: NSView {
             if let eased, let fromRects, i < fromRects.count { rect = lerp(fromRects[i], targetRects[i], eased) }
             guard rect.width > 0.5, !clip.isEmpty else { continue }
             let label = "Clip \(i + 1)  ·  \(formatSpeed(clip.speed))×"
-            drawBlock(rect, fill: Theme.clip, tornLeft: false, tornRight: false, label: label, selected: model?.selectedClips.contains(i) == true, tag: clip.color)
+            let landing = clipDragActive && clipDragLanding.contains(i)
+            NSGraphicsContext.saveGraphicsState()
+            if landing { NSGraphicsContext.current?.cgContext.setAlpha(0.45) }
+            drawBlock(rect, fill: Theme.clip, tornLeft: false, tornRight: false, label: label,
+                      selected: !clipDragActive && model?.selectedClips.contains(i) == true, tag: clip.color)
+            NSGraphicsContext.restoreGraphicsState()
+            if landing {
+                Theme.accent.setStroke()
+                let outline = NSBezierPath(rect: rect.insetBy(dx: 2, dy: 2)); outline.lineWidth = 1; outline.stroke()
+            }
         }
     }
 
@@ -1610,6 +1667,30 @@ final class TimelineView: NSView {
         return nil
     }
 
+    /// Selects every item in `lane` (track-header click, ⌘A), so a whole lane can be removed/recoloured at once.
+    private func selectLane(_ lane: Lane) {
+        guard let model else { return }
+        let p = model.project
+        let ids: [String]
+        switch lane {
+        case .clip:
+            model.selection = []
+            model.selectedClips = Set(p.clips.indices.filter { !p.clips[$0].isEmpty })
+            return
+        case .camera: ids = p.cameraClips.map(\.id)
+        case .zoom: ids = p.zooms.map(\.id)
+        case .keys: ids = p.keystrokeClips.map(\.id)
+        case .layout: ids = p.layouts.map(\.id)
+        case .mask: ids = p.masks.map(\.id)
+        case .text: ids = p.texts.map(\.id)
+        case .window: ids = p.windowShots.map(\.id)
+        case .audio(let track): ids = p.audioClips.filter { $0.track == track }.map(\.id)
+        case .layer(let track): ids = p.layers.filter { $0.track == track }.map(\.id)
+        }
+        model.selectedClips = []
+        model.selection = Set(ids.compactMap(UUID.init(uuidString:)))
+    }
+
     private func selectClip(_ i: Int) {
         model?.selectedClip = i
         model?.selection = []
@@ -2083,7 +2164,7 @@ final class TimelineView: NSView {
     }
 
     private func mediaLayerRect(_ layer: LayerBlock) -> CGRect? {
-        guard let model, let start = model.timeMap.outputTime(atSource: layer.start) else { return nil }
+        guard let project = displayProject, let start = TimeMap(project.clips).outputTime(atSource: layer.start) else { return nil }
         let row = laneRow(.layer(layer.track))
         return CGRect(x: x(forOutput: start), y: row.minY + 3, width: CGFloat((layer.end - layer.start) * geometry.pxPerSecond), height: row.height - 6)
     }
@@ -2174,9 +2255,11 @@ final class TimelineView: NSView {
             }
             NSGraphicsContext.restoreGraphicsState()
         }
-        if mediaDragActive, let track = lanes.compactMap({ lane -> Int? in if case .layer(let track) = lane { return track }; return nil }).max() {
-            let row = laneRow(.layer(track))
-            ("Drop media here" as NSString).draw(at: CGPoint(x: gutterWidth + 10, y: row.midY - 7), withAttributes: [.font: Theme.labelFont, .foregroundColor: Theme.textSecondary])
+        for lane in lanes {
+            // Empty video lanes get a hint; lane 0's idle slots draw their own.
+            guard case .layer(let track) = lane, !laneHasContent(lane), track != 0 || model.idleSlots.isEmpty else { continue }
+            let row = laneRow(lane)
+            ((mediaDragActive ? "Drop media here" : "Click or drop media here") as NSString).draw(at: CGPoint(x: gutterWidth + 10, y: row.midY - 7), withAttributes: [.font: Theme.labelFont, .foregroundColor: Theme.textSecondary])
         }
     }
 
@@ -2205,12 +2288,12 @@ final class TimelineView: NSView {
         let raw = geometry.output(forX: geometryX(point)) - (edge == nil ? grabOffset : 0)
         let (output, snapped) = snappedOutput(raw, excludingBlock: id, disabled: snapDisabled)
         if let edge {
-            project.resizeLayer(id, edge: edge, toOutput: max(0, output), mediaDuration: mediaDurations[layer.file] ?? (layer.kind == .video ? layer.mediaStart + layer.end - layer.start : nil), propagate: !dragIgnoresLinks)
+            project.resizeLayer(id, edge: edge, toOutput: max(0, output), mediaDuration: mediaDurations[layer.file] ?? (layer.kind == .video ? layer.mediaStart + layer.end - layer.start : nil), propagate: project.linkVideoEdits)
         } else {
             let track = lanes.compactMap { lane -> Int? in
                 if case .layer(let track) = lane, laneRow(lane).contains(point) { return track }; return nil
             }.first ?? layer.track
-            project.moveLayer(id, toOutput: max(0, output), track: track, propagate: !dragIgnoresLinks)
+            project.moveLayer(id, toOutput: max(0, output), track: track, propagate: project.linkVideoEdits)
         }
         if project.checkInvariants(mediaDurations: mediaDurations) == nil { model.update { $0 = project } }
         snapGuideX = snapped ? x(forOutput: output) : nil
@@ -2236,13 +2319,13 @@ final class TimelineView: NSView {
             voiceover.handleRecordingKey(event)
             return
         }
+        if event.keyCode == 53 { cancelOperation(nil); return }
         if VoiceoverRecorder.isShortcut(event) { model?.voiceover.toggle(); return }
         let cmd = event.modifierFlags.contains(.command)
         let shift = event.modifierFlags.contains(.shift)
         let chars = event.charactersIgnoringModifiers
-        if cmd, chars?.lowercased() == "a", let model {
-            model.selectedClips = Set(model.project.clips.indices.filter { !model.project.clips[$0].isEmpty })
-            model.selection = []
+        if cmd, chars?.lowercased() == "a" { // ⌘A: every block in the selected block's lane, else every clip
+            selectLane(model?.selection.first.flatMap { lane(ofBlock: $0) } ?? .clip)
             return
         }
         if cmd, chars?.lowercased() == "x" { cut(nil); return }
@@ -2280,6 +2363,11 @@ final class TimelineView: NSView {
 
     /// `⌥` held = momentary split mode (SPEC §7.2 "Split").
     override func flagsChanged(with event: NSEvent) {
+        if case .moveClip = dragKind, let point = clipDragPoint {
+            splitOptionHeld = event.modifierFlags.contains(.option)
+            updateClipDrag(point: point, modifiers: event.modifierFlags)
+            return
+        }
         let optionHeld = event.modifierFlags.contains(.option)
         if optionHeld != splitOptionHeld {
             splitOptionHeld = optionHeld
@@ -2328,7 +2416,6 @@ final class TimelineView: NSView {
         guard model?.voiceover.isActive != true else { return }
         window?.makeFirstResponder(self)
         let p = convert(event.locationInWindow, from: nil)
-        dragIgnoresLinks = event.modifierFlags.contains(.option)
         if bounds.height >= contentHeight + 26, overviewRect.contains(p) {
             let original = geometry.scrollX
             overviewDrag = (p.x, original, original)
@@ -2341,10 +2428,12 @@ final class TimelineView: NSView {
             return
         }
         guard p.x >= gutterWidth, p.y <= bounds.height - 26 else {
-            // Double-click the Zoom track header: select every auto zoom (then ⌫ removes them).
-            if event.clickCount >= 2, laneRow(.zoom).contains(p), let model {
-                model.selectedClips = []
-                model.selection = Set(model.project.zooms.filter { $0.mode == .auto }.compactMap { UUID(uuidString: $0.id) })
+            // Click a track header: select the whole lane. Double-click the Zoom header: only the auto zooms.
+            if p.x < gutterWidth, let lane = lanes.first(where: { laneRow($0).contains(CGPoint(x: 1, y: p.y)) }) {
+                selectLane(lane)
+                if event.clickCount >= 2, lane == .zoom, let model {
+                    model.selection = Set(model.project.zooms.filter { $0.mode == .auto }.compactMap { UUID(uuidString: $0.id) })
+                }
                 needsDisplay = true
             }
             return
@@ -2356,6 +2445,11 @@ final class TimelineView: NSView {
             model?.chooseMedia(in: window, atOutput: slot.start, slot: slot)
             return
         }
+        // Click an empty video lane (added from "+"): pick media to put there.
+        if let lane = lanes.first(where: { laneRow($0).contains(p) }), case .layer(let track) = lane, !laneHasContent(lane), let model {
+            model.chooseMedia(in: window, atOutput: max(0, geometry.output(forX: geometryX(p))), track: track)
+            return
+        }
         if case .blockBody = hitTest(at: p) {
             dragOrigin = blockRect(at: p)
         } else if case .blockEdge = hitTest(at: p) {
@@ -2363,7 +2457,10 @@ final class TimelineView: NSView {
         }
         // SPEC §7.2 hit-test table: "Anything, in Split mode | blade ✂ line | click = split" — this
         // overrides the normal per-lane hit-test dispatch below.
-        if isSplitMode {
+        let optionClip: Bool
+        if case .clipBody = hitTest(at: p) { optionClip = event.modifierFlags.contains(.option) && !splitModeSticky }
+        else { optionClip = false }
+        if isSplitMode && !optionClip {
             dragOrigin = nil
             hoverX = p.x
             if let t = bladeOutputTime() { performSplit(atOutput: t, target: hitTest(at: p)) }
@@ -2388,7 +2485,11 @@ final class TimelineView: NSView {
             dragSelection = model.selectedClips
             dragClips = model.project.clips
             dragProject = model.project
-            model.beginGesture()
+            clipDragSource = model.project
+            clipDragStart = p; clipDragPoint = p
+            clipDragOptionBlade = optionClip
+            clipDragOrder = Array(dragClips.indices)
+            clipDragClipboard = model.project.copySelection(clips: dragSelection, blocks: [])
             dragKind = .moveClip(index: i, anchor: model.timeMap.sourceTime(atOutput: geometry.output(forX: geometryX(p))))
         case .blockBody(let id):
             guard let lane = lane(ofBlock: id) else { break }
@@ -2436,6 +2537,137 @@ final class TimelineView: NSView {
         }
     }
 
+    private func clearClipDrag() {
+        clipDragSource = nil; clipDragStart = nil; clipDragPoint = nil
+        clipDragActive = false; clipDragCopy = false; clipDragOptionBlade = false
+        clipDragLanding = []; clipDragOrder = []; clipDragFromRects = [:]
+        clipDragAnimationStart = nil; clipDragDestination = nil; clipDragClipboard = nil
+        lastClips = model?.project.clips ?? []
+        dragProject = nil; dragClips = []; dragSelection = []; dragKind = nil
+        dragOrigin = nil; snapGuideX = nil; trimChip = nil
+        needsLayout = true
+        enclosingScrollView?.superview?.needsLayout = true
+        onHoverTime?(nil)
+        needsDisplay = true
+    }
+
+    private func clipDragRects() -> [CGRect] {
+        guard let project = dragProject else { return [] }
+        var rects = clipRects(project.clips, row: laneRow(.clip))
+        guard clipDragActive, project.rippleDelete, !reduceMotion,
+              let start = clipDragAnimationStart, rects.count == clipDragOrder.count else { return rects }
+        let progress = min(1, max(0, (CACurrentMediaTime() - start) / Self.rippleDuration))
+        let eased = 1 - pow(1 - progress, 3)
+        for i in rects.indices where !clipDragLanding.contains(i) {
+            if let from = clipDragFromRects[clipDragOrder[i]] { rects[i] = lerp(from, rects[i], eased) }
+        }
+        return rects
+    }
+
+    private func clipDragGhostRects() -> [CGRect] {
+        guard clipDragActive, let source = clipDragSource, let point = clipDragPoint,
+              let start = clipDragStart, case .moveClip(_, let anchor) = dragKind else { return [] }
+        let anchorOutput = TimeMap(source.clips).outputTime(atSource: anchor) ?? 0
+        let dx = point.x - x(forOutput: anchorOutput)
+        let rects = clipRects(source.clips, row: laneRow(.clip))
+        return dragSelection.sorted().compactMap { i in
+            guard rects.indices.contains(i) else { return nil }
+            return rects[i].offsetBy(dx: dx, dy: point.y - start.y - 2)
+        }
+    }
+
+    private func drawClipDragGhosts() {
+        guard let source = clipDragSource else { return }
+        let rects = clipDragGhostRects()
+        for (i, rect) in zip(dragSelection.sorted(), rects) {
+            NSGraphicsContext.saveGraphicsState()
+            let shadow = NSShadow()
+            shadow.shadowColor = Theme.mediaMatte.withAlphaComponent(0.6)
+            shadow.shadowBlurRadius = 12; shadow.shadowOffset = CGSize(width: 0, height: -6)
+            shadow.set()
+            drawBlock(rect, fill: Theme.clip, tornLeft: false, tornRight: false,
+                      label: "\(clipDragCopy ? "⌥ Copy · " : "")Clip \(i + 1) · \(formatSpeed(source.clips[i].speed))×", tag: source.clips[i].color)
+            Theme.accentText.setStroke(); NSBezierPath(rect: rect.insetBy(dx: 0.5, dy: 0.5)).stroke()
+            NSGraphicsContext.restoreGraphicsState()
+        }
+    }
+
+    private func updateClipDrag(point: CGPoint, modifiers: NSEvent.ModifierFlags) {
+        guard let model, case .moveClip(_, let anchor) = dragKind,
+              let source = clipDragSource ?? dragProject else { return }
+        if clipDragSource == nil { clipDragSource = source }
+        clipDragPoint = point; clipDragModifiers = modifiers
+        if !clipDragActive {
+            if let start = clipDragStart, hypot(point.x - start.x, point.y - start.y) < 3 { return }
+            clipDragActive = true
+        }
+        if point.x < gutterWidth + 40 || point.x > bounds.width - 40 { ensureAnimating() }
+        let copying = modifiers.contains(.option)
+        let raw = max(0, geometry.output(forX: geometryX(point)))
+        let selected = dragSelection.sorted().filter { source.clips.indices.contains($0) && !source.clips[$0].isEmpty }
+        guard !selected.isEmpty else { return }
+        var trial = source
+        var landing = Set(selected)
+        var order = Array(source.clips.indices)
+        let destination: Double
+        if source.rippleDelete {
+            var start = 0.0, caret = source.clips.count
+            for i in source.clips.indices {
+                let duration = source.clips[i].outputDuration
+                defer { start += duration }
+                if !copying && dragSelection.contains(i) { continue }
+                if raw < start + duration / 2 { caret = i; break }
+            }
+            destination = Double(caret)
+            if clipDragDestination == destination && clipDragCopy == copying { needsDisplay = true; return }
+            if copying {
+                var output = source.clips.prefix(caret).reduce(0) { $0 + $1.outputDuration }
+                landing = []
+                for i in selected {
+                    guard let copied = source.copySelection(clips: [i], blocks: []),
+                          let pasted = trial.pasteSelection(copied, atOutput: output) else {
+                        trial = source; landing = Set(selected)
+                        break
+                    }
+                    landing.formUnion(pasted.clips)
+                    output += source.clips[i].outputDuration
+                }
+                if trial != source { order.insert(contentsOf: selected, at: caret) }
+            } else {
+                landing = trial.reorderClips(dragSelection, to: caret)
+                order.removeAll { dragSelection.contains($0) }
+                order.insert(contentsOf: selected, at: caret - selected.filter { $0 < caret }.count)
+                if trial == source { order = Array(source.clips.indices) }
+            }
+            snapGuideX = nil
+        } else {
+            let (out, snapped) = snappedOutput(raw, disabled: modifiers.contains(.command))
+            let anchorOutput = TimeMap(source.clips).outputTime(atSource: anchor) ?? 0
+            var delta = out - anchorOutput
+            let leading = source.clips.prefix(selected[0]).reduce(0) { $0 + $1.outputDuration }
+            if snappingEnabled, !modifiers.contains(.command), abs(leading + raw - anchorOutput) <= 6 / max(geometry.pxPerSecond, 1) {
+                delta = -leading; snapGuideX = x(forOutput: 0)
+            } else { snapGuideX = snapped ? x(forOutput: out) : nil }
+            destination = delta
+            if clipDragDestination == destination && clipDragCopy == copying { needsDisplay = true; return }
+            if copying, let copied = clipDragClipboard ?? source.copySelection(clips: dragSelection, blocks: []) {
+                landing = trial.pasteSelection(copied, atOutput: max(0, leading + delta))?.clips ?? []
+            } else { landing = trial.moveClips(dragSelection, byOutput: delta) }
+        }
+        let oldRects = clipDragRects()
+        clipDragFromRects = [:]
+        if oldRects.count == clipDragOrder.count {
+            for i in oldRects.indices where !clipDragLanding.contains(i) { clipDragFromRects[clipDragOrder[i]] = oldRects[i] }
+        }
+        if order != clipDragOrder, !reduceMotion { clipDragAnimationStart = CACurrentMediaTime(); ensureAnimating() }
+        dragProject = trial; clipDragLanding = landing; clipDragOrder = order
+        clipDragCopy = copying; clipDragDestination = destination
+        lastClips = model.project.clips
+        needsLayout = true
+        enclosingScrollView?.superview?.needsLayout = true
+        needsDisplay = true
+    }
+
     override func mouseDragged(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
         if overviewDrag != nil { panOverview(to: p.x, centered: false); return }
@@ -2458,25 +2690,8 @@ final class TimelineView: NSView {
         // snapping" (SPEC §7.2 "Snapping") means during an actual drag.
         let snapDisabled = event.modifierFlags.contains(.command)
         switch dragKind {
-        case .moveClip(_, let anchor):
-            guard let model else { return }
-            let raw = geometry.output(forX: geometryX(p))
-            let (out, snapped) = snappedOutput(raw, disabled: snapDisabled)
-            snapGuideX = snapped ? x(forOutput: out) : nil
-            let anchorOutput = TimeMap(dragClips).outputTime(atSource: anchor) ?? 0
-            var delta = out - anchorOutput
-            // Snap the selected clips' leading edge to zero, not the pointer's grab position.
-            if snappingEnabled, !snapDisabled, let first = dragSelection.min() {
-                let leading = dragClips.prefix(first).reduce(0) { $0 + $1.outputDuration }
-                if abs(leading + raw - anchorOutput) <= 6 / max(geometry.pxPerSecond, 1) {
-                    delta = -leading
-                    snapGuideX = x(forOutput: 0)
-                }
-            }
-            model.update { project in
-                if let dragProject { project = dragProject }
-                model.selectedClips = project.moveClips(dragSelection, byOutput: delta, propagate: !dragIgnoresLinks)
-            }
+        case .moveClip:
+            updateClipDrag(point: p, modifiers: event.modifierFlags)
         case .createBlock(let id, let lane, let anchor):
             guard let model else { return }
             let raw = geometry.output(forX: geometryX(p))
@@ -2551,6 +2766,18 @@ final class TimelineView: NSView {
             needsDisplay = true
             return
         }
+        if case .moveClip = dragKind {
+            let point = convert(event.locationInWindow, from: nil)
+            if clipDragActive { updateClipDrag(point: point, modifiers: event.modifierFlags) }
+            if clipDragActive, let trial = dragProject, let model {
+                if trial != model.project { model.edit("Move Clips") { $0 = trial } }
+                model.selectedClips = clipDragLanding
+            } else if clipDragOptionBlade, event.modifierFlags.contains(.option) {
+                performSplit(atOutput: max(0, geometry.output(forX: geometryX(point))), target: hitTest(at: point))
+            }
+            clearClipDrag()
+            return
+        }
         overviewDrag = nil
         dragOrigin = nil
         dragSelection = []
@@ -2559,7 +2786,7 @@ final class TimelineView: NSView {
         case .createBlock(_, let lane, _):
             model?.commitGesture("Add \(laneName(lane))")
         case .moveClip:
-            model?.commitGesture("Move Video")
+            break
         case .trimClip:
             model?.commitGesture("Trim")
         case .moveBlock(_, let lane, _):
@@ -2612,7 +2839,10 @@ final class TimelineView: NSView {
 
     private func cancelActiveDrag() {
         switch dragKind {
-        case .moveClip: model?.selectedClips = dragSelection
+        case .moveClip:
+            model?.selectedClips = dragSelection
+            clearClipDrag()
+            return
         case .trimClip(let index, _, _, _, _, _): model?.selectedClip = index
         default: break
         }
@@ -2661,7 +2891,7 @@ final class TimelineView: NSView {
         model.update { project in
             if let dragProject { project = dragProject }
             model.selectedClip = project.placeClip(index, start: edge == .leading ? target : beginSourceStart,
-                                                   end: edge == .trailing ? target : beginSourceEnd, propagate: !dragIgnoresLinks)
+                                                   end: edge == .trailing ? target : beginSourceEnd, propagate: true)
         }
         let index = model.selectedClip ?? index
 
@@ -2732,7 +2962,27 @@ final class TimelineView: NSView {
     }
 
     private func duplicateSelection() {
-        guard let model, !model.selection.isEmpty else { return }
+        guard let model else { return }
+        let selected = model.selectedClips.filter { model.project.clips.indices.contains($0) && !model.project.clips[$0].isEmpty }
+        if !selected.isEmpty {
+            let original = model.project
+            var project = original
+            var copies: Set<Int> = []
+            for i in selected.sorted(by: >) {
+                guard let clipboard = original.copySelection(clips: [i], blocks: []) else { continue }
+                let output = original.clips.prefix(i + 1).reduce(0) { $0 + $1.outputDuration }
+                let before = project.clips.count
+                guard let pasted = project.pasteSelection(clipboard, atOutput: output) else { continue }
+                let added = project.clips.count - before
+                copies = Set(copies.map { $0 >= i + 1 ? $0 + added : $0 }).union(pasted.clips)
+            }
+            if project != original {
+                model.edit("Duplicate") { $0 = project }
+                model.selectedClips = copies; model.selection = []
+            }
+            return
+        }
+        guard !model.selection.isEmpty else { return }
         var copies: [UUID] = []
         var project = model.project
         for id in model.selection.sorted(by: { $0.uuidString < $1.uuidString }) { if let copy = project.duplicateBlock(id) { copies.append(copy) } }
@@ -2786,7 +3036,7 @@ final class TimelineView: NSView {
             switch lane {
             case .zoom: project.moveZoom(id, toStart: toStart)
             case .keys: project.moveKeys(id, toStart: toStart)
-            case .camera: project.moveCamera(id, toStart: toStart, propagate: !dragIgnoresLinks)
+            case .camera: project.moveCamera(id, toStart: toStart, propagate: true)
             case .layout: project.moveLayout(id, toStart: toStart)
             case .mask: project.moveMask(id, toStart: toStart)
             case .text: project.moveText(id, toStart: toStart)
@@ -2814,7 +3064,7 @@ final class TimelineView: NSView {
             switch lane {
             case .zoom: project.resizeZoom(id, edge: edge, to: source)
             case .keys: project.resizeKeys(id, edge: edge, to: source)
-            case .camera: project.resizeCamera(id, edge: edge, to: source, propagate: !dragIgnoresLinks)
+            case .camera: project.resizeCamera(id, edge: edge, to: source, propagate: true)
             case .layout: project.resizeLayout(id, edge: edge, to: source)
             case .mask: project.resizeMask(id, edge: edge, to: source)
             case .text: project.resizeText(id, edge: edge, to: source)
@@ -3318,9 +3568,11 @@ extension TimelineView {
         drag(point(6), point(7))
         try check(model.project.layers.first { $0.id == video.id }?.mediaStart == 1 && model.project.audioClips.first { $0.layer == video.id }?.mediaStart == 1, "leading trim media / linked sound")
         model.undo(); try check(model.project == baseline, "trim undo")
-        drag(point(7), point(8), [.command, .option])
-        try check(model.project.audioClips == baseline.audioClips && model.project.layers.first { $0.id == video.id }?.start == 7, "Option move preserves sound")
+        model.update { $0.linkVideoEdits = false }
+        drag(point(7), point(8))
+        try check(model.project.audioClips == baseline.audioClips && model.project.layers.first { $0.id == video.id }?.start == 7, "Unlinked move preserves sound")
         model.undo()
+        model.update { $0.linkVideoEdits = baseline.linkVideoEdits }
         view.mouseDown(with: event(.leftMouseDown, point(7)))
         view.mouseDragged(with: event(.leftMouseDragged, point(8)))
         view.cancelOperation(nil)
@@ -3384,7 +3636,7 @@ extension TimelineView {
         let fixed: [Lane] = [.camera, .zoom, .keys, .layout, .mask, .text, .window]
         try check(fixed.allSatisfy { view.laneHeight($0) == 0 } && view.laneHeight(.audio(0)) > 0, "empty fixed lanes hidden")
         let titles = view.addTrackMenu().items.map(\.title)
-        try check(titles == ["Audio Track", "", "Zoom", "Keystrokes", "Mask", "Text"], "+ menu lists hidden lanes: \(titles)")
+        try check(titles == ["Video Track", "Audio Track", "", "Zoom", "Keystrokes", "Mask", "Text"], "+ menu lists hidden lanes: \(titles)")
         view.revealLane(.zoom)
         try check(view.laneHeight(.zoom) > 0 && !view.addTrackMenu().items.map(\.title).contains("Zoom"), "reveal shows the lane")
         guard case .emptyLane(.zoom, _) = view.hitTest(at: CGPoint(x: 400, y: view.laneMidY(.zoom))) else { throw Fail(description: "revealed lane accepts add") }
@@ -3447,13 +3699,15 @@ extension TimelineView {
             view.mouseUp(with: event(.leftMouseUp, end, modifiers))
         }
         try check(view.lanes.suffix(4) == [.audio(0), .audio(1), .audio(2), .audio(3)], "Audio lane order")
-        drag(point(3), point(4), modifiers: [.command, .option])
+        model.update { $0.linkVideoEdits = false }
+        drag(point(3), point(4))
         let shifted = model.project.audioClips.first { $0.id == id.uuidString }!
-        try check(model.project.cameraClips == project.cameraClips && shifted.start == 3, "Option drag moved camera or ignored audio")
-        try check(model.undoStepCount == 1 && abs(model.project.syncOffset(shifted)! - 1) < 1e-8, "Option drag sync/undo")
+        try check(model.project.cameraClips == project.cameraClips && shifted.start == 3, "Unlinked drag moved camera or ignored audio")
+        try check(model.undoStepCount == 1 && abs(model.project.syncOffset(shifted)! - 1) < 1e-8, "Unlinked drag sync/undo")
         view.menuAudioSync()
         try check(abs(model.project.syncOffset(model.project.audioClips.first { $0.id == id.uuidString }!)!) < 1e-8, "Move into Sync left offset")
         model.undo(); model.undo()
+        model.update { $0.linkVideoEdits = project.linkVideoEdits }
         try check(model.project == project && model.undoStepCount == 0, "Sync/drag undo")
         model.selection = [id]
         view.keyDown(with: NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0,
@@ -3467,9 +3721,11 @@ extension TimelineView {
         drag(point(3), point(4))
         try check(model.project.cameraClips[0].start == 3 && model.undoStepCount == 1, "Linked audio did not carry camera")
         model.undo()
-        drag(point(6), point(5), modifiers: [.command, .option])
-        try check(model.project.audioClips.first { $0.id == id.uuidString }?.end == 5 && model.project.cameraClips == project.cameraClips, "Option trim")
+        model.update { $0.linkVideoEdits = false }
+        drag(point(6), point(5))
+        try check(model.project.audioClips.first { $0.id == id.uuidString }?.end == 5 && model.project.cameraClips == project.cameraClips, "Unlinked trim")
         model.undo()
+        model.update { $0.linkVideoEdits = project.linkVideoEdits }
         let targetY = view.laneMidY(.audio(2))
         view.mouseDown(with: event(.leftMouseDown, point(3), [.command, .option]))
         view.mouseDragged(with: event(.leftMouseDragged, point(3, track: 2), [.command, .option]))
@@ -3580,7 +3836,7 @@ extension TimelineView {
         if let edge {
             changed.resizeAudio(id, edge: edge, toOutput: output,
                                 mediaDuration: mediaDurations[clip.file] ?? clip.mediaStart + original.audioSegments(clip).reduce(0) { $0 + $1.media.end - $1.media.start },
-                                propagate: !dragIgnoresLinks)
+                                propagate: original.linkVideoEdits)
         } else if group.count > 1, let from = original.audioSegments(clip).first?.output.start {
             // Box/shift selection: every selected audio clip moves by the grabbed clip's delta, links ignored; a move that
             // would collide anywhere keeps the last valid position.
@@ -3601,7 +3857,7 @@ extension TimelineView {
                case .audio(let track) = lane, let index = changed.audioClips.firstIndex(where: { $0.id == clip.id }) {
                 changed.audioClips[index].track = track
             }
-            changed.moveAudio(id, toOutput: max(0, output), propagate: !dragIgnoresLinks)
+            changed.moveAudio(id, toOutput: max(0, output), propagate: original.linkVideoEdits)
         }
         if changed.checkInvariants(mediaDurations: mediaDurations) == nil { model.update { $0 = changed } }
         snapGuideX = snapped ? x(forOutput: output) : nil
@@ -3850,7 +4106,7 @@ extension TimelineView {
     }
 
     private func layoutAudioHeaders() {
-        guard let model else { return }
+        guard let model, let project = displayProject else { return }
         let visible = Set(lanes.compactMap { lane -> Int? in
             if case .audio(let track) = lane { return track }
             return nil
@@ -3865,7 +4121,7 @@ extension TimelineView {
             transcribeSpinner.stopAnimation(nil)
         }
         for track in visible {
-            let settings = model.project.audioTracks.indices.contains(track) ? model.project.audioTracks[track] : AudioTrack(id: "live", name: model.voiceover.trackName)
+            let settings = project.audioTracks.indices.contains(track) ? project.audioTracks[track] : AudioTrack(id: "live", name: model.voiceover.trackName)
             if audioHeaderButtons[track] == nil {
                 let volume = NSButton(title: settings.name, target: self, action: #selector(showAudioVolume(_:)))
                 let mute = NSButton(title: "M", target: self, action: #selector(toggleAudioTrackMute(_:)))
@@ -3896,14 +4152,14 @@ extension TimelineView {
             if settings.name.hasPrefix("Voiceover") { buttons.volume.frame = CGRect(x: 30, y: row.minY + 2, width: 66, height: 28) }
             buttons.volume.isHidden = compactTrackHeaders
             buttons.mute.isHidden = compactTrackHeaders
-            buttons.volume.isEnabled = !model.voiceover.isActive
-            buttons.mute.isEnabled = !model.voiceover.isActive
+            buttons.volume.isEnabled = !model.voiceover.isActive && !clipDragActive
+            buttons.mute.isEnabled = !model.voiceover.isActive && !clipDragActive
         }
     }
 
     private func drawAudioHeader(_ track: Int, row: CGRect) {
-        guard let model else { return }
-        let settings = model.project.audioTracks.indices.contains(track) ? model.project.audioTracks[track] : AudioTrack(id: "live", name: model.voiceover.trackName)
+        guard let model, let project = displayProject else { return }
+        let settings = project.audioTracks.indices.contains(track) ? project.audioTracks[track] : AudioTrack(id: "live", name: model.voiceover.trackName)
         if (compactTrackHeaders || !settings.name.hasPrefix("Voiceover")) && transcribingTrack != track {
             (settings.name.hasPrefix("Voiceover") ? Theme.voiceover : Theme.audio).setFill()
             CGRect(x: compactTrackHeaders ? 5 : 9, y: row.midY - 5, width: 3, height: 10).fill()
@@ -3919,12 +4175,12 @@ extension TimelineView {
         }
         guard model.isPlaying, !settings.muted else { return }
         var level = 0.0
-        for audio in model.project.audioClips where audio.track == track {
-            for segment in model.project.audioSegments(audio) where model.playhead >= segment.output.start && model.playhead < segment.output.end {
+        for audio in project.audioClips where audio.track == track {
+            for segment in project.audioSegments(audio) where model.playhead >= segment.output.start && model.playhead < segment.output.end {
                 let media = segment.media.start + (model.playhead - segment.output.start) / (segment.output.end - segment.output.start) * (segment.media.end - segment.media.start)
                 let index = Int(media * Double(Waveform.peaksPerSecond))
                 if let peaks = waveformPeaks[audio.file], peaks.indices.contains(index) {
-                    let ramp = model.project.audioVolumeRamps(audio).first { model.playhead >= $0.range.start && model.playhead <= $0.range.end }
+                    let ramp = project.audioVolumeRamps(audio).first { model.playhead >= $0.range.start && model.playhead <= $0.range.end }
                     let gain = ramp.map { $0.start + ($0.end - $0.start) * (model.playhead - $0.range.start) / ($0.range.end - $0.range.start) } ?? audio.gain
                     level = max(level, Double(peaks[index]) * gain * settings.volume)
                 }
@@ -3966,6 +4222,7 @@ extension TimelineView {
     }
 
     private func drawLinkedPartners(_ project: Project) {
+        guard !clipDragActive else { return }
         let selectedAudio = project.audioClips.filter { audio in UUID(uuidString: audio.id).map { model?.selection.contains($0) == true } ?? false }
         func outline(_ rect: CGRect) {
             Theme.textPrimary.withAlphaComponent(0.5).setStroke()
@@ -4307,6 +4564,7 @@ extension TimelineView {
             gap.isGap = true
             var project = Project(source: Source(duration: 5), clips: [gap, Clip(sourceStart: 1, sourceEnd: 5)])
             project.linkVideoEdits = false
+            project.rippleDelete = false
             let model = EditorModel(packageURL: packageURL, project: project, events: EventLog())
             let view = TimelineView(frame: CGRect(x: 0, y: 0, width: 900, height: 250))
             view.model = model
@@ -4320,12 +4578,14 @@ extension TimelineView {
                 modifierFlags: disabled ? [.command] : [], timestamp: 0,
                 windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
             view.mouseDragged(with: event)
+            guard let trial = view.debugClipDragProject else { throw Fail() }
             if disabled {
-                guard model.project.clips[0].isEmpty,
-                      abs(model.project.clips[0].outputDuration - 0.00165) < 1e-8 else { throw Fail() }
+                guard trial.clips[0].isEmpty,
+                      abs(trial.clips[0].outputDuration - 0.00165) < 1e-8 else { throw Fail() }
             } else {
-                guard !model.project.clips[0].isEmpty, model.project.videoOpacity(atOutput: 0) == 1 else { throw Fail() }
+                guard !trial.clips[0].isEmpty, trial.videoOpacity(atOutput: 0) == 1 else { throw Fail() }
             }
+            view.cancelOperation(nil)
             model.cancelGesture()
             model.saveNow()
         }

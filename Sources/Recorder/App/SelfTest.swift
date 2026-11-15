@@ -1085,7 +1085,10 @@ enum SelfTest {
                 model.undo()
                 if model.project.zooms[0].color != nil { errors.append("Color undo") }
                 expect(CGPoint(x: x(3), y: 10), .ruler, "ruler")
-                expect(CGPoint(x: x(25), y: 18), .cutBubble(afterClip: 1), "cutBubble")
+                expect(CGPoint(x: x(25), y: 18), .ruler, "mixed-speed seam has no restore bubble")
+                model.edit("Equal-speed seam fixture") { $0.clips[2].speed = $0.clips[1].speed }
+                expect(CGPoint(x: x(25), y: 18), .cutBubble(afterClip: 1), "equal-speed cutBubble")
+                model.undo()
                 if case .emptyLane(.zoom, _) = view.hitTest(at: CGPoint(x: x(40), y: view.laneMidY(.zoom))) {} else {
                     errors.append("emptyLane: got \(view.hitTest(at: CGPoint(x: x(40), y: view.laneMidY(.zoom))))")
                 }
@@ -3350,7 +3353,8 @@ enum SelfTest {
                     let start = fixture.clips.prefix(gapIndex + 1).reduce(0) { $0 + $1.outputDuration }
                     let anchor = start + fixture.clips[gapIndex + 1].outputDuration / 2
                     @MainActor func point(_ time: Double) -> CGPoint { CGPoint(x: TimelineView.gutter + time * 100, y: 260 - view.laneMidY(.clip)) }
-                    let destination = anchor - fixture.clips[gapIndex].outputDuration
+                    let destination = ripple ? start - fixture.clips[gapIndex].outputDuration / 2 - 0.1
+                        : anchor - fixture.clips[gapIndex].outputDuration
                     view.mouseDown(with: synthMouse(.leftMouseDown, point(anchor)))
                     view.mouseDragged(with: synthMouse(.leftMouseDragged, point(destination), modifiers: .command))
                     view.mouseUp(with: synthMouse(.leftMouseUp, point(destination)))
@@ -3364,7 +3368,7 @@ enum SelfTest {
                     model.saveNow()
                     let (composition, _, _, _, _, _) = try await makeComposition(package: package, project: result)
                     guard abs(composition.duration.seconds - TimeMap(fixture.clips).outputDuration) < 0.02 else {
-                        throw Fail(message: "move changed playback duration")
+                        throw Fail(message: "move changed composition clock duration")
                     }
                 }
             }
@@ -3462,6 +3466,7 @@ enum SelfTest {
                 guard model.project.keystrokeClips.isEmpty, model.project.zooms.count == 1 else { throw Fail(message: "Undo full-length layer") }
             }
         },
+        "timeline-reorder": { @MainActor args in try await runTimelineReorderSelfTest(args) },
         "timeline-selection": { @MainActor args in
             struct Fail: Error { let message: String }
             let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("recorder-selection-\(UUID().uuidString)")
@@ -3472,6 +3477,7 @@ enum SelfTest {
                                       clips: [Clip(sourceStart: 0, sourceEnd: 12)], zooms: [Zoom(start: 0, end: 12)])
                 _ = project.split(atOutput: 4); _ = project.split(atOutput: 8)
                 _ = project.moveClips([0, 1, 2], byOutput: 2)
+                project.rippleDelete = false // These assertions exercise Free offset moves.
                 let model = EditorModel(packageURL: tmp, project: project, events: EventLog())
                 let view = TimelineView(frame: .zero)
                 view.model = model
@@ -3512,7 +3518,7 @@ enum SelfTest {
                 view.mouseUp(with: synthMouse(.leftMouseUp, point(3)))
                 view.mouseDown(with: synthMouse(.leftMouseDown, point(7)))
                 view.mouseDragged(with: synthMouse(.leftMouseDragged, point(8), modifiers: .command))
-                guard model.project.cameraClips.map(\.start) == [3, 7, 11] else { throw Fail(message: "linked group drag") }
+                guard view.debugClipDragProject?.cameraClips.map(\.start) == [3, 7, 11], model.project == project else { throw Fail(message: "linked group drag trial") }
                 view.cancelOperation(nil)
                 guard model.project == project, model.selectedClips == [1, 2, 3] else { throw Fail(message: "cancel group") }
                 view.mouseDown(with: synthMouse(.leftMouseDown, point(7)))
@@ -3521,6 +3527,7 @@ enum SelfTest {
                 guard model.undoStepCount == 1 else { throw Fail(message: "one undo per group") }
                 model.undo()
                 guard model.project == project else { throw Fail(message: "undo group") }
+                view.toggleRippleDelete()
                 model.selectedClips = [2]
                 view.keyDown(with: synthKey("", keyCode: 51))
                 guard model.timeMap.outputDuration == 10, model.project.cameraClips.count == 2 else { throw Fail(message: "ripple delete") }
@@ -3583,7 +3590,9 @@ enum SelfTest {
                 return model.project
             }
             let linked = try await MainActor.run { () throws -> Project in
-                let model = EditorModel(packageURL: tmp, project: project, events: EventLog())
+                var freeProject = project
+                freeProject.rippleDelete = false
+                let model = EditorModel(packageURL: tmp, project: freeProject, events: EventLog())
                 let view = TimelineView(frame: CGRect(x: 0, y: 0, width: 900, height: 190))
                 view.model = model
                 view.geometry.pxPerSecond = 50
@@ -4291,6 +4300,167 @@ private func makeTimelineOpsFixture(hasCamera: Bool = false) throws -> (model: E
 /// Drives a `TimelineView` + `EditorModel` over synthetic projects, headless: fires real
 /// `NSEvent`s at the view exactly as AppKit would, asserting the invariants named in CLAUDE.md /
 /// the plan's Verify step.
+@MainActor
+private func runTimelineReorderSelfTest(_ args: [String]) async throws {
+    struct Fail: Error, CustomStringConvertible { let description: String }
+    func check(_ condition: Bool, _ message: String) throws { if !condition { throw Fail(description: message) } }
+    @MainActor func fixture() throws -> (EditorModel, TimelineView, () -> Void) {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("timeline-reorder-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let clips = (0..<4).map { i -> Clip in
+            var clip = Clip(sourceStart: Double(i) * 4, sourceEnd: Double(i + 1) * 4)
+            clip.mediaStart = clip.sourceStart; clip.clockSpeed = 1
+            return clip
+        }
+        let project = Project(source: Source(duration: 16, hasMic: true), clips: clips,
+                              zooms: [Zoom(start: 5, end: 7, scale: 3)])
+        let model = EditorModel(packageURL: folder, project: project, events: EventLog())
+        let view = TimelineView(frame: CGRect(x: 0, y: 0, width: 900, height: 240))
+        view.model = model
+        view.revealedLanes = Set(Lane.allCases)
+        view.setFrameSize(CGSize(width: 900, height: view.contentHeight + 26))
+        view.geometry.pxPerSecond = 40; view.geometry.scrollX = 0
+        return (model, view, { model.saveNow(); try? FileManager.default.removeItem(at: folder) })
+    }
+    @MainActor func point(_ view: TimelineView, _ t: Double, dy: CGFloat = 0) -> CGPoint {
+        view.convert(CGPoint(x: TimelineView.gutter + view.geometry.x(forOutput: t), y: view.laneMidY(.clip) + dy), to: nil)
+    }
+    do {
+        let (model, view, cleanup) = try fixture(); defer { cleanup() }
+        let original = model.project
+        view.mouseDown(with: synthMouse(.leftMouseDown, point(view, 6)))
+        view.mouseDragged(with: synthMouse(.leftMouseDragged, point(view, 15)))
+        let ghostY = view.debugClipDragGhostRects.first?.midY ?? 0
+        view.mouseDragged(with: synthMouse(.leftMouseDragged, point(view, 15, dy: 10)))
+        try check(model.project == original && model.undoStepCount == 0, "drag must stay a non-destructive trial")
+        try check(view.debugClipDragProject?.clips.map(\.mediaIn) == [0, 8, 12, 4], "live reorder trial")
+        try check(view.debugClipDragLanding == [3] && view.debugClipDragGhostRects.count == 1, "landing and floating clip")
+        try check(abs((view.debugClipDragGhostRects.first?.midY ?? 0) - ghostY - 10) < 1, "floating clip follows pointer y")
+        if let path = args.first {
+            guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw Fail(description: "drag snapshot unavailable") }
+            view.cacheDisplay(in: view.bounds, to: bitmap)
+            try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+        }
+        view.mouseUp(with: synthMouse(.leftMouseUp, point(view, 15, dy: 10)))
+        try check(model.project.clips.map(\.mediaIn) == [0, 8, 12, 4] && model.selectedClips == [3], "drop order/selection")
+        try check(model.project.zooms.first?.start == 13 && model.undoStepCount == 1, "effects follow in one undo")
+        let committed = model.project
+        model.undo(); try check(model.project == original, "undo reorder")
+        model.redo(); try check(model.project == committed, "redo reorder")
+    }
+    do {
+        let (model, view, cleanup) = try fixture(); defer { cleanup() }
+        let original = model.project
+        view.flagsChanged(with: synthFlags(.option))
+        view.mouseDown(with: synthMouse(.leftMouseDown, point(view, 6), modifiers: .option))
+        view.mouseDragged(with: synthMouse(.leftMouseDragged, point(view, 15), modifiers: .option))
+        try check(view.debugClipDragIsCopy && view.debugClipDragProject?.clips.count == 5, "physical Option drag copies rather than blades")
+        view.mouseUp(with: synthMouse(.leftMouseUp, point(view, 15), modifiers: .option))
+        view.flagsChanged(with: synthFlags([]))
+        try check(model.project.clips.map(\.mediaIn) == [0, 4, 8, 12, 4], "copy inserts without removing source")
+        try check(model.project.zooms.count == 2 && Set(model.project.zooms.map(\.id)).count == 2, "copy owns effects")
+        try check(model.undoStepCount == 1 && model.project.checkInvariants() == nil, "copy one undo/invariants")
+        model.undo(); try check(model.project == original, "undo copy")
+        // Copy state is decided at release, including changing the modifier after the last drag event.
+        view.mouseDown(with: synthMouse(.leftMouseDown, point(view, 6)))
+        view.mouseDragged(with: synthMouse(.leftMouseDragged, point(view, 15)))
+        view.mouseUp(with: synthMouse(.leftMouseUp, point(view, 15), modifiers: .option))
+        try check(model.project.clips.count == 5, "Option pressed only on drop")
+        model.undo()
+        view.flagsChanged(with: synthFlags(.option))
+        view.mouseDown(with: synthMouse(.leftMouseDown, point(view, 6), modifiers: .option))
+        view.mouseDragged(with: synthMouse(.leftMouseDragged, point(view, 15), modifiers: .option))
+        view.flagsChanged(with: synthFlags([]))
+        view.mouseUp(with: synthMouse(.leftMouseUp, point(view, 15)))
+        try check(model.project.clips.count == 4 && model.project.clips.last?.mediaIn == 4, "Option released before drop moves")
+    }
+    do {
+        let (model, view, cleanup) = try fixture(); defer { cleanup() }
+        let original = model.project
+        model.selectedClips = [1, 2]
+        view.mouseDown(with: synthMouse(.leftMouseDown, point(view, 6)))
+        view.mouseDragged(with: synthMouse(.leftMouseDragged, point(view, 15)))
+        try check(view.debugClipDragProject?.clips.map(\.mediaIn) == [0, 12, 4, 8], "group preview keeps timeline order")
+        view.mouseUp(with: synthMouse(.leftMouseUp, point(view, 15)))
+        try check(model.project.clips.map(\.mediaIn) == [0, 12, 4, 8] && model.selectedClips == [2, 3] && model.undoStepCount == 1, "group commit")
+        model.undo(); try check(model.project == original, "group undo")
+    }
+    do {
+        let (model, view, cleanup) = try fixture(); defer { cleanup() }
+        let original = model.project
+        view.mouseDown(with: synthMouse(.leftMouseDown, point(view, 6)))
+        view.mouseDragged(with: synthMouse(.leftMouseDragged, point(view, 15)))
+        view.keyDown(with: synthKey("\u{1b}", keyCode: 53))
+        try check(model.project == original && model.undoStepCount == 0 && view.debugClipDragProject == nil, "Escape discards trial")
+        view.mouseUp(with: synthMouse(.leftMouseUp, point(view, 15)))
+        view.mouseDown(with: synthMouse(.leftMouseDown, point(view, 6)))
+        view.mouseUp(with: synthMouse(.leftMouseUp, point(view, 6)))
+        try check(model.project == original && model.undoStepCount == 0, "click has no undo")
+        view.mouseDown(with: synthMouse(.leftMouseDown, point(view, 6)))
+        view.mouseDragged(with: synthMouse(.leftMouseDragged, point(view, 6.2)))
+        view.mouseUp(with: synthMouse(.leftMouseUp, point(view, 6.2)))
+        try check(model.project == original && model.undoStepCount == 0, "unchanged caret has no undo")
+    }
+    do {
+        let (model, view, cleanup) = try fixture(); defer { cleanup() }
+        model.edit("Collision fixture") { project in
+            project.layers = [LayerBlock(kind: .image, start: 1, end: 7, file: "media/image.png", rect: NormRect()),
+                              LayerBlock(kind: .image, start: 9, end: 15, file: "media/image.png", rect: NormRect())]
+            project.audioTracks.append(AudioTrack(name: "Audio 1"))
+            project.audioClips += [AudioClip(start: 1, end: 7, file: "media/music.m4a", track: 1),
+                                   AudioClip(start: 9, end: 15, file: "media/music.m4a", track: 1)]
+            project.audioClips.sort { $0.start < $1.start }
+        }
+        let original = model.project, steps = model.undoStepCount
+        view.mouseDown(with: synthMouse(.leftMouseDown, point(view, 6)))
+        view.mouseDragged(with: synthMouse(.leftMouseDragged, point(view, 15)))
+        try check(view.debugClipDragProject?.layers.contains { $0.track == 1 } == true && view.lanes.contains(.layer(1)), "collision layer lane is visible during trial")
+        try check(view.debugClipDragProject?.audioTracks.count == 3 && view.lanes.contains(.audio(2)), "collision audio lane is visible during trial")
+        view.setFrameSize(CGSize(width: view.bounds.width, height: view.contentHeight + 26))
+        try check(view.debugClipDragProject != nil && model.project == original && model.undoStepCount == steps, "trial layout growth preserves drag")
+        if args.count > 1, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+            view.cacheDisplay(in: view.bounds, to: bitmap)
+            try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: args[1]))
+        }
+        view.cancelOperation(nil)
+        try check(model.project == original && model.undoStepCount == steps, "collision trial cancellation")
+    }
+    do {
+        let (model, view, cleanup) = try fixture(); defer { cleanup() }
+        let original = model.project
+        model.selectedClips = [0, 2]
+        view.keyDown(with: synthKey("d", keyCode: 2, modifiers: .command))
+        try check(model.project.clips.map(\.mediaIn) == [0, 0, 4, 8, 8, 12] && model.undoStepCount == 1, "Command-D duplicates each selected clip after itself")
+        model.undo(); try check(model.project == original, "undo Command-D")
+    }
+    do {
+        let (model, view, cleanup) = try fixture(); defer { cleanup() }
+        let layer = LayerBlock(kind: .image, start: 1, end: 3, file: "media/image.png", rect: NormRect())
+        model.edit("Layer fixture") { $0.layers = [layer, LayerBlock(kind: .image, start: 3, end: 5, file: layer.file, rect: NormRect())] }
+        let original = model.project, steps = model.undoStepCount
+        model.selectedClips = []; model.selection = [UUID(uuidString: layer.id)!]
+        view.keyDown(with: synthKey("d", keyCode: 2, modifiers: .command))
+        try check(model.project.layers.count == 3 && model.project.layers.contains { $0.start == 3 && $0.track > 0 }, "layer duplicate uses next free track at its end")
+        try check(model.undoStepCount == steps + 1 && model.project.checkInvariants() == nil, "layer duplicate one undo")
+        model.undo(); try check(model.project == original, "undo layer duplicate")
+    }
+    do {
+        let (model, view, cleanup) = try fixture(); defer { cleanup() }
+        let original = model.project
+        view.geometry.pxPerSecond = 100
+        let window = NSWindow(contentRect: view.bounds, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = view; window.orderFront(nil)
+        defer { window.orderOut(nil) }
+        view.mouseDown(with: synthMouse(.leftMouseDown, point(view, 2)))
+        view.mouseDragged(with: synthMouse(.leftMouseDragged, point(view, 6.9)))
+        try await Task.sleep(nanoseconds: 600_000_000)
+        view.mouseDragged(with: synthMouse(.leftMouseDragged, view.convert(CGPoint(x: view.bounds.maxX - 2, y: view.laneMidY(.clip)), to: nil)))
+        try await Task.sleep(nanoseconds: 80_000_000)
+        try check(view.geometry.scrollX > 0 && model.project == original, "edge drag scrolls without mutating project")
+        view.cancelOperation(nil)
+    }
+}
+
 @MainActor
 private func runTimelineOpsSelfTest() async throws {
     do {
