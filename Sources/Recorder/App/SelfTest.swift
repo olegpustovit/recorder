@@ -4779,6 +4779,14 @@ private func runTimelineOpsSelfTest() async throws {
         guard let zoom, model.selection.contains(zoom), model.selectedClips == [0, 1] else {
             throw TimelineOpsFail(description: "box selection across lanes: \(model.selection) \(model.selectedClips)")
         }
+        // An empty video lane box-selects with the pointer too (clicking it to add media is the pencil's job).
+        view.revealedLanes.insert(.layer(1)); view.setFrameSize(CGSize(width: 900, height: view.contentHeight + 26))
+        guard view.lanes.contains(.layer(1)) else { throw TimelineOpsFail(description: "empty Video 2 lane not shown") }
+        model.selectedClips = []; model.selection = []
+        view.mouseDown(with: synthMouse(.leftMouseDown, CGPoint(x: px(9), y: py(view.laneMidY(.layer(1))))))
+        view.mouseDragged(with: synthMouse(.leftMouseDragged, CGPoint(x: px(11), y: py(view.laneMidY(.clip)))))
+        view.mouseUp(with: synthMouse(.leftMouseUp, CGPoint(x: px(11), y: py(view.laneMidY(.clip)))))
+        guard model.selectedClips == [2] else { throw TimelineOpsFail(description: "box selection from an empty video lane: \(model.selectedClips)") }
     }
     do {
         let (model, view, px, py, cleanup) = try makeTimelineOpsFixture()

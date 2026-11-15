@@ -777,6 +777,7 @@ Lane order top to bottom: `+ New track` row, Video N … Video 2 (free, ○), Vi
 | ✂ bubble | pointing hand | click = restore that cut/trim |
 | Empty space, any lane (Select tool `V`) | arrow | drag = box-select every clip and block it touches, across lanes (⇧ adds) |
 | Empty effect lane (Pencil tool `P`) | + | drag = draw a block that long; click = add block (ghost preview, default 3 s or the free gap if smaller) |
+| Empty video lane / idle slot (Pencil tool `P`) | + | click = choose media to add there (the Select tool only box-selects; dropping files works with either) |
 | Anything, in Split mode | blade ✂ line | click = split |
 
 **Selection**: click selects one block (2 px white outline + glow; inspector swaps, §6.6). `⇧`-click adds same-track blocks. Clicking a track header (or `⌘A` with a block selected) selects every block in that lane; `⌘A` with nothing selected selects all clips; double-clicking the Zoom header selects only auto zooms. Click on empty space or `Esc` deselects. `⌫` removes the selection. Selection survives undo/redo when the ids still exist.

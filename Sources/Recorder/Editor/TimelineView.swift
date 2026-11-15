@@ -154,12 +154,14 @@ final class TimelineView: NSView {
         if pencilMode { exitPencil(); return }
         exitSplitMode(); exitEraser()
         pencilMode = true
+        needsDisplay = true
         onNavigationChange?()
     }
 
     private func exitPencil() {
         guard pencilMode else { return }
         pencilMode = false
+        needsDisplay = true
         onNavigationChange?()
     }
 
@@ -2370,7 +2372,7 @@ final class TimelineView: NSView {
         // Only the idle slot under the pointer is drawn: drawing all of them tiled the lane with dashed boxes.
         for slot in model.idleSlots where row.height > 0 {
             let rect = CGRect(x: x(forOutput: slot.start), y: row.minY + 3, width: CGFloat((slot.end - slot.start) * geometry.pxPerSecond), height: row.height - 6)
-            guard rect.maxX >= gutterWidth, rect.minX <= bounds.width, dragKind == nil,
+            guard pencilMode, rect.maxX >= gutterWidth, rect.minX <= bounds.width, dragKind == nil,
                   let hoverX, let hoverY, rect.insetBy(dx: 0, dy: -3).contains(CGPoint(x: hoverX, y: hoverY)) else { continue }
             Theme.textTertiary.setStroke()
             let path = NSBezierPath(rect: rect.insetBy(dx: 1, dy: 1)); path.setLineDash([4, 3], count: 2, phase: 0); path.stroke()
@@ -2422,7 +2424,7 @@ final class TimelineView: NSView {
             // Empty video lanes get a hint; lane 0's idle slots draw their own.
             guard case .layer(let track) = lane, !laneHasContent(lane), track != 0 || model.idleSlots.isEmpty else { continue }
             let row = laneRow(lane)
-            ((mediaDragActive ? "Drop media here" : "Click or drop media here") as NSString).draw(at: CGPoint(x: gutterWidth + 10, y: row.midY - 7), withAttributes: [.font: Theme.labelFont, .foregroundColor: Theme.textSecondary])
+            ((mediaDragActive || !pencilMode ? "Drop media here" : "Click or drop media here") as NSString).draw(at: CGPoint(x: gutterWidth + 10, y: row.midY - 7), withAttributes: [.font: Theme.labelFont, .foregroundColor: Theme.textSecondary])
         }
     }
 
@@ -2647,12 +2649,13 @@ final class TimelineView: NSView {
         if eraserMode { eraserDrag = (p.x, p.x); needsDisplay = true; return }
         if beginAudioDrag(at: p, event: event) { return }
         if beginLayerDrag(at: p, event: event) { return }
-        if laneRow(.layer(0)).contains(p), let slot = model?.idleSlots.first(where: { x(forOutput: $0.start) <= p.x && x(forOutput: $0.end) >= p.x }) {
+        // Click-to-add media is a pencil action; the pointer box-selects from empty video lanes.
+        if pencilMode, laneRow(.layer(0)).contains(p), let slot = model?.idleSlots.first(where: { x(forOutput: $0.start) <= p.x && x(forOutput: $0.end) >= p.x }) {
             model?.chooseMedia(in: window, atOutput: slot.start, slot: slot)
             return
         }
         // Click an empty video lane (added from "+"): pick media to put there.
-        if let lane = lanes.first(where: { laneRow($0).contains(p) }), case .layer(let track) = lane, !laneHasContent(lane), let model {
+        if pencilMode, let lane = lanes.first(where: { laneRow($0).contains(p) }), case .layer(let track) = lane, !laneHasContent(lane), let model {
             model.chooseMedia(in: window, atOutput: max(0, geometry.output(forX: geometryX(p))), track: track)
             return
         }
@@ -4645,7 +4648,7 @@ final class TimelineToolbar: NSView {
         TechAppKit.styleSurface(self)
         let buttons: [(NSButton, Selector, String)] = [
             (pointerButton, #selector(pointerTapped), "Select tool (V). Drag a clip to move it; drag anywhere else to box-select across all lanes; Shift-click to add or remove."),
-            (pencilButton, #selector(pencilTapped), "Pencil (P). Drag in a zoom, mask, text or other effect lane to draw a block that long."),
+            (pencilButton, #selector(pencilTapped), "Pencil (P). Drag in a zoom, mask, text or other effect lane to draw a block that long; click an empty video lane to add media."),
             (splitButton, #selector(splitTapped), "Blade tool (S). Command-click splits the clip at the playhead without changing tools. C splits the selection."),
             (eraserButton, #selector(eraserTapped), "Pause eraser (E). Drag across the timeline to remove the microphone pauses it touches, leaving silent gaps. Right-click or press and hold for Tail and Fade."),
             (snapButton, #selector(snapTapped), "Toggle snapping (N). Hold Command while dragging to bypass."),
