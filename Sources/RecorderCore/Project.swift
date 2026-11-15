@@ -324,6 +324,12 @@ public struct AudioTrack: Codable, Equatable, Sendable {
     }
 }
 
+public struct AudioGainPoint: Codable, Equatable, Sendable {
+    public var time: Double
+    public var value: Double
+    public init(time: Double, value: Double) { self.time = time; self.value = value }
+}
+
 public struct AudioClip: Codable, Equatable, Sendable {
     public enum Link: String, Codable, Sendable { case screen, camera, layer }
     public var id: String
@@ -336,8 +342,10 @@ public struct AudioClip: Codable, Equatable, Sendable {
     public var link: Link?
     public var layer: String?
     public var gain: Double
-    public var fadeIn: Double?
-    public var fadeOut: Double?
+    /// Unit-gain envelope on the recorded media clock, retained when a faded clip is sliced.
+    public var envelope: [AudioGainPoint]? = nil
+    public var fadeIn: Double? { didSet { envelope = nil } }
+    public var fadeOut: Double? { didSet { envelope = nil } }
     public var color: BlockColor? = nil
 
     public init(id: String = UUID().uuidString, start: Double, end: Double, mediaStart: Double = 0,
@@ -348,7 +356,7 @@ public struct AudioClip: Codable, Equatable, Sendable {
         self.gain = gain; self.fadeIn = fadeIn; self.fadeOut = fadeOut
     }
     enum CodingKeys: String, CodingKey {
-        case id, start, end, mediaStart, mediaRate, file, track, link, layer, gain, fadeIn, fadeOut, color
+        case id, start, end, mediaStart, mediaRate, file, track, link, layer, gain, fadeIn, fadeOut, color, envelope
     }
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -365,6 +373,16 @@ public struct AudioClip: Codable, Equatable, Sendable {
         fadeIn = try container.decodeIfPresent(Double.self, forKey: .fadeIn)
         fadeOut = try container.decodeIfPresent(Double.self, forKey: .fadeOut)
         color = try? container.decodeIfPresent(BlockColor.self, forKey: .color)
+        envelope = try container.decodeIfPresent([AudioGainPoint].self, forKey: .envelope)
+        guard envelopeIsValid else {
+            throw DecodingError.dataCorruptedError(forKey: .envelope, in: container, debugDescription: "Invalid audio envelope")
+        }
+    }
+
+    var envelopeIsValid: Bool {
+        guard let envelope else { return true }
+        return envelope.count >= 2 && envelope.allSatisfy { $0.time.isFinite && $0.time >= 0 && $0.value.isFinite && (0...1).contains($0.value) }
+            && zip(envelope, envelope.dropFirst()).allSatisfy { $0.time < $1.time }
     }
 }
 

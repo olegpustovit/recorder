@@ -103,6 +103,24 @@ public extension Project {
     func audioVolumeRamps(_ audio: AudioClip) -> [(range: TimeRange, start: Double, end: Double)] {
         let segments = audioSegments(audio)
         guard let first = segments.first, let last = segments.last, audio.gain.isFinite else { return [] }
+        if let envelope = audio.envelope {
+            guard audio.envelopeIsValid else { return [] }
+            func value(at time: Double) -> Double {
+                guard let right = envelope.firstIndex(where: { $0.time > time }) else { return envelope.last!.value }
+                guard right > 0 else { return envelope[0].value }
+                let a = envelope[right - 1], b = envelope[right]
+                return a.value + (b.value - a.value) * (time - a.time) / (b.time - a.time)
+            }
+            return segments.flatMap { segment in
+                let times = [segment.media.start] + envelope.filter { $0.time > segment.media.start && $0.time < segment.media.end }.map(\.time) + [segment.media.end]
+                func output(_ time: Double) -> Double {
+                    segment.output.start + (time - segment.media.start) * (segment.output.end - segment.output.start) / (segment.media.end - segment.media.start)
+                }
+                return zip(times, times.dropFirst()).map { a, b in
+                    (TimeRange(start: output(a), end: output(b)), audio.gain * value(at: a), audio.gain * value(at: b))
+                }
+            }
+        }
         let duration = last.output.end - first.output.start
         guard duration.isFinite, duration > 0 else { return [] }
         let fadeIn = min(duration, max(0, audio.fadeIn?.isFinite == true ? audio.fadeIn! : 0))
@@ -120,6 +138,31 @@ public extension Project {
         return zip(times, times.dropFirst()).map { start, end in
             (TimeRange(start: first.output.start + start, end: first.output.start + end), volume(start), volume(end))
         }
+    }
+
+    /// Freeze only faded clips; media-keyed points preserve partial ramps through subsequent edits.
+    internal func audioPreservingEnvelope(_ audio: AudioClip) -> AudioClip {
+        guard audio.envelope == nil, (audio.fadeIn ?? 0) > 0 || (audio.fadeOut ?? 0) > 0 else { return audio }
+        var unit = audio
+        unit.gain = 1
+        let ramps = audioVolumeRamps(unit)
+        func value(at time: Double) -> Double {
+            guard let ramp = ramps.first(where: { time >= $0.range.start - 1e-9 && time <= $0.range.end + 1e-9 }) else { return 0 }
+            return min(1, max(0, ramp.start + (ramp.end - ramp.start) * (time - ramp.range.start) / (ramp.range.end - ramp.range.start)))
+        }
+        var points: [AudioGainPoint] = []
+        for segment in audioSegments(audio) {
+            let times = Set([segment.output.start, segment.output.end] + ramps.flatMap { [$0.range.start, $0.range.end] }
+                .filter { $0 > segment.output.start && $0 < segment.output.end }).sorted()
+            for time in times {
+                let media = segment.media.start + (time - segment.output.start) * (segment.media.end - segment.media.start) / (segment.output.end - segment.output.start)
+                if let previous = points.last, abs(previous.time - media) < 1e-9 { continue }
+                points.append(AudioGainPoint(time: media, value: value(at: time)))
+            }
+        }
+        var result = audio
+        if points.count >= 2 { result.envelope = points }
+        return result
     }
 
     /// End of retained video, audio and layers in output time; trailing gaps and effects alone do not extend it.

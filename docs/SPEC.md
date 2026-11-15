@@ -484,6 +484,11 @@ Rules:
   default to `[]`. Track volume/mute and clip gain/fades are authoritative; legacy `audio` volume/mute fields remain
   decodable for compatibility, while `audio.denoise` still controls microphone export denoise. Older builds ignore
   the new keys and cannot preserve detached/imported audio edits.
+- `AudioClip.envelope` is optional internal fade metadata: ordered `{ "time": <media seconds>, "value": <0…1> }`
+  points preserve the original unit-gain envelope when faded audio is sliced, copied, retimed or trimmed. Missing
+  metadata retains legacy local fade behavior. Gain multiplies the stored envelope; an explicit fade edit resets it
+  to the clip's local fade controls. Preview, export and timeline outlines use the same ramps. Version remains 3;
+  older builds ignore this additive field and cannot preserve a sliced fade's phase when rewriting the project.
 - Screen/camera-linked audio uses timeline-clock start/end, with file playback rate `mediaRate ?? 1`, mapped through
   the overlapping video clips. Unlinked/layer-linked audio and all layers are **connected**: output start =
   `TimeMap.outputTime(atSource: start)`, output duration = `end - start`, independent of video speed. Their own media

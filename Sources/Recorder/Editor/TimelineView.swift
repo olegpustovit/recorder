@@ -3723,6 +3723,9 @@ extension TimelineView {
             let selected = UUID(uuidString: audio.id).map { model?.selection.contains($0) == true } ?? false
             let segments = project.audioSegments(audio)
             guard let first = segments.first, let last = segments.last else { continue }
+            var unitAudio = audio
+            unitAudio.gain = 1
+            let volumeRamps = project.audioVolumeRamps(unitAudio)
             for segment in segments {
                 let rect = audioRect(audio, output: segment.output)
                 guard rect.maxX >= gutterWidth, rect.minX <= bounds.width else { continue }
@@ -3733,12 +3736,17 @@ extension TimelineView {
                 drawAudioWaveform(audio, segment: segment, in: strip)
                 drawTranscript(audio, segment: segment, in: CGRect(x: rect.minX + 3, y: strip.maxY + 2, width: strip.width, height: rect.maxY - strip.maxY - 2))
                 if audio.gain == 0 { drawAudioHatch(rect) }
-                let duration = last.output.end - first.output.start
                 let ramp = NSBezierPath()
-                ramp.move(to: CGPoint(x: x(forOutput: first.output.start), y: rect.maxY - 2))
-                ramp.line(to: CGPoint(x: x(forOutput: first.output.start + min(audio.fadeIn ?? 0, duration)), y: rect.minY + 2))
-                ramp.move(to: CGPoint(x: x(forOutput: last.output.end - min(audio.fadeOut ?? 0, duration)), y: rect.minY + 2))
-                ramp.line(to: CGPoint(x: x(forOutput: last.output.end), y: rect.maxY - 2))
+                for volume in volumeRamps where volume.start != 1 || volume.end != 1 {
+                    let start = max(segment.output.start, volume.range.start), end = min(segment.output.end, volume.range.end)
+                    guard end > start else { continue }
+                    func point(_ time: Double) -> CGPoint {
+                        let fraction = (time - volume.range.start) / (volume.range.end - volume.range.start)
+                        let value = volume.start + (volume.end - volume.start) * fraction
+                        return CGPoint(x: x(forOutput: time), y: rect.maxY - 2 - CGFloat(value) * max(0, rect.height - 4))
+                    }
+                    ramp.move(to: point(start)); ramp.line(to: point(end))
+                }
                 NSGraphicsContext.saveGraphicsState()
                 NSBezierPath(rect: rect).addClip()
                 Theme.mediaMatte.withAlphaComponent(0.65).setStroke(); ramp.stroke()

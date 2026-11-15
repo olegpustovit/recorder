@@ -267,7 +267,7 @@ group, and lift onto free Video tracks with the same look.
 5. `⌥` while dragging = **copy** (Finder/Final Cut). "Act on one clip, ignore links" moves to the link toggle (⌘L);
    `dragIgnoresLinks = event.modifierFlags.contains(.option)` in `TimelineView.mouseDown` goes away.
 6. Lane order: `+ New track` drop row (always present) → Video N … Video 2 → Video → Camera/Zoom/… → audio.
-7. Phases ship separately; phase 1 needs no file-format change.
+7. Phases ship separately; phase 1 needs no file-format version bump (T-702b adds optional envelope metadata).
 
 **Facts the plan relies on (verified in code 2026-11-15):** clips already separate the timeline clock
 (`sourceStart/End`) from media (`mediaStart`, `clockSpeed`; `TimeMap.swift`); `useOutputClock()` rebases a project onto
@@ -278,11 +278,14 @@ linked audio with a clip via `editLinkedLayers`; `liftClip` and `deleteClips` al
 pushes colliding layers up a track and caps video layer lanes at 4; the timeline already previews drags through
 `dragProject`. So no clock rewrite is needed — reorder = permute clips, keep each clip's media, re-lay the clock.
 
-### Phase 1 — Free editing on the Video lane (no format change)
+### Phase 1 — Free editing on the Video lane (no version bump)
+
+T-702b adds optional version-3 audio-envelope metadata to preserve sliced fades. Legacy projects need no migration;
+older builds ignore those points and cannot preserve their phase. Recording layers still require version 4 in phase 2.
 
 | Scope | Tasks | Done |
 |---|---|---|
-| Phase 1 | T-701, T-701b, T-702, T-702b, T-703…T-705 | 3/7 |
+| Phase 1 | T-701, T-701b, T-702, T-702b, T-703…T-705 | 4/7 |
 | Phase 2 | T-711…T-714 | 0/4 |
 | Phase 3 | T-721…T-723 | 0/3 |
 
@@ -347,7 +350,7 @@ pushes colliding layers up a track and caps video layer lanes at 4; the timeline
     collision settlement can change tracks. Footage, rates, payloads and output length are preserved.
     The existing SPEC export rule still trims a newly trailing empty gap; export duration is preserved when retained
     content still reaches the same end. The seven-test duration fixture covers gaps inside retained video.
-- [ ] **T-702b Preserve spanning audio envelopes before magnetic editing**
+- [x] **T-702b Preserve spanning audio envelopes before magnetic editing**
   - Review finding (2026-11-15): `useOutputClock` and `applyLinkedEdit` retain each original audio fade on every
     sliced piece. A single fade-in on spanning mic audio can therefore repeat after reorder. Preserve each piece's
     original envelope phase/gain through slicing and rate conversion, including subsequent reorder, copy and trim.
@@ -355,6 +358,12 @@ pushes colliding layers up a track and caps video layer lanes at 4; the timeline
   - Verify: a spanning mic clip with fade-in/out sliced across three video clips has the same gain at corresponding
     media samples before/after reorder, including cuts inside either fade, mixed rates and undo-equivalent roundtrip;
     `make test`; native `audio-mix-abutting`, `clip-fades` and `menu-actions`.
+  - Verified 2026-11-15: 11/11 reorder/envelope tests and 154/154 full Core tests; all three named native selftests
+    pass with T-701's Xcode native/platform Testing overrides. Optional validated media-time unit-gain points preserve
+    fades across slicing, reorder, mixed/fractional rates, copy, trim, linked-audio movement, split/join and JSON
+    roundtrip. Gain/mute retain points; explicit fade edits clear them. Preview mix refresh and timeline outlines use
+    shared ramps. Near-equal floating-point segment boundaries coalesce before strict metadata validation.
+    Version stays 3; older builds ignore the optional metadata and cannot preserve partial fade phase on rewrite.
 - [ ] **T-703 Timeline: lift-and-follow drag with live reflow**
   - `TimelineView` `DragKind.moveClip` gets two behaviours by `project.rippleDelete`: Magnet → on every
     `mouseDragged` compute the caret index (pointer x vs. midpoints of the *other* clips), build
@@ -1310,3 +1319,5 @@ T-701 · 2026-11-15 · Added Clip.mediaEnd; restore and cut bubbles use footage 
 T-701b · 2026-11-15 · Completed artifact A8 media-order fixes: recorded typing/silence ranges map into every kept clip; regeneration maps independently owned zooms through copies/rates while retaining effects across harmless splits; pause slicing visits every media occurrence and erasing preserves untouched copies and connected tails; multi-window cursor normalization, camera following and frame sampling use each copy’s window selection with edit/undo cache invalidation. Core make test 143/143 passes with Xcode native/platform Testing overrides; native menu-actions and cursor-copies pass; fresh M6 fixture parity maxDelta=0 across eight times. Full-duration per-clip multi-window cursor simulation is the documented profiling limit. No physical-device/performance gate claimed; unrelated worktree changes preserved.
 
 T-702 · 2026-11-15 · Added group reorderClips with original-array carets, stable group order, no-op/invalid guards, simultaneous linked-content slicing/shifts, whole connected anchors and layer-owned audio deltas, existing link semantics, collision settlement and invariant rollback. Made explicit output-clock normalization idempotent. Seven targeted reorder tests pass; full make test 150/150 with Xcode native/platform Testing flags, including 1000 seeded requested-permutation checks and rollback on invalid audio slivers. Documented canonical-vs-legacy roundtrip representation and existing trailing-gap export trimming; added T-702b for reviewer-found repeated spanning-audio fades before UI integration. No native drag behavior, physical performance or release acceptance claimed. Unrelated worktree changes preserved.
+
+T-702b · 2026-11-15 · Added optional validated media-time audio-envelope points, captured before slicing/clock changes and evaluated through the shared volume-ramp path; explicit fades reset points, gain/mute retain them, compatible joins preserve them. Preview audio-only refresh and timeline ramp outlines include stored envelopes. Eleven targeted reorder/envelope tests pass; final full make test 154/154 and native audio-mix-abutting, clip-fades, menu-actions pass. Regressions compare gains at matching media samples through uniform/mixed/fractional rates, reordered/roundtripped cuts inside fades, copy/trim/rate edits, mixed-clock audio move, split/join and JSON; malformed/nonfinite metadata rejected, floating segment boundaries coalesced. Xcode native/platform Testing flags as T-701. Version-3 additive metadata documented; old builds ignore phase preservation on rewrite. No hardware/listening/performance acceptance or release claimed; unrelated edits preserved.

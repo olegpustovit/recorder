@@ -76,6 +76,7 @@ public struct AudioClip: Codable, Equatable, Sendable {
     public var gain: Double = 1        // linear 0…2; 0 = muted piece (drawn hatched)
     public var fadeIn: Double? = nil   // output seconds; nil/0 = off
     public var fadeOut: Double? = nil
+    public var envelope: [AudioGainPoint]? = nil // internal media-time unit-gain points; not editable automation
 }
 
 public struct LayerBlock: Codable, Equatable, Sendable {

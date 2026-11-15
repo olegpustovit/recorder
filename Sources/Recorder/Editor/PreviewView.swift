@@ -511,6 +511,7 @@ final class PreviewView: MTKView {
                 let timingChanged = audio.count != self.lastAudioClips.count || zip(audio, self.lastAudioClips).contains { current, previous in
                     var timing = current
                     timing.gain = previous.gain; timing.fadeIn = previous.fadeIn; timing.fadeOut = previous.fadeOut
+                    timing.envelope = previous.envelope
                     return timing != previous
                 }
                 let mixChanged = audio != self.lastAudioClips || tracks != self.lastAudioTracks

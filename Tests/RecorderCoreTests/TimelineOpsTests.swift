@@ -574,3 +574,149 @@ private func reorderFixture(speeds: [Double] = [1, 1, 1, 1]) -> Project {
         }
     }
 }
+
+private func fadedMicFixture(speeds: [Double]) -> Project {
+    var project = Project(source: Source(duration: 12, hasMic: true), clips: speeds.enumerated().map { i, speed in
+        Clip(sourceStart: Double(i) * 4, sourceEnd: Double(i + 1) * 4, speed: speed)
+    })
+    project.audioClips = [AudioClip(start: 0, end: 12, file: "mic.m4a", link: .screen)]
+    project.audioClips[0].gain = 0.7
+    project.audioClips[0].fadeIn = 5
+    project.audioClips[0].fadeOut = 5
+    return project
+}
+
+private func audioEnvelopeGain(_ project: Project, _ audio: AudioClip, media: Double) throws -> Double {
+    let segment = try #require(project.audioSegments(audio).first { $0.media.start <= media && media <= $0.media.end })
+    let output = segment.output.start + (media - segment.media.start) / (segment.media.end - segment.media.start) * (segment.output.end - segment.output.start)
+    let ramp = try #require(project.audioVolumeRamps(audio).first { $0.range.start <= output && output <= $0.range.end })
+    let fraction = (output - ramp.range.start) / (ramp.range.end - ramp.range.start)
+    return ramp.start + fraction * (ramp.end - ramp.start)
+}
+
+@Test func reorderPreservesSpanningAudioEnvelope() throws {
+    let samples = [0.5, 2, 3.5, 4.5, 6, 7.5, 8.5, 10, 11.5]
+    for speeds in [[1.0, 1, 1], [1.0, 2, 1], [2.0, 0.5, 1], [1.3, 0.7, 1.9]] {
+        var p = fadedMicFixture(speeds: speeds)
+        let baselineAudio = try #require(p.audioClips.first)
+        let gains = try samples.map { try audioEnvelopeGain(p, baselineAudio, media: $0) }
+        #expect(p.reorderClips([0], to: 3) == [2])
+        #expect(p.audioClips.count == 3)
+        for (sample, gain) in zip(samples, gains) {
+            let audio = try #require(p.audioClips.first { audio in
+                p.audioSegments(audio).contains { $0.media.start <= sample && sample <= $0.media.end }
+            })
+            #expect(abs(try audioEnvelopeGain(p, audio, media: sample) - gain) < 1e-8)
+        }
+        #expect(p.reorderClips([2], to: 0) == [0])
+        p = try JSONDecoder().decode(Project.self, from: JSONEncoder().encode(p))
+        for (sample, gain) in zip(samples, gains) {
+            let audio = try #require(p.audioClips.first { audio in
+                p.audioSegments(audio).contains { $0.media.start <= sample && sample <= $0.media.end }
+            })
+            #expect(abs(try audioEnvelopeGain(p, audio, media: sample) - gain) < 1e-8)
+        }
+        #expect(p.checkInvariants() == nil)
+    }
+}
+
+@Test func reorderAudioEnvelopeCopyAndTrim() throws {
+    var p = fadedMicFixture(speeds: [1, 2, 1])
+    let samples = [5.0, 6, 7]
+    let baselineAudio = try #require(p.audioClips.first)
+    let gains = try samples.map { try audioEnvelopeGain(p, baselineAudio, media: $0) }
+    let copied = try #require(p.copySelection(clips: [1], blocks: []))
+    let insertion = p.pasteSelection(copied, atOutput: TimeMap(p.clips).outputDuration)
+    let pasted = try #require(insertion)
+    let pastedIndex = try #require(pasted.clips.first)
+    let pastedClip = p.clips[pastedIndex]
+    let pastedAudio = try #require(p.audioClips.first { $0.start >= pastedClip.sourceStart && $0.end <= pastedClip.sourceEnd })
+    for (sample, gain) in zip(samples, gains) {
+        #expect(abs(try audioEnvelopeGain(p, pastedAudio, media: sample) - gain) < 1e-8)
+    }
+    let trimmedIndex = p.placeClip(pastedIndex, start: pastedClip.sourceStart + 0.25, end: pastedClip.sourceEnd - 0.25)
+    p.setSpeed(trimmedIndex, 1)
+    let trimmedClip = p.clips[trimmedIndex]
+    let trimmedAudio = try #require(p.audioClips.first { $0.start >= trimmedClip.sourceStart && $0.end <= trimmedClip.sourceEnd })
+    for (sample, gain) in zip(samples, gains) {
+        #expect(abs(try audioEnvelopeGain(p, trimmedAudio, media: sample) - gain) < 1e-8)
+    }
+    #expect(p.checkInvariants() == nil)
+}
+
+@Test func reorderAudioEnvelopeMetadata() throws {
+    var moved = Project(source: Source(duration: 24, hasMic: true), clips: [
+        Clip(sourceStart: 0, sourceEnd: 4), Clip(sourceStart: 4, sourceEnd: 8, speed: 2),
+        Clip(sourceStart: 8, sourceEnd: 24)])
+    moved.audioClips = [AudioClip(start: 0, end: 4, file: "mic.m4a", link: .screen, fadeIn: 3, fadeOut: 3)]
+    let original = moved.audioClips[0]
+    let samples = [0.5, 1, 3, 3.5]
+    let gains = try samples.map { try audioEnvelopeGain(moved, original, media: $0) }
+    moved.moveAudio(UUID(uuidString: original.id)!, toStart: 4, propagate: false)
+    for (sample, gain) in zip(samples, gains) {
+        #expect(abs(try audioEnvelopeGain(moved, moved.audioClips[0], media: sample) - gain) < 1e-8)
+    }
+    let fractional = Project(source: Source(duration: 30), clips: [
+        Clip(sourceStart: 2.27733102865903, sourceEnd: 3.5429334525639806),
+        Clip(sourceStart: 3.5429334525639806, sourceEnd: 5)], audioTracks: [AudioTrack(name: "Mic")])
+    let captured = fractional.audioPreservingEnvelope(AudioClip(start: 0, end: 5,
+        mediaStart: 7.627172002735692, mediaRate: 1.3, file: "mic.m4a", link: .screen, fadeIn: 1, fadeOut: 1))
+    #expect(captured.envelope != nil && captured.envelopeIsValid)
+    let legacy = try JSONDecoder().decode(AudioClip.self, from: Data(#"{"start":0,"end":12,"file":"mic.m4a","fadeIn":5}"#.utf8))
+    #expect(legacy.envelope == nil && legacy.fadeIn == 5)
+    let points = [AudioGainPoint(time: 0, value: 0), AudioGainPoint(time: 6, value: 1), AudioGainPoint(time: 12, value: 0)]
+    var p = fadedMicFixture(speeds: [1, 1, 1])
+    p.audioClips[0].envelope = points
+    let gain = try audioEnvelopeGain(p, p.audioClips[0], media: 3)
+    p.audioClips[0].gain *= 2
+    #expect(p.audioClips[0].envelope == points)
+    #expect(abs(try audioEnvelopeGain(p, p.audioClips[0], media: 3) - 2 * gain) < 1e-8)
+    p.audioClips[0].fadeIn = 1
+    #expect(p.audioClips[0].envelope == nil)
+    p.audioClips[0].envelope = points
+    p.audioClips[0].fadeOut = 5
+    #expect(p.audioClips[0].envelope == nil)
+
+    let malformed: [[AudioGainPoint]] = [
+        [], [AudioGainPoint(time: 0, value: 0)],
+        [AudioGainPoint(time: 0, value: 0), AudioGainPoint(time: 0, value: 1)],
+        [AudioGainPoint(time: 2, value: 0), AudioGainPoint(time: 1, value: 1)],
+        [AudioGainPoint(time: -1, value: 0), AudioGainPoint(time: 1, value: 1)],
+        [AudioGainPoint(time: 0, value: -0.1), AudioGainPoint(time: 1, value: 1)],
+        [AudioGainPoint(time: 0, value: 0), AudioGainPoint(time: 1, value: 1.1)],
+    ]
+    for envelope in malformed {
+        p.audioClips[0].envelope = envelope
+        let data = try JSONEncoder().encode(p.audioClips[0])
+        #expect(throws: DecodingError.self) { try JSONDecoder().decode(AudioClip.self, from: data) }
+        #expect(p.checkInvariants() != nil)
+    }
+    for envelope in [[AudioGainPoint(time: .nan, value: 0), AudioGainPoint(time: 1, value: 1)],
+                     [AudioGainPoint(time: 0, value: 0), AudioGainPoint(time: 1, value: .infinity)]] {
+        p.audioClips[0].envelope = envelope
+        #expect(p.checkInvariants() != nil)
+    }
+}
+
+@Test func reorderAudioEnvelopeSplitJoin() throws {
+    var p = fadedMicFixture(speeds: [1, 1, 1])
+    let baselineAudio = try #require(p.audioClips.first)
+    let samples = [0.5, 2, 3.5, 6, 9, 11.5]
+    let gains = try samples.map { try audioEnvelopeGain(p, baselineAudio, media: $0) }
+    let firstID = try #require(UUID(uuidString: baselineAudio.id))
+    let firstSplit = p.splitAudio(firstID, atOutput: 4, propagate: false)
+    #expect(firstSplit)
+    let lastID = try #require(p.audioClips.last.flatMap { UUID(uuidString: $0.id) })
+    let secondSplit = p.splitAudio(lastID, atOutput: 8, propagate: false)
+    #expect(secondSplit)
+    let envelope = try #require(p.audioClips.first?.envelope)
+    #expect(p.audioClips.allSatisfy { $0.envelope == envelope })
+    let ids = Set(p.audioClips.compactMap { UUID(uuidString: $0.id) })
+    #expect(p.joinAudio(ids).count == 1)
+    #expect(p.audioClips.count == 1)
+    let joined = try #require(p.audioClips.first)
+    for (sample, gain) in zip(samples, gains) {
+        #expect(abs(try audioEnvelopeGain(p, joined, media: sample) - gain) < 1e-8)
+    }
+    #expect(p.checkInvariants() == nil)
+}

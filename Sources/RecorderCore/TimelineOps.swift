@@ -113,12 +113,13 @@ public extension Project {
             guard let (a, b) = zip(sorted, sorted.dropFirst()).first(where: { a, b in
                 // Split so the type checker stays fast on CI's compiler.
                 let sameSource = a.track == b.track && a.file == b.file && a.link == b.link && a.layer == b.layer
-                let sameSetup = a.gain == b.gain && a.mediaRate == b.mediaRate
+                let sameSetup = a.gain == b.gain && a.mediaRate == b.mediaRate && a.envelope == b.envelope
                 let contiguous = abs(a.end - b.start) < 1e-6
                 let sameMedia = abs(a.mediaStart + (a.end - a.start) * (a.mediaRate ?? 1) - b.mediaStart) < 1e-6
                 return sameSource && sameSetup && contiguous && sameMedia
             }), let i = audioClips.firstIndex(where: { $0.id == a.id }) else { break }
             audioClips[i].end = b.end; audioClips[i].fadeOut = b.fadeOut
+            audioClips[i].envelope = a.envelope
             audioClips.removeAll { $0.id == b.id }
             survivors.remove(b.id); joined = true
         }
@@ -241,6 +242,7 @@ public extension Project {
               clip.mediaIn + clip.mediaDuration - clip.mediaTime(atSource: s) >= Self.minClipLength else { return false }
         let before = self
 
+        preserveAudioEnvelopes(in: s...s)
         // Copies keep every per-clip setting (speed, clock, colour); only the inner fades are dropped.
         clips[i].sourceEnd = s
         clips[i].fadeOut = nil
@@ -269,7 +271,9 @@ public extension Project {
     }
 
     private mutating func editAudio(link: AudioClip.Link, in range: ClosedRange<Double>, moveBy delta: Double?, layer: String? = nil) {
-        let selected = audioClips.filter { $0.link == link && (link != .layer || $0.layer == layer) }
+        let selected = audioClips.filter { $0.link == link && (link != .layer || $0.layer == layer) }.map {
+            $0.end > range.lowerBound && $0.start < range.upperBound ? audioPreservingEnvelope($0) : $0
+        }
         audioClips.removeAll { $0.link == link && (link != .layer || $0.layer == layer) }
         for track in Set(selected.map(\.track)).sorted() {
             var blocks = selected.filter { $0.track == track }
@@ -384,9 +388,17 @@ public extension Project {
         if checkInvariants() != nil { self = before }
     }
 
+    private mutating func preserveAudioEnvelopes(in range: ClosedRange<Double>? = nil) {
+        audioClips = audioClips.map { audio in
+            guard !audio.isConnected, range.map({ audio.end > $0.lowerBound && audio.start < $0.upperBound }) ?? true else { return audio }
+            return audioPreservingEnvelope(audio)
+        }
+    }
+
     /// Put mixed-speed clips on one editing clock before moving across their boundaries.
     /// Playback rates and layer media positions stay unchanged; only timeline coordinates change.
     private mutating func useOutputClock() {
+        preserveAudioEnvelopes()
         let original = clips
         if original.first?.sourceStart == 0,
            original.allSatisfy({ $0.timeScale == 1 && $0.mediaStart != nil }),
@@ -527,6 +539,7 @@ public extension Project {
     /// Clipboard content uses output seconds relative to the selection, with media in-points
     /// frozen. Reuse Project's track arrays/settings; no second serialization model is needed.
     func copySelection(clips indices: Set<Int>, blocks ids: Set<UUID>) -> Project? {
+        let audioClips = self.audioClips.map { audioPreservingEnvelope($0) }
         let selected = indices.filter { clips.indices.contains($0) && !clips[$0].isEmpty }
         let blockIDs = Set(ids.map(\.uuidString))
         func mergedRanges(_ ranges: [ClosedRange<Double>]) -> [ClosedRange<Double>] {
@@ -877,6 +890,7 @@ public extension Project {
             a = min(max(start, max(trimLower, mediaLower)), old.sourceEnd - minimum)
             b = max(min(end, min(trimUpper, mediaUpper)), a + minimum)
         }
+        if a != old.sourceStart || b != old.sourceEnd { preserveAudioEnvelopes(in: old.sourceStart...old.sourceEnd) }
         var placed = old
         placed.sourceStart = a; placed.sourceEnd = b
         placed.mediaStart = moving ? old.mediaIn : old.mediaTime(atSource: a)
@@ -1000,7 +1014,8 @@ public extension Project {
                 guard output - layerRange.start >= 0.5, layerRange.end - output >= 0.5 else { return false }
                 editLayer(layer, in: output...output, moveBy: 0, propagate: true)
             } else {
-                var pieces = [audio.isConnected ? connectedOnOutput(audio)! : audio]
+                let preserved = audioPreservingEnvelope(audio)
+                var pieces = [audio.isConnected ? connectedOnOutput(preserved)! : preserved]
                 let cut = audio.isConnected ? output : s
                 applyLinkedEdit(&pieces, in: cut...cut, moveBy: 0)
                 audioClips.removeAll { $0.id == audio.id }
@@ -1066,7 +1081,7 @@ public extension Project {
         guard let output = connectedOnOutput(layer) else { return }
         var pieces = [output]
         applyLinkedEdit(&pieces, in: range, moveBy: delta)
-        let partners = audioClips.filter { $0.link == .layer && $0.layer == layer.id }
+        let partners = audioClips.filter { $0.link == .layer && $0.layer == layer.id }.map { audioPreservingEnvelope($0) }
         if propagate {
             var audio = partners.compactMap { connectedOnOutput($0) }
             if pieces.isEmpty { audio = [] }
@@ -1135,6 +1150,7 @@ public extension Project {
                             layer.kind == .video ? range.start + (mediaDuration ?? .infinity) - layer.mediaStart : .infinity)
             changed.end = max(min(requested, upper), range.start + 0.5)
         }
+        guard changed.start != range.start || changed.end != range.end else { return }
         extendAudioClock(toOutput: changed.start)
         if propagate {
             if changed.start > range.start { editLayer(layer, in: range.start...changed.start, moveBy: nil, propagate: true) }
@@ -1142,7 +1158,7 @@ public extension Project {
                 editLayer(current, in: changed.end...range.end, moveBy: nil, propagate: true)
             }
             for index in audioClips.indices where audioClips[index].link == .layer && audioClips[index].layer == layer.id {
-                guard var audio = connectedOnOutput(audioClips[index]) else { continue }
+                guard var audio = connectedOnOutput(audioPreservingEnvelope(audioClips[index])) else { continue }
                 if changed.start < range.start, abs(audio.start - range.start) < 1e-9 {
                     audio.advanceMedia(by: changed.start - range.start)
                     audio.start = changed.start
@@ -1161,7 +1177,7 @@ public extension Project {
     mutating func unlinkAudio(_ id: UUID) -> Bool {
         guard let original = audioClips.first(where: { $0.id == id.uuidString }), original.link != nil else { return false }
         let before = self
-        var pieces = [original]
+        var pieces = [audioPreservingEnvelope(original)]
         if !original.isConnected {
             for boundary in Set(clips.flatMap { [$0.sourceStart, $0.sourceEnd] }).sorted() {
                 applyLinkedEdit(&pieces, in: boundary...boundary, moveBy: 0)
@@ -1190,7 +1206,7 @@ public extension Project {
         let before = self
         let otherIDs = Set(audioClips.filter { $0.id != id.uuidString }.map(\.id))
         if audioClips.first(where: { $0.id == id.uuidString })?.isConnected == false, !unlinkAudio(id) { return false }
-        let incoming = audioClips.filter { !otherIDs.contains($0.id) }
+        let incoming = audioClips.filter { !otherIDs.contains($0.id) }.map { audioPreservingEnvelope($0) }
         var linked: [AudioClip] = []
         for audio in incoming {
             guard let output = connectedOnOutput(audio), link == .layer || output.end <= TimeMap(clips).outputDuration + 1e-9 else { self = before; return false }
@@ -1331,7 +1347,7 @@ public extension Project {
                   let layerRange = outputRange(layer, connected: true), let layerID = UUID(uuidString: layer.id) {
             moveLayer(layerID, toStart: TimeMap(clips).sourceTime(atOutput: layerRange.start + start - range.start))
         } else if let index = audioClips.firstIndex(where: { $0.id == audio.id }) {
-            var changed = audio
+            var changed = audioPreservingEnvelope(audio)
             changed.start = TimeMap(clips).sourceTime(atOutput: start)
             if audio.isConnected { changed.end = changed.start + length }
             else {
@@ -1353,11 +1369,12 @@ public extension Project {
         guard requested.isFinite, let audio = audioClips.first(where: { $0.id == id.uuidString }),
               let range = outputRange(audio, connected: audio.isConnected) else { return }
         let before = self
+        let preserved = audioPreservingEnvelope(audio)
         if audio.isConnected, edge == .leading { extendAudioClock(toOutput: min(requested, range.end - 0.1)) }
         let neighbours = audioClips.filter { $0.track == audio.track && $0.id != audio.id }.compactMap { outputRange($0, connected: $0.isConnected) }
         let rate = (audio.end - audio.start) * (audio.mediaRate ?? 1) / (range.end - range.start)
         let duration = mediaDuration ?? (["mic.m4a", "system.m4a"].contains(audio.file) ? self.source.duration : .infinity)
-        var changed = audio
+        var changed = preserved
         let target: Double
         switch edge {
         case .leading:
@@ -1372,6 +1389,7 @@ public extension Project {
             target = max(min(requested, upper, audio.isConnected ? .infinity : TimeMap(clips).outputDuration), range.start + 0.1)
             changed.end = audio.isConnected ? changed.start + target - range.start : TimeMap(clips).sourceTime(atOutput: target)
         }
+        guard changed.start != audio.start || changed.end != audio.end || changed.mediaStart != audio.mediaStart else { self = before; return }
         if propagate, audio.link == .screen {
             splitClip(atSource: audio.start); splitClip(atSource: audio.end)
             let partners = clips.indices.filter { !clips[$0].isEmpty && clips[$0].sourceStart >= audio.start && clips[$0].sourceEnd <= audio.end }
@@ -1409,6 +1427,7 @@ public extension Project {
     mutating func removeClip(_ i: Int, propagate: Bool = true) -> Bool {
         guard clips.indices.contains(i), clips.count > 1 else { return false }
         let before = self
+        preserveAudioEnvelopes(in: clips[i].sourceStart...clips[i].sourceEnd)
         if propagate { editLinkedLayers(in: clips[i].sourceStart...clips[i].sourceEnd, moveBy: nil) }
         clips.remove(at: i)
         settleConnected()
@@ -1424,16 +1443,20 @@ public extension Project {
         guard clips.indices.contains(i), s.isFinite else { return }
         let before = self
         let old = clips[i]
+        var changed = old
         switch edge {
         case .leading:
             let lower = i > 0 ? clips[i - 1].sourceEnd : 0
             let upper = clips[i].sourceEnd - Self.minClipLength
-            clips[i].sourceStart = min(max(s, lower), upper)
+            changed.sourceStart = min(max(s, lower), upper)
         case .trailing:
             let upper = i < clips.count - 1 ? clips[i + 1].sourceStart : source.duration
             let lower = clips[i].sourceStart + Self.minClipLength
-            clips[i].sourceEnd = max(min(s, upper), lower)
+            changed.sourceEnd = max(min(s, upper), lower)
         }
+        guard changed.sourceStart != old.sourceStart || changed.sourceEnd != old.sourceEnd else { return }
+        preserveAudioEnvelopes(in: old.sourceStart...old.sourceEnd)
+        clips[i] = changed
         clips[i].mediaStart = old.mediaTime(atSource: clips[i].sourceStart)
         if propagate {
             if clips[i].sourceStart > old.sourceStart { editLinkedLayers(in: old.sourceStart...clips[i].sourceStart, moveBy: nil) }
@@ -1566,6 +1589,7 @@ public extension Project {
         let old = clips[i], requested = min(16, max(0.25, speed))
         guard abs(requested - old.speed) > 1e-9 else { return }
         let before = self
+        preserveAudioEnvelopes(in: old.sourceStart...old.sourceEnd)
         if linkVideoEdits {
             clips[i].clockSpeed = old.timeScale * requested / old.speed
             clips[i].speed = requested
@@ -1691,6 +1715,7 @@ public extension Project {
     private mutating func splitClip(atSource s: Double) {
         guard let i = clips.firstIndex(where: { !$0.isEmpty && s > $0.sourceStart + Self.minClipLength && s < $0.sourceEnd - Self.minClipLength }) else { return }
         let before = self
+        preserveAudioEnvelopes(in: s...s)
         let clip = clips[i]
         // Copies keep every per-clip setting (speed, clock, colour); only the inner fades are dropped.
         clips[i].sourceEnd = s
@@ -1769,6 +1794,7 @@ public extension Project {
             }
             if !audioClip.gain.isFinite || !(0...2).contains(audioClip.gain) { return "audio \(index) gain out of range" }
             if !fadesAreValid(audioClip.fadeIn, audioClip.fadeOut) { return "audio \(index) invalid fade" }
+            if !audioClip.envelopeIsValid { return "audio \(index) invalid envelope" }
             let rate = audioClip.mediaRate ?? 1
             if !rate.isFinite || rate <= 0 || !mediaIsValid(file: audioClip.file, start: audioClip.mediaStart,
                                                          length: (audioClip.end - audioClip.start) * rate) {
