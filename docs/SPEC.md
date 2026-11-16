@@ -61,7 +61,7 @@ Sources for this spec: Screen Studio's public guide (editor) and local toolchain
 | Projects | Create project from existing video file | M6 |
 | Editor | Preview canvas, play/pause, frame-accurate scrub with audio | M3 |
 | Editor | Background (wallpaper/gradient/colour/image, blur), padding, rounded corners, inset, shadow | M3 |
-| Editor | Output aspect ratio (Auto, 16:9, 9:16, 1:1, 4:3, 16:10), crop | M3 |
+| Editor | Output aspect ratio (Auto, 16:9, 9:16, 1:1, 4:3, 16:10; 4:5 via agent `reframe`), crop | M3 |
 | Editor | Timeline: clip track with split / trim / remove / speed; undo/redo | M4 |
 | Editor | Zoom track: auto-zooms from clicks, manual zooms, add/move/resize/disable/remove, instant zoom | M4 |
 | Editor | Cursor: size, smoothing preset, hide when idle, hide entirely, loop position, always-arrow, rotate, remove shakes, click sound, hide-cursor ranges | M4 (size/smooth/idle) / M6 (rest) |
@@ -436,7 +436,7 @@ source frame unless noted; media in-points use their own file's seconds):
 
 ```jsonc
 {
-  "version": 3,                 // 5 for motion text; else 4 for recording layers/imported clips; else 3
+  "version": 3,                 // 6 for aspect 4:5 or cropKeys; else 5 for motion text; else 4 for recording layers/imported clips; else 3
   "id": "UUID", "title": "My Recording", "createdAt": "ISO8601",
   "source": { "kind": "display|window|area", "pixelWidth": 2880, "pixelHeight": 1800, "scale": 2, "duration": 93.4, "hasCamera": true, "hasMic": true, "hasSystemAudio": false },
   "clips":   [ { "sourceStart": 0, "sourceEnd": 41.2, "speed": 1 }, { "sourceStart": 47.0, "sourceEnd": 93.4, "speed": 2 } ],
@@ -445,7 +445,8 @@ source frame unless noted; media in-points use their own file's seconds):
   "masks":   [ { "id": "UUID", "start": 10, "end": 14, "kind": "mask|highlight", "rect": {"x":..,"y":..,"w":..,"h":..}, "opacity": 0.8 } ],
   "cursorHidden": [ { "start": 20, "end": 25 } ],
   "crop": { "x": 0, "y": 0, "w": 1, "h": 1 },
-  "output": { "aspect": "auto|16:9|9:16|1:1|4:3|16:10" },
+  "output": { "aspect": "auto|16:9|9:16|1:1|4:3|16:10|4:5" },
+  "cropKeys": [ { "t": 3.0, "rect": {"x":0.3,"y":0,"w":0.32,"h":1} } ],   // optional time-varying crop (reframe), source seconds, linear; empty = static "crop"
   "background": { "kind": "wallpaper|gradient|color|image", "wallpaper": "01", "color": "#5B3DF5", "gradient": ["#5B3DF5","#E0567A"], "gradientAngle": 45, "imagePath": "background.jpg", "blur": 0 },
   "frame": { "padding": 0.08, "cornerRadius": 0.02, "inset": 0, "insetColor": "#000000", "shadow": 0.5 },
   "cursor": { "hidden": false, "size": 1.5, "style": "smooth|medium|rapid|none", "hideWhenIdle": true, "loop": false, "alwaysArrow": false, "rotate": false, "removeShakes": false, "clickSound": false },
@@ -478,7 +479,7 @@ Rules:
   the project removes it. "Extract raw files" = reveal the package contents in Finder.
 - Chosen backdrop images use immutable `background-<id>.<ext>` files beside `project.json`; `background.imagePath`
   selects the current copy. Replacing a backdrop never overwrites the file a previous undo state references.
-- **Version rule.** Save `"version": 5` when any text uses `lowerThird` or `chapter`; otherwise save `4` when a recording layer or a clip with `file` exists; otherwise save `3`. Markers (`id`, source-time `at`, `label`) are additive and default to `[]`, with no version bump. Older builds reject a newer version with the alert above and never rewrite it. Opening a v3 project needs no migration.
+- **Version rule.** Save `"version": 6` when `output.aspect` is `4:5` or `cropKeys` is non-empty (older builds cannot decode 4:5 nor follow keys); else `"version": 5` when any text uses `lowerThird` or `chapter`; otherwise save `4` when a recording layer or a clip with `file` exists; otherwise save `3`. Markers (`id`, source-time `at`, `label`) are additive and default to `[]`, with no version bump. Older builds reject a newer version with the alert above and never rewrite it. Opening a v3 project needs no migration.
 - **Clip `group`**: optional string. Neighbouring clips with the same `group` show, select, move and trim as one clip
   (Join Clips ⌘J); each keeps its own `speed`, cuts and fades. Absent = not grouped. Older builds ignore it, so no
   version bump. A paste gets a fresh id so a copy never merges into the group it came from.

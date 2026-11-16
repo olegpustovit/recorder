@@ -74,15 +74,7 @@ public func zoomedScreenRect(base: CGRect, view: ViewTransform) -> CGRect {
 /// that ratio instead — `screenRect` then letterboxes the source inside it. `longEdge` sets the
 /// larger dimension; both dimensions are even (video encoders require it, SPEC §6.8).
 public func outputSize(aspect: Output.Aspect, croppedSource: CGSize, longEdge: Int) -> CGSize {
-    let ratio: Double
-    switch aspect {
-    case .auto: ratio = croppedSource.height > 0 ? croppedSource.width / croppedSource.height : 1
-    case .r16x9: ratio = 16.0 / 9.0
-    case .r9x16: ratio = 9.0 / 16.0
-    case .r1x1: ratio = 1.0
-    case .r4x3: ratio = 4.0 / 3.0
-    case .r16x10: ratio = 16.0 / 10.0
-    }
+    let ratio = aspect.ratio ?? (croppedSource.height > 0 ? croppedSource.width / croppedSource.height : 1)
     let long = Double(longEdge)
     let (w, h) = ratio >= 1 ? (long, long / ratio) : (long * ratio, long)
     func evenRound(_ v: Double) -> Double { 2 * (v / 2).rounded() }

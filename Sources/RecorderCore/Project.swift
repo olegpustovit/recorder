@@ -721,6 +721,19 @@ public struct Output: Codable, Equatable, Sendable {
         case r1x1 = "1:1"
         case r4x3 = "4:3"
         case r16x10 = "16:10"
+        case r4x5 = "4:5"
+        /// Width / height; `nil` = `auto` (the cropped source's own aspect).
+        public var ratio: Double? {
+            switch self {
+            case .auto: nil
+            case .r16x9: 16.0 / 9
+            case .r9x16: 9.0 / 16
+            case .r1x1: 1
+            case .r4x3: 4.0 / 3
+            case .r16x10: 16.0 / 10
+            case .r4x5: 4.0 / 5
+            }
+        }
     }
     public var aspect: Aspect
     public init(aspect: Aspect = .auto) { self.aspect = aspect }
@@ -749,7 +762,7 @@ public struct Marker: Codable, Equatable, Sendable {
 }
 
 public struct Project: Codable, Equatable, Sendable {
-    public static let currentVersion = 5
+    public static let currentVersion = 6
 
     public var framingEnabled: Bool { frame.enabled ?? true }
 
@@ -780,6 +793,8 @@ public struct Project: Codable, Equatable, Sendable {
     public var windowShots: [WindowShot]
     public var cursorHidden: [TimeRange]
     public var crop: NormRect
+    /// Time-varying crop (T-831 reframe), source seconds; empty = the static `crop`. Additive key, no version bump.
+    public var cropKeys: [CropKey] = []
     public var output: Output
     public var background: Background
     public var frame: Frame
@@ -831,7 +846,7 @@ public struct Project: Codable, Equatable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case version, id, title, createdAt, source, linkVideoEdits, rippleDelete, clips, zooms, layouts, cameraClips, keystrokeClips, masks, texts, windowShots, cursorHidden, crop, output,
+        case version, id, title, createdAt, source, linkVideoEdits, rippleDelete, clips, zooms, layouts, cameraClips, keystrokeClips, masks, texts, windowShots, cursorHidden, crop, cropKeys, output,
              background, frame, cursor, animation, camera, audio, keys, audioTracks, audioClips, layers, markers
     }
 
@@ -856,6 +871,7 @@ public struct Project: Codable, Equatable, Sendable {
         windowShots = try c.value(.windowShots, default: [])
         cursorHidden = try c.value(.cursorHidden, default: [])
         crop = try c.value(.crop, default: NormRect())
+        cropKeys = try c.value(.cropKeys, default: [])
         output = try c.value(.output, default: Output())
         background = try c.value(.background, default: Background())
         frame = try c.value(.frame, default: Frame())
@@ -899,7 +915,8 @@ public struct Project: Codable, Equatable, Sendable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         var saved = self
-        if texts.contains(where: { $0.style == .lowerThird || $0.style == .chapter }) { saved.version = 5 }
+        if output.aspect == .r4x5 || !cropKeys.isEmpty { saved.version = 6 } // older builds can't decode 4:5 or follow crop keys
+        else if texts.contains(where: { $0.style == .lowerThird || $0.style == .chapter }) { saved.version = 5 }
         else { saved.version = layers.contains { $0.kind == .recording } || clips.contains { $0.file != nil } ? 4 : 3 }
         try encoder.encode(saved).write(to: url, options: .atomic)
     }

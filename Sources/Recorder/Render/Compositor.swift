@@ -874,14 +874,7 @@ final class Compositor {
     }
 
     private func aspectRatio(for project: Project) -> Double {
-        switch project.output.aspect {
-        case .auto: return cropAspect(project)
-        case .r16x9: return 16.0 / 9.0
-        case .r9x16: return 9.0 / 16.0
-        case .r1x1: return 1
-        case .r4x3: return 4.0 / 3.0
-        case .r16x10: return 16.0 / 10.0
-        }
+        project.output.aspect.ratio ?? cropAspect(project)
     }
 
     private func cropAspect(_ project: Project) -> Double {

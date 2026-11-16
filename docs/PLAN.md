@@ -691,9 +691,9 @@ acceptance undo, privacy (renders hide key overlays) and existing op semantics; 
 | Scope | Tasks | Done |
 |---|---|---|
 | Reliability | T-825…T-826 | 0/2 |
-| Perception + feedback core | T-827…T-829 | 1/3 |
-| Intent ops + reframe | T-830…T-831 | 0/2 |
-| Captions + eval harness | T-832…T-833 | 1/2 |
+| Perception + feedback core | T-827…T-829 | 2/3 |
+| Intent ops + reframe | T-830…T-831 | 1/2 |
+| Captions + eval harness | T-832…T-833 | 2/2 |
 
 - [ ] **T-825 Persistent drafts, listChanged, schema parity** — R1 `agent-draft.json` in the package (base revision,
   calls, status); `project.open` returns `draft:{id,status,changes}` and re-adopts it (replaces D8). R2
@@ -720,7 +720,7 @@ acceptance undo, privacy (renders hide key overlays) and existing op semantics; 
   tinyShot, orphanEffect, edgeContent, each naming a shot and a suggested op. Verify: Core report/lint tests.
 - [ ] **T-830 Intent ops** — keepShots, pace, fitDuration, speed `ramp`, autoZoom exposure; each lowers to
   cut/speed/zoom in one undo step and returns lowered ops. Verify: Core lowering tests, one-step undo.
-- [ ] **T-831 reframe** — `output.aspect` plus per-shot stationary/pan crop aimed at focus and cursor
+- [x] **T-831 reframe** — `output.aspect` plus per-shot stationary/pan crop aimed at focus and cursor
   (time-varying crop on the camera lane); edgeContent lint clean. Verify: Core crop-path tests, focus kept in frame.
 - [x] **T-832 Optional per-shot captions** — on-device (Vision OCR/classification) 6–10 word captions; `null`
   when unavailable, everything works without them. Verify: caption present/absent paths.
@@ -1694,3 +1694,4 @@ T-827 analyze.shots · 2026-11-17 · Core `storyboard(signals:fps:events:thresho
 T-828 · 2026-11-17 · `render.storyboard/strip/compare` (AgentRender `tiles`/`keyframe`/`compare`, MCPTools render branch; storyboard via `loadStoryboard` stub until T-827 merges) · verified: `make test` all pass, `make build` · not verified: rendered output (no GUI run; needs `--selftest`/HUMAN on a fixture once analyze.shots exists).
 
 T-832 · 2026-11-17 · opt-in shot captions: Core `ShotCaption.shape` + `ShotCaptionTests`, app `AgentCaptions.captionShots` (Vision OCR on focus crop, classifier fallback, nil on failure) · verified: `make test` all pass, `make build` · not verified: Vision output on a real recording; `captions:true` on analyze.shots is wired by the integrator. captions wiring into analyze.shots done at integration
+T-831 · 2026-11-17 · `reframe` op (`aspect` 4:5|1:1|9:16|16:9, `mode` perShot|static). Core `reframePlan(storyboard:aspect:mode:sourceSize:) -> [CropKey]` (AutoFlip-style: stationary on focus ∪ cursor when it fits the largest aspect window, else linear pan between focus edges, clamped inside the frame; static = one window over all focus). Model: additive `Project.cropKeys` (source-time linear keys, empty = static `crop`; `Project.cropSample(atSource:)`), `Output.Aspect.r4x5` + `.ratio` (replaced three duplicate switches); format version 6 saved only when 4:5 or cropKeys is used (SPEC §5; `currentVersion` 6). Preview and export both sample the crop in `makeFrameState` (one line), so the existing Compositor consumes a per-frame crop of constant aspect; the Crop sheet clears keys. The MCP edit handler fills the op's `keys` from `loadStoryboard` before the op is stored (draft replay needs no storyboard); `loadStoryboard` is a stub throwing "run analyze.shots first" until T-827 merges (`// ponytail:`). Tests: ReframeTests (focus kept ≥95% of frames, stationary vs pan, clamp/aspect, static, cut at boundaries, old-project decode, op + version). make test and make build pass. NOT verified (no GUI): native preview/export pixel parity of a keyed crop, editor overlays (zoom-target/mask rect) while keys are active still map through the static `crop`; edgeContent lint is T-829.

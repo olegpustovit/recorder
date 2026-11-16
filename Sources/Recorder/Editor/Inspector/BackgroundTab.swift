@@ -22,7 +22,7 @@ struct BackgroundTab: View {
                 }.buttonStyle(TechButtonStyle(kind: .secondary, compact: true))
             }
             HStack(spacing: 4) {
-                ForEach([Output.Aspect.auto, .r16x9, .r9x16, .r1x1, .r4x3, .r16x10], id: \.self) { aspect in
+                ForEach([Output.Aspect.auto, .r16x9, .r9x16, .r1x1, .r4x5, .r4x3, .r16x10], id: \.self) { aspect in
                     shapeButton(aspect)
                 }
             }
@@ -120,17 +120,10 @@ struct BackgroundTab: View {
 
     private func shapeButton(_ aspect: Output.Aspect) -> some View {
         let selected = model.project.output.aspect == aspect
-        let ratio: CGFloat = switch aspect {
-        case .auto: CGFloat(model.project.source.pixelWidth) * model.project.crop.w / max(1, CGFloat(model.project.source.pixelHeight) * model.project.crop.h)
-        case .r16x9: 16.0 / 9
-        case .r9x16: 9.0 / 16
-        case .r1x1: 1
-        case .r4x3: 4.0 / 3
-        case .r16x10: 16.0 / 10
-        }
+        let ratio = CGFloat(aspect.ratio ?? Double(model.project.source.pixelWidth) * model.project.crop.w / max(1, Double(model.project.source.pixelHeight) * model.project.crop.h))
         return Button {
             guard !selected else { return }
-            model.edit("Output shape") { $0.output.aspect = aspect }
+            model.edit("Output shape") { $0.output.aspect = aspect; $0.cropKeys = [] } // keys were planned for the old aspect
         } label: {
             VStack(spacing: 4) {
                 Rectangle().strokeBorder(lineWidth: 1)
