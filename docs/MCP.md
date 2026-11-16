@@ -138,6 +138,13 @@ Nine tools, each with an `action` string (Resolve's MCP shows that grouping keep
 ### 5.2 `EditOp` (JSON, discriminated by `op`)
 
 All times are output seconds of the project at `ifRevision`. Ids come from `timeline.get`.
+`cut`, `cutWords` and `speed` accept `snap:true`; `cutPauses` defaults to it and accepts `snap:false` for strict
+behavior. Use snapping for cuts derived from idle ranges. It clamps to the timeline and moves invalid split
+points to the nearest clip edge using the editor's0.1s media/two-frame output minimums. Timed effects do not
+split clips and retain their existing range validation. Adjustments are returned in `changes[].note` with source
+ranges. A collapsed/uneditable operation returns `skipped:true`, its note and a warning; other operations proceed.
+Draft status/panel excludes these skipped operations from Accept N and preserves their replay ids.
+Zoom centers are normalized0–1 in the source frame, with the origin at the top-left corner.
 
 ```jsonc
 {"op":"cut","from":12.0,"to":14.5}                          // remove a range (video + linked audio, ripple)
@@ -213,10 +220,10 @@ nothing changes and an error says which op failed.
 
 ```swift
 public enum EditOp: Codable, Equatable, Sendable {
-    case cut(from: Double, to: Double)
-    case cutPauses(minDuration: Double, keepTail: Double, from: Double?, to: Double?)
-    case cutWords(transcript: String, words: [String])
-    case speed(from: Double, to: Double, speed: Double)
+    case cut(from: Double, to: Double, snap: Bool = false)
+    case cutPauses(minDuration: Double, keepTail: Double, from: Double?, to: Double?, snap: Bool = true)
+    case cutWords(transcript: String, words: [String], snap: Bool = false)
+    case speed(from: Double, to: Double, speed: Double, snap: Bool = false)
     case zoom(from: Double, to: Double, scale: Double, center: NormPoint?)
     case text(from: Double, to: Double, style: TextBlock.Style, text: String, position: NormPoint?, size: Double?)
     case captions(maxWords: Int)
@@ -231,7 +238,10 @@ public struct EditContext: Sendable {
     public var silent: [TimeRange]    // silentRanges over mic.m4a at the requested threshold, source seconds
     public init(words: [Word] = [], silent: [TimeRange] = [])
 }
-public struct EditChange: Codable, Equatable, Sendable { public var op: Int; public var summary: String; public var at: Double; public var delta: Double }
+public struct EditChange: Codable, Equatable, Sendable {
+    public var op: Int; public var summary: String; public var at: Double; public var delta: Double
+    public var note: String? = nil; public var skipped = false
+}
 public enum EditError: Error, Equatable, CustomStringConvertible {
     case invalidOp(index: Int, reason: String), outOfRange(index: Int, reason: String), transcriptChanged, invariant(String)
 }
@@ -256,6 +266,10 @@ Implementation notes (follow them):
 - `cutWords`: `transcriptChanged` if `transcriptID(context.words) != transcript`. Word `wN` → source `[start,end]`
   widened to half the gap to each neighbour, capped at 0.15 s per side.
 - `speed`: split at both edges, then `setSpeed` on every clip fully inside.
+- Snapped cut/speed ranges respect both media and output minimums at current playback rates. Cut snapping also
+  considers earlier cuts in the batch, preventing tiny retained seams. A snapped cut that would remove all
+  remaining media is skipped with a warning. Strict operations and invalid/nonfinite parameters still fail
+  atomically. No arbitrary snap tolerance or new duration setting is introduced.
 - `zoom`: `addZoom(atSource:length:mode:)` with `.manual` when `center` is set else `.auto`; then set `scale`/`center`.
   `addZoom` returns nil when the lane is occupied → `invalidOp(reason: "zoom overlaps <id>")`.
 - `text`: `addText(atSource:length:style:text:)`, then set `position`/`size`. `captions`: `replaceCaptions(captionPhrases(words: context.words, maxWords:))`.
@@ -573,6 +587,12 @@ The relay/config/prompt, client JSONL, observations, PNGs and movie stay in the 
 `inspector-panels`, `make test` and gallery checks. The recorded study selects the Claude panel explicitly;
 conditional automatic selection is checked by `mcp-live`. Native package opening canonicalizes symlink aliases
 and file/directory URL forms so a client cannot silently open a second editor for the same human project.
+
+**T-818 Verify.** `make test` covers near-edge/base-time cuts and stable ids, short/neighboring/full-removal
+skips, media/output minima at mixed rates, imported clocks, speed, pause defaults/strict opt-out, word cuts,
+flat JSON and atomic invalid batches. `Recorder --selftest mcp-edit --headless` checks the real MCP schema and
+decoder, adjustment/warning output, frozen draft replay and skipped selection counts without creating any
+application windows. Interactive `mcp-edit` is not repeated under the user's no-window/no-focus instruction.
 
 **T-817 Verify.** `mcp-review <fixture> [--reduce-motion]` submits, unticks an operation, applies another call,
 checks the same draft/operation identities and exclusions, native disabled watching controls, status reasons,

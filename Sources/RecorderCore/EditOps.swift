@@ -49,10 +49,10 @@ public enum JSONValue: Codable, Equatable, Sendable {
 }
 
 public enum EditOp: Codable, Equatable, Sendable {
-    case cut(from: Double, to: Double)
-    case cutPauses(minDuration: Double, keepTail: Double, from: Double?, to: Double?)
-    case cutWords(transcript: String, words: [String])
-    case speed(from: Double, to: Double, speed: Double)
+    case cut(from: Double, to: Double, snap: Bool = false)
+    case cutPauses(minDuration: Double, keepTail: Double, from: Double?, to: Double?, snap: Bool = true)
+    case cutWords(transcript: String, words: [String], snap: Bool = false)
+    case speed(from: Double, to: Double, speed: Double, snap: Bool = false)
     case zoom(from: Double, to: Double, scale: Double, center: NormPoint?)
     case text(from: Double, to: Double, style: TextBlock.Style, text: String, position: NormPoint?, size: Double?)
     case captions(maxWords: Int)
@@ -63,17 +63,17 @@ public enum EditOp: Codable, Equatable, Sendable {
     case style(patch: [String: JSONValue])
 
     private enum CodingKeys: String, CodingKey {
-        case op, from, to, minDuration, keepTail, transcript, words, speed, scale, center, style, text, position, size, maxWords, rect, opacity, at, label, id, patch
+        case op, from, to, minDuration, keepTail, transcript, words, speed, scale, center, style, text, position, size, maxWords, rect, opacity, at, label, id, patch, snap
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         func get<T: Decodable>(_ key: CodingKeys) throws -> T { try c.decode(T.self, forKey: key) }
         func optional<T: Decodable>(_ key: CodingKeys) throws -> T? { try c.decodeIfPresent(T.self, forKey: key) }
         switch try c.decode(String.self, forKey: .op) {
-        case "cut": self = try .cut(from: get(.from), to: get(.to))
-        case "cutPauses": self = try .cutPauses(minDuration: optional(.minDuration) ?? 0.6, keepTail: optional(.keepTail) ?? 0.12, from: optional(.from), to: optional(.to))
-        case "cutWords": self = try .cutWords(transcript: get(.transcript), words: get(.words))
-        case "speed": self = try .speed(from: get(.from), to: get(.to), speed: get(.speed))
+        case "cut": self = try .cut(from: get(.from), to: get(.to), snap: optional(.snap) ?? false)
+        case "cutPauses": self = try .cutPauses(minDuration: optional(.minDuration) ?? 0.6, keepTail: optional(.keepTail) ?? 0.12, from: optional(.from), to: optional(.to), snap: optional(.snap) ?? true)
+        case "cutWords": self = try .cutWords(transcript: get(.transcript), words: get(.words), snap: optional(.snap) ?? false)
+        case "speed": self = try .speed(from: get(.from), to: get(.to), speed: get(.speed), snap: optional(.snap) ?? false)
         case "zoom": self = try .zoom(from: get(.from), to: get(.to), scale: get(.scale), center: optional(.center))
         case "text": self = try .text(from: get(.from), to: get(.to), style: get(.style), text: get(.text), position: optional(.position), size: optional(.size))
         case "captions": self = try .captions(maxWords: optional(.maxWords) ?? 4)
@@ -93,12 +93,12 @@ public enum EditOp: Codable, Equatable, Sendable {
             try put(name, .op); try put(from, .from); try put(to, .to)
         }
         switch self {
-        case let .cut(from, to): try range("cut", from, to)
-        case let .cutPauses(minDuration, keepTail, from, to):
+        case let .cut(from, to, snap): try range("cut", from, to); try put(snap, .snap)
+        case let .cutPauses(minDuration, keepTail, from, to, snap):
             try put("cutPauses", .op); try put(minDuration, .minDuration); try put(keepTail, .keepTail)
-            try optional(from, .from); try optional(to, .to)
-        case let .cutWords(transcript, words): try put("cutWords", .op); try put(transcript, .transcript); try put(words, .words)
-        case let .speed(from, to, speed): try range("speed", from, to); try put(speed, .speed)
+            try optional(from, .from); try optional(to, .to); try put(snap, .snap)
+        case let .cutWords(transcript, words, snap): try put("cutWords", .op); try put(transcript, .transcript); try put(words, .words); try put(snap, .snap)
+        case let .speed(from, to, speed, snap): try range("speed", from, to); try put(speed, .speed); try put(snap, .snap)
         case let .zoom(from, to, scale, center): try range("zoom", from, to); try put(scale, .scale); try optional(center, .center)
         case let .text(from, to, style, text, position, size):
             try range("text", from, to); try put(style, .style); try put(text, .text); try optional(position, .position); try optional(size, .size)
@@ -110,6 +110,12 @@ public enum EditOp: Codable, Equatable, Sendable {
             try optional(position, .position); try optional(size, .size); try optional(scale, .scale); try optional(center, .center)
         case let .remove(id): try put("remove", .op); try put(id, .id)
         case let .style(patch): try put("style", .op); try put(patch, .patch)
+        }
+    }
+    var snapsClipBoundaries: Bool {
+        switch self {
+        case let .cut(_, _, snap), let .cutPauses(_, _, _, _, snap), let .cutWords(_, _, snap), let .speed(_, _, _, snap): return snap
+        default: return false
         }
     }
 }
@@ -127,6 +133,8 @@ public struct EditChange: Codable, Equatable, Sendable {
     public var summary: String
     public var at: Double
     public var delta: Double
+    public var note: String? = nil
+    public var skipped = false
 }
 public enum EditError: Error, Equatable, CustomStringConvertible {
     case invalidOp(index: Int, reason: String), outOfRange(index: Int, reason: String), transcriptChanged, invariant(String)
@@ -150,6 +158,35 @@ private func mergedEditRanges(_ ranges: [TimeRange]) -> [TimeRange] {
     return union
 }
 
+private func snappedEditRanges(_ ranges: [TimeRange], clips: [Clip]) -> [TimeRange] {
+    mergedEditRanges(ranges.flatMap { range in
+        clips.filter { !$0.isEmpty }.compactMap { clip -> TimeRange? in
+            var start = max(range.start, clip.sourceStart), end = min(range.end, clip.sourceEnd)
+            guard end > start else { return nil }
+            let margin = max(0.1 * clip.timeScale / clip.speed, 2 / 60.0 * clip.timeScale)
+            func boundary(_ time: Double) -> Double {
+                let left = time - clip.sourceStart, right = clip.sourceEnd - time
+                guard min(left, right) < margin else { return time }
+                return left <= right ? clip.sourceStart : clip.sourceEnd
+            }
+            start = boundary(start); end = boundary(end)
+            let wholeClip = start == clip.sourceStart && end == clip.sourceEnd
+            guard end > start, (end - start) * clip.speed / clip.timeScale >= 0.1 - 1e-9,
+                  wholeClip || (end - start) / clip.timeScale >= 2 / 60.0 else { return nil }
+            return TimeRange(start: start, end: end)
+        }
+    })
+}
+
+private func snappingNote(_ before: [TimeRange], _ after: [TimeRange]) -> String? {
+    guard before != after else { return nil }
+    guard !after.isEmpty else { return "Snapping left no editable range of the minimum length." }
+    func times(_ ranges: [TimeRange]) -> String {
+        ranges.map { String(format: "%.3f–%.3f", $0.start, $0.end) }.joined(separator: ", ")
+    }
+    return "Snapped source ranges \(times(before)) → \(times(after)) s."
+}
+
 public extension Project {
     /// Resolves every output range against the base project before applying any changes.
     func applying(_ ops: [EditOp], context: EditContext) throws -> (project: Project, changes: [EditChange]) {
@@ -160,10 +197,11 @@ public extension Project {
         let baseMap = TimeMap(clips)
         let duration = baseMap.outputDuration
         let baseBlocks = zooms.map { ($0.id, $0.start, $0.end) } + texts.map { ($0.id, $0.start, $0.end) } + masks.map { ($0.id, $0.start, $0.end) } + markers.map { ($0.id, $0.time, $0.time) }
-        func ranges(_ from: Double, _ to: Double, index: Int, recordedOnly: Bool = false) throws -> [TimeRange] {
-            guard from.isFinite, to.isFinite, from >= 0, to <= duration, to > from else {
+        func ranges(_ from: Double, _ to: Double, index: Int, recordedOnly: Bool = false, snap: Bool = false) throws -> [TimeRange] {
+            guard from.isFinite, to.isFinite, to > from, snap || (from >= 0 && to <= duration) else {
                 throw EditError.outOfRange(index: index, reason: "expected 0 ≤ from < to ≤ \(duration)")
             }
+            let from = max(0, from), to = min(duration, to)
             var offset = 0.0
             return clips.compactMap { clip in
                 defer { offset += clip.outputDuration }
@@ -181,18 +219,20 @@ public extension Project {
         func positive(_ value: Double?, index: Int) throws {
             if let value, !value.isFinite || value <= 0 { throw EditError.invalidOp(index: index, reason: "size/scale must be finite and positive") }
         }
-        var prepared: [(op: EditOp, ranges: [TimeRange], at: Double)] = []
+        var prepared: [(op: EditOp, ranges: [TimeRange], at: Double, note: String?)] = []
         for (index, op) in ops.enumerated() {
-            var resolved: [TimeRange] = [], at = 0.0
+            var resolved: [TimeRange] = [], at = 0.0, note: String?
             switch op {
-            case let .cut(from, to), let .speed(from, to, _), let .zoom(from, to, _, _), let .text(from, to, _, _, _, _), let .highlight(from, to, _, _):
-                resolved = try ranges(from, to, index: index); at = from
-                guard !resolved.isEmpty else { throw EditError.invalidOp(index: index, reason: "range contains only gaps") }
-            case let .cutPauses(minimum, tail, from, to):
+            case let .cut(from, to, _), let .speed(from, to, _, _), let .zoom(from, to, _, _), let .text(from, to, _, _, _, _), let .highlight(from, to, _, _):
+                resolved = try ranges(from, to, index: index, snap: op.snapsClipBoundaries); at = min(duration, max(0, from))
+                if op.snapsClipBoundaries, from < 0 || to > duration { note = "Clamped output range to 0–\(duration) s." }
+                guard !resolved.isEmpty || op.snapsClipBoundaries else { throw EditError.invalidOp(index: index, reason: "range contains only gaps") }
+            case let .cutPauses(minimum, tail, from, to, snap):
                 guard minimum.isFinite, minimum >= 0, tail.isFinite, tail >= 0 else {
                     throw EditError.invalidOp(index: index, reason: "minDuration and keepTail must be finite and nonnegative")
                 }
-                let bounds = try ranges(from ?? 0, to ?? duration, index: index, recordedOnly: true)
+                let bounds = try ranges(from ?? 0, to ?? duration, index: index, recordedOnly: true, snap: snap)
+                if snap, (from ?? 0) < 0 || (to ?? duration) > duration { note = "Clamped output range to 0–\(duration) s." }
                 let pauses = context.silent.filter { $0.start.isFinite && $0.end.isFinite && $0.end - $0.start >= minimum && $0.end - $0.start > 2 * tail + 0.05 }
                     .map { TimeRange(start: $0.start + tail, end: $0.end - tail) }
                 resolved = baseMap.sourceRanges(forMedia: pauses).flatMap { pause in
@@ -202,7 +242,7 @@ public extension Project {
                     }
                 }
                 at = resolved.first.flatMap { baseMap.outputTime(atSource: $0.start) } ?? from ?? 0
-            case let .cutWords(transcript, ids):
+            case let .cutWords(transcript, ids, _):
                 guard transcript == transcriptID(context.words) else { throw EditError.transcriptChanged }
                 var media: [TimeRange] = []
                 for id in ids {
@@ -244,7 +284,7 @@ public extension Project {
                 at = baseMap.outputTime(atSource: block.1) ?? 0
             case .captions, .style: break
             }
-            prepared.append((op, mergedEditRanges(resolved), at))
+            prepared.append((op, mergedEditRanges(resolved), at, note))
         }
         var result = self, changes: [EditChange] = []
         var cuts: [(index: Int, ranges: [TimeRange])] = []
@@ -255,15 +295,22 @@ public extension Project {
                 let before = TimeMap(result.clips).outputDuration
                 let span = item.ranges.first.map { TimeRange(start: $0.start, end: item.ranges.last!.end) }
                 var summary: String
+                var note = item.note, skipped = false
                 switch item.op {
                 case .cut, .cutPauses, .cutWords:
                     cuts.append((index, item.ranges))
                     let kind: String
                     switch item.op { case .cutPauses: kind = "Cut pause"; case .cutWords: kind = "Cut words"; default: kind = "Cut" }
                     summary = "\(kind) \(stamp(item.at))"
-                case let .speed(_, _, speed):
+                case let .speed(_, _, speed, snap):
                     guard speed.isFinite, (0.25...16).contains(speed) else { throw EditError.invalidOp(index: index, reason: "speed must be 0.25–16") }
-                    for range in item.ranges.reversed() {
+                    let speedRanges = snap ? snappedEditRanges(item.ranges, clips: result.clips) : item.ranges
+                    if snap {
+                        if let adjustment = snappingNote(item.ranges, speedRanges) { note = [note, adjustment].compactMap { $0 }.joined(separator: " ") }
+                        skipped = speedRanges.isEmpty
+                        if skipped { note = "Snapping left no editable range of the minimum length." }
+                    }
+                    for range in speedRanges.reversed() {
                         try result.agentSplit(range, index: index)
                         let indices = result.clips.indices.filter { !result.clips[$0].isEmpty && result.clips[$0].sourceStart >= range.start - 1e-9 && result.clips[$0].sourceEnd <= range.end + 1e-9 }
                         for i in indices.reversed() {
@@ -391,13 +438,38 @@ public extension Project {
                     summary = "Update styling"
                 }
                 if let error = result.checkInvariants() { throw EditError.invariant("op \(index): \(error)") }
-                return EditChange(op: index, summary: summary, at: item.at, delta: TimeMap(result.clips).outputDuration - before)
+                return EditChange(op: index, summary: summary, at: item.at, delta: TimeMap(result.clips).outputDuration - before, note: note, skipped: skipped)
             }
             changes.append(change)
         }
         // Remove the union once; overlapping cut ops must never remove the same footage twice.
-        var removed: [TimeRange] = []
-        for cut in cuts {
+        var removed: [TimeRange] = [], cutPreview = result
+        for position in cuts.indices {
+            var cut = cuts[position]
+            if ops[cut.index].snapsClipBoundaries {
+                let snapped = snappedEditRanges(cut.ranges, clips: cutPreview.clips)
+                if let adjustment = snappingNote(cut.ranges, snapped) {
+                    changes[cut.index].note = [changes[cut.index].note, adjustment].compactMap { $0 }.joined(separator: " ")
+                }
+                cut.ranges = snapped
+                var trial = cutPreview
+                trial.agentRemoveSourceRanges(snapped, includeImported: true)
+                let intended = snapped.reduce(0) { total, range in
+                    total + cutPreview.clips.filter { !$0.isEmpty }.reduce(0) { sum, clip in
+                        sum + max(0, min(range.end, clip.sourceEnd) - max(range.start, clip.sourceStart)) / clip.timeScale
+                    }
+                }
+                if abs(TimeMap(cutPreview.clips).outputDuration - TimeMap(trial.clips).outputDuration - intended) > 1e-7 {
+                    cut.ranges = []
+                    changes[cut.index].note = "Snapping would remove all remaining media or leave an invalid split."
+                }
+                if cut.ranges.isEmpty {
+                    changes[cut.index].skipped = true
+                    if changes[cut.index].note?.isEmpty != false { changes[cut.index].note = "Snapping left no editable range of the minimum length." }
+                }
+            }
+            cutPreview.agentRemoveSourceRanges(cut.ranges, includeImported: true)
+            cuts[position] = cut
             let novel = cut.ranges.reduce(into: [TimeRange]()) { parts, range in
                 var pieces = [range]
                 for old in removed {

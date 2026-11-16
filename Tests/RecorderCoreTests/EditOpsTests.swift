@@ -203,4 +203,74 @@ import Testing
         #expect(result.project.frame.enabled == false)
         #expect(result.project.checkInvariants() == nil)
     }
+
+    @Test func snappedCutsReportEdgesAndKeepBaseTimeAndIDs() throws {
+        let base = project()
+        let ops: [EditOp] = [.cut(from: 0.01, to: 2, snap: true), .cut(from: 6, to: 8), .marker(at: 15, label: "Kept")]
+        let context = EditContext(operationSeeds: ["edge", "strict", "marker"])
+        let result = try base.applying(ops, context: context)
+        #expect(result.project.clips.map(\.sourceStart) == [2, 8])
+        #expect(result.project.clips.map(\.sourceEnd) == [6, 20])
+        #expect(result.changes.map(\.delta) == [-2, -2, 0])
+        #expect(result.changes[0].note?.contains("0.010") == true)
+        #expect(result.changes[0].note?.contains("0.000") == true)
+        #expect(result.changes.allSatisfy { !$0.skipped })
+        #expect(try base.applying(ops, context: context).project == result.project)
+        #expect(result.project.markers[0].time == 15 && result.project.checkInvariants() == nil)
+        #expect(throws: EditError.self) { try base.applying([.cut(from: 0.01, to: 2)], context: EditContext()) }
+    }
+
+    @Test func snappedShortAndNeighboringCutsDoNotFailTheBatch() throws {
+        let base = project()
+        let result = try base.applying([.cut(from: 2, to: 2.04, snap: true), .cut(from: 4, to: 5, snap: true),
+            .cut(from: 5.04, to: 6, snap: true), .marker(at: 10, label: "Still applied")], context: EditContext())
+        #expect(result.changes[0].skipped && result.changes[0].note != nil)
+        #expect(result.changes.map(\.delta) == [0, -1, -1, 0])
+        #expect(result.project.clips.map(\.sourceStart) == [0, 6])
+        #expect(result.project.clips.map(\.sourceEnd) == [4, 20])
+        #expect(result.project.markers.count == 1 && result.project.checkInvariants() == nil)
+        let all = try base.applying([.cut(from: 0.01, to: 19.99, snap: true)], context: EditContext())
+        #expect(all.project == base && all.changes[0].skipped && all.changes[0].note != nil)
+        #expect(throws: EditError.self) { try base.applying([.cut(from: .nan, to: 2, snap: true)], context: EditContext()) }
+        #expect(throws: EditError.self) { try base.applying([.cut(from: 2, to: 1, snap: true)], context: EditContext()) }
+        #expect(throws: EditError.self) { try base.applying([.cut(from: 0.01, to: 2, snap: true), .style(patch: ["typo": .bool(true)])], context: EditContext()) }
+        #expect(base.clips == project().clips)
+    }
+
+    @Test func snappingHonorsMediaAndOutputMinimumsAndSpeedSplits() throws {
+        let base = project()
+        let fast = Project(source: Source(duration: 40), clips: [Clip(sourceStart: 0, sourceEnd: 40, speed: 16)])
+        let cut = try fast.applying([.cut(from: 0.01, to: 0.1, snap: true)], context: EditContext())
+        #expect(abs(cut.changes[0].delta + 0.1) < 1e-9 && cut.project.clips[0].sourceStart == 1.6)
+        var copied = Clip(sourceStart: 0, sourceEnd: 10, speed: 4)
+        copied.clockSpeed = 1; copied.mediaStart = 0; copied.file = "media/movie.mov"
+        let imported = Project(source: Source(duration: 40), clips: [copied])
+        let mediaCut = try imported.applying([.cut(from: 0.02, to: 1, snap: true)], context: EditContext())
+        #expect(mediaCut.project.clips[0].sourceStart == 1 && mediaCut.project.clips[0].mediaIn == 4)
+        let speed = try base.applying([.speed(from: 0.01, to: 2, speed: 2, snap: true)], context: EditContext())
+        #expect(speed.project.clips[0].sourceStart == 0 && speed.project.clips[0].speed == 2)
+        #expect(speed.changes[0].note != nil && !speed.changes[0].skipped)
+        let short = try base.applying([.speed(from: 2, to: 2.02, speed: 2, snap: true)], context: EditContext())
+        #expect(short.project == base && short.changes[0].skipped)
+        #expect(throws: EditError.self) { try project().applying([.speed(from: 2, to: 2.02, speed: 0, snap: true)], context: EditContext()) }
+        #expect(cut.project.checkInvariants() == nil && mediaCut.project.checkInvariants() == nil && speed.project.checkInvariants() == nil)
+    }
+
+    @Test func pauseSnappingDefaultsAndFlatJSONKeepStrictOptOut() throws {
+        let context = EditContext(silent: [TimeRange(start: 0.01, end: 1), TimeRange(start: 2, end: 2.08)])
+        let op = EditOp.cutPauses(minDuration: 0.01, keepTail: 0, from: nil, to: nil)
+        let result = try project().applying([op], context: context)
+        #expect(result.project.clips[0].sourceStart == 1 && result.changes[0].delta == -1)
+        #expect(result.changes[0].note != nil && !result.changes[0].skipped)
+        #expect(throws: EditError.self) {
+            try project().applying([.cutPauses(minDuration: 0.01, keepTail: 0, from: nil, to: nil, snap: false)], context: context)
+        }
+        let ops: [EditOp] = [op, .cut(from: 1, to: 2, snap: true), .cutWords(transcript: "t", words: ["w0"], snap: true), .speed(from: 1, to: 2, speed: 2, snap: true)]
+        #expect(try JSONDecoder().decode([EditOp].self, from: JSONEncoder().encode(ops)) == ops)
+        #expect(try JSONDecoder().decode(EditOp.self, from: Data(#"{"op":"cutPauses"}"#.utf8)) == .cutPauses(minDuration: 0.6, keepTail: 0.12, from: nil, to: nil))
+        let words = EditContext(words: [Word(text: "edge", start: 0.01, end: 1)])
+        let wordCut = try project().applying([.cutWords(transcript: transcriptID(words.words), words: ["w0"], snap: true)], context: words)
+        #expect(wordCut.project.clips[0].sourceStart == 1 && wordCut.changes[0].note != nil)
+        #expect(result.project.checkInvariants() == nil)
+    }
 }

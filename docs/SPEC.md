@@ -1164,6 +1164,12 @@ That returns the same draft to watching until resubmitted, retaining operation i
 verdict. Status reports excluded op indices and skipped op indices/reasons so Claude can respond to rejections.
 Dry runs, empty batches and failed calls leave the submitted review ready. Acceptance after iteration still
 creates one undo step for the full checked proposal.
+Clip-splitting agent operations (`cut`, `cutWords`, `speed`) accept `snap:true`; pause-derived cuts enable it by
+default. Snapping uses the existing media/output split minimums, moves invalid boundaries to the nearest clip
+edge, and reports adjusted source ranges in `changes[].note`. Ranges that collapse below the minimum or cannot
+leave editable media are skipped with a warning, preserving the rest of the atomic batch. Their status reasons
+remain visible and they do not count toward acceptance. Strict opt-out retains exact-range validation. Zoom
+center coordinates are normalized0–1 in the source frame with a top-left origin.
 First Draft/Live apply selects Claude automatically only in a key editor window. Other clients can retain
 invisible drafts but cannot replace/submit over the current preview; their panel shows that the draft is hidden.
 Changes are collapsed by kind (Cuts, Speed, Zoom, Text, Markers, Other), with a native tri-state checkbox,

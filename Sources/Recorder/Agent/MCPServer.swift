@@ -38,13 +38,15 @@ struct AgentDraft {
         var skipped: [[Int]: String] = [:], changes: [[EditChange]] = []
         var cuts: [(start: Double, end: Double, duration: Double)] = []
         for (callIndex, call) in calls.enumerated() {
-            var indices = call.indices.filter { !excluded.contains([callIndex, $0]) && (skipInvalid || self.skipped[[callIndex, $0]] == nil) }
+            let automaticSkips = self.changes.indices.contains(callIndex) ? Set(self.changes[callIndex].filter(\.skipped).map(\.op)) : []
+            var indices = call.indices.filter { !excluded.contains([callIndex, $0]) && (skipInvalid || self.skipped[[callIndex, $0]] == nil || automaticSkips.contains($0)) }
             let frozen = contexts.indices.contains(callIndex) ? contexts[callIndex] : context
             var resolved: [EditChange] = []
             while !indices.isEmpty {
                 do {
                     let result = try project.applying(indices.map { call[$0] }, context: replayContext(frozen, call: callIndex, indices: indices))
                     resolved = result.changes.map { change in var change = change; change.op = indices[change.op]; return change }
+                    for change in resolved where change.skipped { skipped[[callIndex, change.op]] = change.note ?? "Below the minimum length" }
                     if skipInvalid, indices.contains(where: { isCut(call[$0]) }) {
                         // Compare before/after cuts so free retiming's empty space is never labelled as a cut.
                         let nonCuts = indices.filter { !isCut(call[$0]) }

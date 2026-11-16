@@ -215,6 +215,9 @@ extension EnvironmentValues {
             if let reason = draft.skipped[row.id] {
                 Text("Skipped: \(reason)").font(Font(Theme.captionFont)).foregroundStyle(Theme.warningColor)
                     .fixedSize(horizontal: false, vertical: true)
+            } else if let note = row.change.note, !note.isEmpty {
+                Text(note).font(Font(Theme.captionFont)).foregroundStyle(Theme.textSecondaryColor)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }.padding(.vertical, 4)
     }

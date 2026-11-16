@@ -19,9 +19,14 @@ enum MCPTools {
         let number: [String: Any] = ["type": "number", "minimum": 0]
         let string: [String: Any] = ["type": "string"]
         let point: [String: Any] = ["type": "object", "properties": ["x": number, "y": number], "required": ["x", "y"], "additionalProperties": false]
+        let center: [String: Any] = ["type": "object", "description": "Normalized 0–1 coordinates in the source frame; origin is the top-left corner.", "properties": ["x": ["type": "number", "minimum": 0, "maximum": 1], "y": ["type": "number", "minimum": 0, "maximum": 1]], "required": ["x", "y"], "additionalProperties": false]
         let rect: [String: Any] = ["type": "object", "properties": ["x": number, "y": number, "w": number, "h": number], "required": ["x", "y", "w", "h"], "additionalProperties": false]
         func op(_ name: String, _ properties: [String: Any], _ required: [String]) -> [String: Any] {
-            ["type": "object", "properties": properties.merging(["op": ["type": "string", "enum": [name]]], uniquingKeysWith: { _, b in b }),
+            var properties = properties
+            if ["cut", "cutPauses", "cutWords", "speed"].contains(name) {
+                properties["snap"] = ["type": "boolean", "default": name == "cutPauses", "description": "Snap invalid split boundaries to the nearest clip edge. Skips ranges below the clip minimum with a warning; changes[].note reports adjustments."]
+            }
+            return ["type": "object", "properties": properties.merging(["op": ["type": "string", "enum": [name]]], uniquingKeysWith: { _, b in b }),
              "required": ["op"] + required, "additionalProperties": false]
         }
         return [
@@ -29,12 +34,12 @@ enum MCPTools {
             op("cutPauses", ["from": number, "to": number, "minDuration": number, "keepTail": number], []),
             op("cutWords", ["transcript": string, "words": ["type": "array", "items": string]], ["transcript", "words"]),
             op("speed", ["from": number, "to": number, "speed": number], ["from", "to", "speed"]),
-            op("zoom", ["from": number, "to": number, "scale": number, "center": point], ["from", "to", "scale"]),
+            op("zoom", ["from": number, "to": number, "scale": number, "center": center], ["from", "to", "scale"]),
             op("text", ["from": number, "to": number, "style": ["type": "string", "enum": TextBlock.Style.allCases.map(\.rawValue)], "text": string, "position": point, "size": number], ["from", "to", "style", "text"]),
             op("captions", ["maxWords": ["type": "integer", "minimum": 1, "maximum": 100]], []),
             op("highlight", ["from": number, "to": number, "rect": rect, "opacity": number], ["from", "to", "rect"]),
             op("marker", ["at": number, "label": string], ["at", "label"]),
-            op("update", ["id": string, "from": number, "to": number, "text": string, "position": point, "size": number, "scale": number, "center": point], ["id"]),
+            op("update", ["id": string, "from": number, "to": number, "text": string, "position": point, "size": number, "scale": number, "center": center], ["id"]),
             op("remove", ["id": string], ["id"]),
             op("style", ["patch": ["type": "object"]], ["patch"])
         ]
@@ -95,7 +100,7 @@ enum MCPTools {
     private static func json<T: Encodable>(_ value: T) throws -> Any {
         try JSONSerialization.jsonObject(with: JSONEncoder().encode(value))
     }
-    private static func decodeOps(_ value: Any?) throws -> [EditOp] {
+    static func decodeOps(_ value: Any?) throws -> [EditOp] {
         guard let values = value as? [[String: Any]] else { throw MCPFailure(code: "INVALID_OP", message: "edit.apply needs ops: [EditOp]; use tools/list for the twelve op schemas") }
         return try values.enumerated().map { index, value in
             guard let name = value["op"] as? String, let schema = operationSchemas.first(where: {
@@ -206,13 +211,13 @@ enum MCPTools {
             }
         }
         return ["revision": nextRevision, "mode": level.rawValue, "changes": try json(result.changes),
-                "duration": ["before": before.exportDuration, "after": result.project.exportDuration], "warnings": warnings(result.project), "dryRun": dryRun]
+                "duration": ["before": before.exportDuration, "after": result.project.exportDuration], "warnings": warnings(result.project, changes: result.changes), "dryRun": dryRun]
     }
-    private static func warnings(_ project: Project) -> [String] {
+    static func warnings(_ project: Project, changes: [EditChange]) -> [String] {
         let blocks = agentTimeline(project).blocks.filter { $0.lane == "text" }
         let captions = Set(project.texts.filter { $0.style == .caption }.map(\.id))
         let thirds = Set(project.texts.filter { $0.style == .lowerThird }.map(\.id))
-        return blocks.filter { thirds.contains($0.id) }.flatMap { third in
+        return changes.filter(\.skipped).compactMap { change in change.note.map { "op \(change.op): \($0)" } } + blocks.filter { thirds.contains($0.id) }.flatMap { third in
             blocks.filter { captions.contains($0.id) && $0.from < third.to && $0.to > third.from }.map {
                 "lowerThird \(third.id) overlaps captions \(max(third.from, $0.from))–\(min(third.to, $0.to))"
             }

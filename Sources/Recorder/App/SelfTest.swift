@@ -4763,6 +4763,30 @@ private final class MCPTestClient {
 }
 
 @MainActor private func checkMCPEdit(_ args: [String]) async throws {
+    if args.contains("--headless") {
+        let ops = try MCPTools.decodeOps([["op": "cut", "from": 0.01, "to": 1.0, "snap": true],
+            ["op": "cut", "from": 1.5, "to": 1.53, "snap": true], ["op": "marker", "at": 2.0, "label": "Kept"]])
+        let base = Project(source: Source(duration: 3, hasMic: true), clips: [Clip(sourceStart: 0, sourceEnd: 3)])
+        var draft = AgentDraft(base: try MCPTools.revision(base), baseProject: base)
+        let result = try draft.append(ops, context: EditContext())
+        let reviewed = try draft.refreshReview(context: EditContext())
+        let snapSchema = (MCPTools.operationSchemas[1]["properties"] as? [String: Any])?["snap"] as? [String: Any]
+        let centerSchema = (MCPTools.operationSchemas[4]["properties"] as? [String: Any])?["center"] as? [String: Any]
+        guard result.changes[0].note?.contains("0.010") == true, result.changes[1].skipped,
+              MCPTools.warnings(result.project, changes: result.changes).count == 1,
+              reviewed == result.project, try draft.project(context: EditContext()) == reviewed,
+              draft.selectedCount == 2, draft.skipped[[0, 1]] == result.changes[1].note,
+              draft.rows.count == 3, reviewed.markers.count == 1, abs(reviewed.exportDuration - 2) < 1e-9,
+              snapSchema?["default"] as? Bool == true, centerSchema?["description"] as? String == "Normalized 0–1 coordinates in the source frame; origin is the top-left corner." else {
+            throw MCPTestFailure(description: "Headless MCP snap schema/decode/notes/warnings/replay/selection")
+        }
+        do {
+            _ = try MCPTools.decodeOps([["op": "cut", "from": 0, "to": 1, "snap": "yes"]])
+            throw MCPTestFailure(description: "Invalid snap value accepted")
+        } catch is MCPFailure { }
+        print("MCP edit headless: snap schema/default/boolean validation, decoded boundary adjustment, warnings, stable replay and skipped selection verified; no application windows created")
+        return
+    }
     guard let path = args.first else { throw MCPTestFailure(description: "usage: mcp-edit <fixture.recorder>") }
     let root = URL(fileURLWithPath: "/tmp/recorder-mcp-edit-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
