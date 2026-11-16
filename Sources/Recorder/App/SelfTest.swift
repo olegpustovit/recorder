@@ -4813,6 +4813,12 @@ private final class MCPTestClient {
             }
             let ops = try MCPTools.decodeOps([["op": "zoom", "from": 1, "to": 3, "scale": 2, "follow": "cursor", "ease": "rapid"]])
             guard ops == [.zoom(from: 1, to: 3, scale: 2, center: nil, follow: .cursor, ease: .rapid)] else { throw MCPTestFailure(description: "zoom follow/ease decode") }
+            let textOps = try MCPTools.decodeOps([["op": "text", "from": 1, "to": 3, "style": "label", "text": "T", "size": 30, "color": "blue"]])
+            let textSchema = MCPTools.operationSchemas.first { (($0["properties"] as? [String: Any])?["op"] as? [String: Any])?["enum"] as? [String] == ["text"] }
+            let textProperties = textSchema?["properties"] as? [String: Any]
+            guard textOps == [.text(from: 1, to: 3, style: .label, text: "T", position: nil, size: 30, color: .blue)],
+                  (textProperties?["color"] as? [String: Any])?["enum"] as? [String] == BlockColor.allCases.map(\.rawValue),
+                  (textProperties?["size"] as? [String: Any])?["maximum"] as? Int == 120 else { throw MCPTestFailure(description: "text color/size schema or decode") }
             do { _ = try MCPTools.decodeOps([["op": "zoom", "from": 1, "to": 3, "scale": 2, "ease": "bouncy"]]); throw MCPTestFailure(description: "Unknown ease accepted") }
             catch is MCPFailure { }
         }
@@ -4830,7 +4836,7 @@ private final class MCPTestClient {
             let renderProperties = (tool?["inputSchema"] as? [String: Any])?["properties"] as? [String: Any]
             guard renderProperties?["grid"] != nil else { throw MCPTestFailure(description: "render schema lacks grid") }
         }
-        print("MCP edit headless: snap/anchor schemas and decoding, grid geometry/drawing, zoom follow/ease schema, warnings, current-time offsets, frozen replay, exclusions/dependent reasons and stable recovery verified; no application windows created")
+        print("MCP edit headless: snap/anchor schemas and decoding, grid geometry/drawing, zoom follow/ease and text colour/size schema, warnings, current-time offsets, frozen replay, exclusions/dependent reasons and stable recovery verified; no application windows created")
         return
     }
     guard let path = args.first else { throw MCPTestFailure(description: "usage: mcp-edit <fixture.recorder>") }

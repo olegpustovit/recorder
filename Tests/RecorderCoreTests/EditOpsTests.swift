@@ -41,6 +41,30 @@ import Testing
         #expect(throws: DecodingError.self) { try JSONDecoder().decode(EditOp.self, from: Data(#"{"op":"zoom","from":1,"to":3,"scale":2,"follow":"orbit"}"#.utf8)) }
     }
 
+    @Test func textColorSizeAndPositionMatchInspectorFields() throws {
+        let base = project()
+        let made = try base.applying([.text(from: 1, to: 3, style: .title, text: "Hi", position: NormPoint(x: 0.05, y: 0.8), size: 120, color: .purple)], context: EditContext()).project
+        #expect(made.texts[0].color == .purple && made.texts[0].size == 120 && made.texts[0].position == NormPoint(x: 0.05, y: 0.8))
+        let plain = try base.applying([.text(from: 1, to: 3, style: .title, text: "Hi", position: nil, size: nil)], context: EditContext()).project
+        #expect(plain.texts[0].color == nil && plain.texts[0].size == 48)
+        for size in [15.9, 120.1, 0, -4, .nan] {
+            #expect(throws: EditError.self) { try base.applying([.text(from: 1, to: 3, style: .title, text: "x", position: nil, size: size)], context: EditContext()) }
+        }
+        let id = made.texts[0].id
+        let updated = try made.applying([.update(id: id, from: nil, to: nil, text: nil, position: nil, size: 16, scale: nil, center: nil, color: .green)], context: EditContext()).project
+        #expect(updated.texts[0].color == .green && updated.texts[0].size == 16)
+        #expect(throws: EditError.self) { try made.applying([.update(id: id, from: nil, to: nil, text: nil, position: nil, size: 500, scale: nil, center: nil)], context: EditContext()) }
+        // Colour tags also work on zooms and are rejected on markers.
+        let zoomed = try base.applying([.zoom(from: 1, to: 3, scale: 2, center: nil), .marker(at: 6, label: "m")], context: EditContext()).project
+        let tagged = try zoomed.applying([.update(id: zoomed.zooms[0].id, from: nil, to: nil, text: nil, position: nil, size: nil, scale: nil, center: nil, color: .red)], context: EditContext()).project
+        #expect(tagged.zooms[0].color == .red)
+        #expect(throws: EditError.self) { try zoomed.applying([.update(id: zoomed.markers[0].id, from: nil, to: nil, text: "n", position: nil, size: nil, scale: nil, center: nil, color: .red)], context: EditContext()) }
+        let json = #"[{"op":"text","from":1,"to":3,"style":"label","text":"a","color":"blue","size":30},{"op":"update","id":"i","color":"gray"}]"#
+        let ops = try JSONDecoder().decode([EditOp].self, from: Data(json.utf8))
+        #expect(try JSONDecoder().decode([EditOp].self, from: JSONEncoder().encode(ops)) == ops)
+        #expect(throws: DecodingError.self) { try JSONDecoder().decode(EditOp.self, from: Data(##"{"op":"text","from":1,"to":3,"style":"label","text":"a","color":"#ff0000"}"##.utf8)) }
+    }
+
     @Test func debugGridGeometryIsTenthsFromTopLeft() {
         let lines = DebugGrid.lines
         #expect(lines.count == 22)

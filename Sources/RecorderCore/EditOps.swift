@@ -83,16 +83,16 @@ public enum EditOp: Codable, Equatable, Sendable {
     case cutWords(transcript: String, words: [String], snap: Bool = false)
     case speed(from: EditTime, to: EditTime, speed: Double, snap: Bool = false)
     case zoom(from: EditTime, to: EditTime, scale: Double, center: NormPoint?, follow: ZoomFollow? = nil, ease: ZoomEase? = nil)
-    case text(from: EditTime, to: EditTime, style: TextBlock.Style, text: String, position: NormPoint?, size: Double?)
+    case text(from: EditTime, to: EditTime, style: TextBlock.Style, text: String, position: NormPoint?, size: Double?, color: BlockColor? = nil)
     case captions(maxWords: Int)
     case highlight(from: EditTime, to: EditTime, rect: NormRect, opacity: Double?)
     case marker(at: EditTime, label: String)
-    case update(id: String, from: EditTime?, to: EditTime?, text: String?, position: NormPoint?, size: Double?, scale: Double?, center: NormPoint?, follow: ZoomFollow? = nil, ease: ZoomEase? = nil)
+    case update(id: String, from: EditTime?, to: EditTime?, text: String?, position: NormPoint?, size: Double?, scale: Double?, center: NormPoint?, follow: ZoomFollow? = nil, ease: ZoomEase? = nil, color: BlockColor? = nil)
     case remove(id: String)
     case style(patch: [String: JSONValue])
 
     private enum CodingKeys: String, CodingKey {
-        case op, from, to, minDuration, keepTail, transcript, words, speed, scale, center, style, text, position, size, maxWords, rect, opacity, at, label, id, patch, snap, follow, ease
+        case op, from, to, minDuration, keepTail, transcript, words, speed, scale, center, style, text, position, size, maxWords, rect, opacity, at, label, id, patch, snap, follow, ease, color
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -104,11 +104,11 @@ public enum EditOp: Codable, Equatable, Sendable {
         case "cutWords": self = try .cutWords(transcript: get(.transcript), words: get(.words), snap: optional(.snap) ?? false)
         case "speed": self = try .speed(from: get(.from), to: get(.to), speed: get(.speed), snap: optional(.snap) ?? false)
         case "zoom": self = try .zoom(from: get(.from), to: get(.to), scale: get(.scale), center: optional(.center), follow: optional(.follow), ease: optional(.ease))
-        case "text": self = try .text(from: get(.from), to: get(.to), style: get(.style), text: get(.text), position: optional(.position), size: optional(.size))
+        case "text": self = try .text(from: get(.from), to: get(.to), style: get(.style), text: get(.text), position: optional(.position), size: optional(.size), color: optional(.color))
         case "captions": self = try .captions(maxWords: optional(.maxWords) ?? 4)
         case "highlight": self = try .highlight(from: get(.from), to: get(.to), rect: get(.rect), opacity: optional(.opacity))
         case "marker": self = try .marker(at: get(.at), label: get(.label))
-        case "update": self = try .update(id: get(.id), from: optional(.from), to: optional(.to), text: optional(.text), position: optional(.position), size: optional(.size), scale: optional(.scale), center: optional(.center), follow: optional(.follow), ease: optional(.ease))
+        case "update": self = try .update(id: get(.id), from: optional(.from), to: optional(.to), text: optional(.text), position: optional(.position), size: optional(.size), scale: optional(.scale), center: optional(.center), follow: optional(.follow), ease: optional(.ease), color: optional(.color))
         case "remove": self = try .remove(id: get(.id))
         case "style": self = try .style(patch: get(.patch))
         default: throw DecodingError.dataCorruptedError(forKey: .op, in: c, debugDescription: "Unknown edit op; use an op from edit.apply's schema")
@@ -129,14 +129,14 @@ public enum EditOp: Codable, Equatable, Sendable {
         case let .cutWords(transcript, words, snap): try put("cutWords", .op); try put(transcript, .transcript); try put(words, .words); try put(snap, .snap)
         case let .speed(from, to, speed, snap): try range("speed", from, to); try put(speed, .speed); try put(snap, .snap)
         case let .zoom(from, to, scale, center, follow, ease): try range("zoom", from, to); try put(scale, .scale); try optional(center, .center); try optional(follow, .follow); try optional(ease, .ease)
-        case let .text(from, to, style, text, position, size):
-            try range("text", from, to); try put(style, .style); try put(text, .text); try optional(position, .position); try optional(size, .size)
+        case let .text(from, to, style, text, position, size, color):
+            try range("text", from, to); try put(style, .style); try put(text, .text); try optional(position, .position); try optional(size, .size); try optional(color, .color)
         case let .captions(maxWords): try put("captions", .op); try put(maxWords, .maxWords)
         case let .highlight(from, to, rect, opacity): try range("highlight", from, to); try put(rect, .rect); try optional(opacity, .opacity)
         case let .marker(at, label): try put("marker", .op); try put(at, .at); try put(label, .label)
-        case let .update(id, from, to, text, position, size, scale, center, follow, ease):
+        case let .update(id, from, to, text, position, size, scale, center, follow, ease, color):
             try put("update", .op); try put(id, .id); try optional(from, .from); try optional(to, .to); try optional(text, .text)
-            try optional(position, .position); try optional(size, .size); try optional(scale, .scale); try optional(center, .center); try optional(follow, .follow); try optional(ease, .ease)
+            try optional(position, .position); try optional(size, .size); try optional(scale, .scale); try optional(center, .center); try optional(follow, .follow); try optional(ease, .ease); try optional(color, .color)
         case let .remove(id): try put("remove", .op); try put(id, .id)
         case let .style(patch): try put("style", .op); try put(patch, .patch)
         }
@@ -301,7 +301,7 @@ public extension Project {
                 return blocks.first { $0.0 == id }.map { ($0.0, $0.1, $0.2, project.markers.contains { $0.id == id }) }
             }
             switch op {
-            case let .cut(from, to, _), let .speed(from, to, _, _), let .zoom(from, to, _, _, _, _), let .text(from, to, _, _, _, _), let .highlight(from, to, _, _):
+            case let .cut(from, to, _), let .speed(from, to, _, _), let .zoom(from, to, _, _, _, _), let .text(from, to, _, _, _, _, _), let .highlight(from, to, _, _):
                 resolved = try ranges(from, to); at = try coordinate(from).output
                 if from.isAnchor || to.isAnchor { sourceAt = try coordinate(from).source }
                 if case .seconds(let from) = from, case .seconds(let to) = to, op.snapsClipBoundaries, from < 0 || to > duration { note = "Clamped output range to 0–\(duration) s." }
@@ -340,7 +340,7 @@ public extension Project {
                 }
                 resolved = baseMap.sourceRanges(forMedia: media)
                 at = resolved.first.flatMap { baseMap.outputTime(atSource: $0.start) } ?? 0
-            case let .update(id, from, to, _, _, _, _, _, _, _):
+            case let .update(id, from, to, _, _, _, _, _, _, _, _):
                 let anchored = from?.isAnchor == true || to?.isAnchor == true
                 let block = try block(id, current: anchored)
                 guard let block else { throw EditError.invalidOp(index: index, reason: "unknown block \(id)") }
@@ -385,6 +385,9 @@ public extension Project {
             if let point, !point.x.isFinite || !point.y.isFinite || !(0...1).contains(point.x) || !(0...1).contains(point.y) {
                 throw EditError.invalidOp(index: index, reason: "position/center must be normalized 0–1 (zoom center: source frame, origin top-left)")
             }
+        }
+        func textSize(_ value: Double?, index: Int) throws {
+            if let value, !(16...120).contains(value) { throw EditError.invalidOp(index: index, reason: "text size must be 16–120 like the inspector slider") }
         }
         func positive(_ value: Double?, index: Int) throws {
             if let value, !value.isFinite || value <= 0 { throw EditError.invalidOp(index: index, reason: "size/scale must be finite and positive") }
@@ -435,13 +438,14 @@ public extension Project {
                     if let center { result.zooms[i].center = center }
                     result.zooms[i].ease = ease
                     summary = "Zoom \(scale)× \(stamp(item.at))"
-                case let .text(_, _, style, text, position, size):
-                    try point(position, index: index); try positive(size, index: index)
+                case let .text(_, _, style, text, position, size, color):
+                    try point(position, index: index); try positive(size, index: index); try textSize(size, index: index)
                     guard let span, span.end - span.start >= 0.5, !result.texts.contains(where: { style.sharesLane(with: $0.style) && $0.start < span.end && $0.end > span.start }),
                           let id = result.addText(atSource: span.start, length: span.end - span.start, style: style, text: text),
                           let i = result.texts.firstIndex(where: { $0.id == id.uuidString }) else { throw EditError.invalidOp(index: index, reason: "text overlaps a block or is shorter than 0.5 source seconds") }
                     if let position { result.texts[i].position = position }
                     if let size { result.texts[i].size = size }
+                    result.texts[i].color = color
                     summary = "Add \(style.rawValue) \(stamp(item.at))"
                 case let .captions(maxWords):
                     guard !context.words.isEmpty, maxWords > 0, maxWords <= 100 else { throw EditError.invalidOp(index: index, reason: "captions need a transcript and maxWords between 1 and 100") }
@@ -464,10 +468,10 @@ public extension Project {
                     result.markers.append(Marker(time: span?.start ?? baseMap.sourceTime(atOutput: item.at), label: label))
                     result.markers.sort { $0.time < $1.time }
                     summary = "Marker \(stamp(item.at))"
-                case let .update(id, _, to, text, position, size, scale, center, follow, ease):
+                case let .update(id, _, to, text, position, size, scale, center, follow, ease, color):
                     try point(position, index: index); try point(center, index: index); try positive(size, index: index); try positive(scale, index: index)
                     if let i = result.markers.firstIndex(where: { $0.id == id }) {
-                        guard to == nil, position == nil, size == nil, scale == nil, center == nil, follow == nil, ease == nil else {
+                        guard to == nil, position == nil, size == nil, scale == nil, center == nil, follow == nil, ease == nil, color == nil else {
                             throw EditError.invalidOp(index: index, reason: "marker update supports from and text (label) only")
                         }
                         if let span { result.markers[i].time = span.start }
@@ -483,19 +487,23 @@ public extension Project {
                         if follow == .cursor { result.zooms[i].mode = .auto }
                         if follow == .fixed { result.zooms[i].mode = .manual }
                         if let ease { result.zooms[i].ease = ease }
+                        if let color { result.zooms[i].color = color }
                         if let span { result.zooms[i].start = span.start; result.zooms[i].end = span.end }
                         if let scale { result.zooms[i].scale = scale }
                         if let center { result.zooms[i].center = center; result.zooms[i].mode = .manual }
                         result.zooms.sort { $0.start < $1.start }
                     } else if let i = result.texts.firstIndex(where: { $0.id == id }) {
-                        guard scale == nil, center == nil, follow == nil, ease == nil else { throw EditError.invalidOp(index: index, reason: "text supports text/position/size and times") }
+                        try textSize(size, index: index)
+                        guard scale == nil, center == nil, follow == nil, ease == nil else { throw EditError.invalidOp(index: index, reason: "text supports text/position/size/color and times") }
                         if let span { result.texts[i].start = span.start; result.texts[i].end = span.end }
                         if let text { result.texts[i].setText(text) }
                         if let position { result.texts[i].position = position }
                         if let size { result.texts[i].size = size }
+                        if let color { result.texts[i].color = color }
                         result.texts.sort { $0.start < $1.start }
                     } else if let i = result.masks.firstIndex(where: { $0.id == id }) {
                         guard text == nil, position == nil, size == nil, scale == nil, center == nil, follow == nil, ease == nil else { throw EditError.invalidOp(index: index, reason: "mask update supports times only") }
+                        if let color { result.masks[i].color = color }
                         if let span { result.masks[i].start = span.start; result.masks[i].end = span.end }
                         result.masks.sort { $0.start < $1.start }
                     } else { throw EditError.invalidOp(index: index, reason: "unknown block \(id)") }
