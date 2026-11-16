@@ -46,6 +46,7 @@ enum CropSheet {
     /// One `EditorModel.edit` call = one undo step (AC-CROP-1).
     @MainActor
     static func confirm(_ newCrop: NormRect, on model: EditorModel) {
+        guard newCrop != model.project.crop else { return }
         model.edit("Crop") { $0.crop = newCrop; $0.cropKeys = [] }
     }
 
@@ -258,7 +259,7 @@ private final class CropState {
 // MARK: - Top bar (Size/Position fields, aspect presets, Reset)
 
 private enum CropPreset: String, CaseIterable, Identifiable {
-    case free = "Free", r16x9 = "16:9", r4x3 = "4:3", r1x1 = "1:1", r9x16 = "9:16"
+    case free = "Free", r16x9 = "16:9", r4x3 = "4:3", r1x1 = "1:1", r4x5 = "4:5", r9x16 = "9:16"
     var id: String { rawValue }
     var ratio: CGFloat? {
         switch self {
@@ -266,6 +267,7 @@ private enum CropPreset: String, CaseIterable, Identifiable {
         case .r16x9: return 16.0 / 9.0
         case .r4x3: return 4.0 / 3.0
         case .r1x1: return 1
+        case .r4x5: return 4.0 / 5.0
         case .r9x16: return 9.0 / 16.0
         }
     }

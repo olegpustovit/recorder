@@ -22,7 +22,7 @@ struct BackgroundTab: View {
                 }.buttonStyle(TechButtonStyle(kind: .secondary, compact: true))
             }
             HStack(spacing: 4) {
-                ForEach([Output.Aspect.auto, .r16x9, .r9x16, .r1x1, .r4x3, .r16x10], id: \.self) { aspect in
+                ForEach([Output.Aspect.auto, .r16x9, .r9x16, .r1x1, .r4x5, .r4x3, .r16x10], id: \.self) { aspect in
                     shapeButton(aspect)
                 }
             }
@@ -123,7 +123,7 @@ struct BackgroundTab: View {
         let ratio = CGFloat(aspect.ratio ?? Double(model.project.source.pixelWidth) * model.project.crop.w / max(1, Double(model.project.source.pixelHeight) * model.project.crop.h))
         return Button {
             guard !selected else { return }
-            model.edit("Output shape") { $0.output.aspect = aspect }
+            model.edit("Output shape") { $0.output.aspect = aspect; $0.cropKeys = [] } // keys were planned for the old aspect
         } label: {
             VStack(spacing: 4) {
                 Rectangle().strokeBorder(lineWidth: 1)

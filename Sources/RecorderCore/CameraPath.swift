@@ -19,7 +19,7 @@ public struct CameraPath: Sendable {
     private let duration: Double
     private let table: [ViewTransform]
 
-    public init(zooms: [Zoom], cursor: CursorPath, spring: Spring, duration: Double, rate: Double = 240, clips: [Clip] = []) {
+    public init(zooms: [Zoom], cursor: CursorPath, spring: Spring, duration: Double, rate: Double = 240, clips: [Clip] = [], cropAt: ((Double) -> NormRect)? = nil) {
         self.rate = rate
         self.duration = max(duration, 0)
         let dt = 1 / rate
@@ -60,8 +60,9 @@ public struct CameraPath: Sendable {
                     targetCY = zoom.center.y
                 } else {
                     let c = cursor.sample(atSource: t)
-                    targetCX = deadZoneTarget(cursorPos: c.x, currentCenter: cx, scale: scale)
-                    targetCY = deadZoneTarget(cursorPos: c.y, currentCenter: cy, scale: scale)
+                    let p = cropAt.map { cropSpace(x: c.x, y: c.y, in: $0(t)) } ?? (c.x, c.y)
+                    targetCX = deadZoneTarget(cursorPos: p.0, currentCenter: cx, scale: scale)
+                    targetCY = deadZoneTarget(cursorPos: p.1, currentCenter: cy, scale: scale)
                 }
             } else {
                 targetCX = 0.5

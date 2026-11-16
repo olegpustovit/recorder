@@ -68,7 +68,7 @@ import Testing
 
     @Test func reframeOpSetsAspectAndKeys() throws {
         let keys = reframePlan(storyboard: board([shot(0, 0, 4, NormRect())]), aspect: .r9x16, mode: .perShot, sourceSize: size)
-        let base = Project(source: Source(duration: 20), clips: [Clip(sourceStart: 0, sourceEnd: 20)])
+        let base = Project(source: Source(pixelWidth: 1920, pixelHeight: 1080, duration: 20), clips: [Clip(sourceStart: 0, sourceEnd: 20)])
         let r = try base.applying([.reframe(aspect: .r9x16, keys: keys)], context: EditContext()).project
         #expect(r.output.aspect == .r9x16 && r.cropKeys == keys)
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".json")
@@ -78,5 +78,31 @@ import Testing
         #expect(try Project.load(from: url).version == 3)
         #expect(throws: EditError.self) { try base.applying([.reframe(aspect: .r9x16)], context: EditContext()) }
         #expect(throws: EditError.self) { try base.applying([.reframe(aspect: .r4x3, keys: keys)], context: EditContext()) }
+        var bad = keys; bad[0].rect.x = 0.9   // leaves the frame
+        #expect(throws: EditError.self) { try base.applying([.reframe(aspect: .r9x16, keys: bad)], context: EditContext()) }
+        bad = keys; bad[0].t = 9              // unsorted
+        #expect(throws: EditError.self) { try base.applying([.reframe(aspect: .r9x16, keys: bad)], context: EditContext()) }
+        #expect(throws: EditError.self) { try base.applying([.reframe(aspect: .r1x1, keys: keys)], context: EditContext()) } // wrong aspect
+    }
+
+    @Test func seamSamplesNextShotWindowExactly() {
+        let keys = reframePlan(storyboard: board([shot(0, 0, 2, NormRect(x: 0, y: 0, w: 0.1, h: 0.1)), shot(1, 2, 4, NormRect(x: 0.9, y: 0, w: 0.1, h: 0.1))]),
+                               aspect: .r9x16, mode: .perShot, sourceSize: size)
+        let p = project(keys)
+        #expect(p.cropSample(atSource: 2) == keys[2].rect && p.cropSample(atSource: 2.0001) == keys[2].rect && keys[1].t == keys[2].t)
+    }
+
+    @Test func fullAxisFocusIsCentredAndStaticWideFocusIsMid() {
+        let full = reframePlan(storyboard: board([shot(0, 0, 4, NormRect())]), aspect: .r9x16, mode: .perShot, sourceSize: size)
+        #expect(full[0].rect == full[1].rect && abs(full[0].rect.x + full[0].rect.w / 2 - 0.5) < 1e-9)
+        let cur = reframePlan(storyboard: board([shot(0, 0, 4, NormRect(), cursor: NormPoint(x: 0.2, y: 0.5))]), aspect: .r9x16, mode: .perShot, sourceSize: size)
+        #expect(cur[0].rect == cur[1].rect && abs(cur[0].rect.x + cur[0].rect.w / 2 - 0.2) < 1e-9)
+        let wide = reframePlan(storyboard: board([shot(0, 0, 4, NormRect(x: 0.1, y: 0.2, w: 0.8, h: 0.3))]), aspect: .r9x16, mode: .static, sourceSize: size)
+        #expect(abs(wide[0].rect.x + wide[0].rect.w / 2 - 0.5) < 1e-9)
+    }
+
+    @Test func cursorMapsIntoSampledCropSpace() {
+        let p = cropSpace(x: 0.5, y: 0.5, in: NormRect(x: 0.3, y: 0, w: 0.45, h: 1))
+        #expect(abs(p.0 - 0.2 / 0.45) < 1e-9 && abs(p.1 - 0.5) < 1e-9)
     }
 }

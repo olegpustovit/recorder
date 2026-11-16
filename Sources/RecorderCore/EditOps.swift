@@ -598,6 +598,14 @@ public extension Project {
                 case let .reframe(aspect, _, keys):
                     guard [.r4x5, .r1x1, .r9x16, .r16x9].contains(aspect) else { throw EditError.invalidOp(index: index, reason: "reframe aspect must be 4:5, 1:1, 9:16 or 16:9") }
                     guard let keys, !keys.isEmpty else { throw EditError.invalidOp(index: index, reason: "reframe needs a storyboard; run analyze.shots first") }
+                    let sw = Double(result.source.pixelWidth), sh = Double(result.source.pixelHeight), eps = 1e-6
+                    let sound = zip(keys, keys.dropFirst()).allSatisfy { $0.t <= $1.t } && keys.allSatisfy { k in
+                        let r = k.rect
+                        return [k.t, r.x, r.y, r.w, r.h].allSatisfy(\.isFinite) && k.t >= 0 && r.w > 0 && r.h > 0
+                            && r.x >= -eps && r.y >= -eps && r.x + r.w <= 1 + eps && r.y + r.h <= 1 + eps
+                            && (sw <= 0 || sh <= 0 || abs(r.w * sw / (r.h * sh) / aspect.ratio! - 1) < 1e-3)
+                    }
+                    guard sound else { throw EditError.invalidOp(index: index, reason: "reframe keys must be sorted, inside the frame and match the output aspect") }
                     result.output.aspect = aspect; result.cropKeys = keys
                     summary = "Reframe \(aspect.rawValue)"
                 case let .style(patch):

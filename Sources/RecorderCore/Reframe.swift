@@ -24,6 +24,12 @@ public extension Project {
     }
 }
 
+/// A source-normalized point in the space of `crop` (0…1 inside the window, may fall outside when the point is cropped away).
+/// The compositor's `ViewTransform` centres are crop-normalized, so cursor follow must pass through this (preview and export share it).
+public func cropSpace(x: Double, y: Double, in crop: NormRect) -> (Double, Double) {
+    ((x - crop.x) / max(crop.w, 1e-9), (y - crop.y) / max(crop.h, 1e-9))
+}
+
 /// AutoFlip-style crop plan. Every window has the output aspect and the largest size that fits the source, clamped inside
 /// the frame. Per shot: stationary on `focus ∪ cursor` when it fits the window, else a linear pan from the focus's
 /// leading edge to its trailing edge (centred on the axis that fits). `static` = one window over every shot's focus.
@@ -32,31 +38,33 @@ public func reframePlan(storyboard: Storyboard, aspect: Output.Aspect, mode: Ref
     let src = sourceSize.width / sourceSize.height
     let w = ratio >= src ? 1 : ratio / src, h = ratio >= src ? src / ratio : 1
     func focus(_ shot: Shot) -> NormRect {
-        var f = shot.focus
-        if let c = shot.cursor {
-            let x0 = min(f.x, c.x), y0 = min(f.y, c.y), x1 = max(f.x + f.w, c.x), y1 = max(f.y + f.h, c.y)
-            f = NormRect(x: x0, y: y0, w: x1 - x0, h: y1 - y0)
+        // A span covering (almost) the whole axis, e.g. the default full-frame focus, says nothing: collapse to the cursor, else the centre.
+        func axis(_ lo: Double, _ len: Double, _ c: Double?) -> (Double, Double) {
+            let a = min(lo, c ?? lo), b = max(lo + len, c ?? lo + len)
+            return b - a >= 0.9 ? (c ?? 0.5, 0) : (a, b - a)
         }
-        return f
+        let f = shot.focus
+        let (x, w) = axis(f.x, f.w, shot.cursor?.x), (y, h) = axis(f.y, f.h, shot.cursor?.y)
+        return NormRect(x: x, y: y, w: w, h: h)
     }
     // Window origin along one axis for a focus span [lo, hi] in a window of size `size`: (start, end) positions.
-    func place(_ lo: Double, _ hi: Double, _ size: Double) -> (Double, Double) {
+    func place(_ lo: Double, _ hi: Double, _ size: Double, hold: Bool) -> (Double, Double) {
         func clamp(_ v: Double) -> Double { min(max(v, 0), 1 - size) }
         let mid = clamp((lo + hi) / 2 - size / 2)
-        return hi - lo <= size + 1e-9 ? (mid, mid) : (clamp(lo), clamp(hi - size))
+        return hold || hi - lo <= size + 1e-9 ? (mid, mid) : (clamp(lo), clamp(hi - size))
     }
-    func rects(_ f: NormRect) -> (NormRect, NormRect) {
-        let (x0, x1) = place(f.x, f.x + f.w, w), (y0, y1) = place(f.y, f.y + f.h, h)
+    func rects(_ f: NormRect, hold: Bool = false) -> (NormRect, NormRect) {
+        let (x0, x1) = place(f.x, f.x + f.w, w, hold: hold), (y0, y1) = place(f.y, f.y + f.h, h, hold: hold)
         return (NormRect(x: x0, y: y0, w: w, h: h), NormRect(x: x1, y: y1, w: w, h: h))
     }
     if mode == .static {
         let fs = storyboard.shots.map(focus)
         let x0 = fs.map(\.x).min()!, y0 = fs.map(\.y).min()!, x1 = fs.map { $0.x + $0.w }.max()!, y1 = fs.map { $0.y + $0.h }.max()!
-        return [CropKey(t: 0, rect: rects(NormRect(x: x0, y: y0, w: x1 - x0, h: y1 - y0)).0)]
+        return [CropKey(t: 0, rect: rects(NormRect(x: x0, y: y0, w: x1 - x0, h: y1 - y0), hold: true).0)]
     }
     return storyboard.shots.flatMap { shot -> [CropKey] in
         let (a, b) = rects(focus(shot))
-        // The end key sits just inside the shot so the next shot's first key reads as a cut, not a glide.
-        return [CropKey(t: shot.from, rect: a), CropKey(t: shot.to - min(1e-3, shot.duration / 2), rect: b)]
+        // End key at `shot.to` and the next start key at the same t: `cropSample` takes the later one, so the seam is a cut.
+        return [CropKey(t: shot.from, rect: a), CropKey(t: shot.to, rect: b)]
     }
 }

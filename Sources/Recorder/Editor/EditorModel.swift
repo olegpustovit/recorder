@@ -378,7 +378,7 @@ import RecorderCore
         recordingPaths = recordingPaths.filter { id, _ in project.layers.contains { $0.id == id } }
         guard before.clips != project.clips || before.zooms != project.zooms || before.cursor != project.cursor
             || before.animation.screen != project.animation.screen || before.cursorHidden != project.cursorHidden
-            || before.windowShots != project.windowShots
+            || before.windowShots != project.windowShots || before.cropKeys != project.cropKeys
         else { return }
         windowCursorPaths.removeAll()
         (cursorPath, cameraPath) = Self.buildPaths(project: project, events: events)
@@ -407,7 +407,9 @@ import RecorderCore
                                         hidden: [], duration: project.timelineSourceDuration)
         let cameraPath = CameraPath(zooms: project.zooms, cursor: timelineCursor,
                                      spring: project.animation.screen == .focused ? .focused : .smooth,
-                                     duration: project.timelineSourceDuration, clips: project.clips)
+                                     duration: project.timelineSourceDuration, clips: project.clips,
+                                     // ponytail: only keyed crops convert cursor follow into crop space; a static crop keeps its old (source-space) look so saved projects render unchanged
+                                     cropAt: project.cropKeys.isEmpty ? nil : { project.cropSample(atSource: $0) })
         return (cursorPath, cameraPath)
     }
 
