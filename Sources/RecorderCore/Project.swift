@@ -107,7 +107,7 @@ public struct Zoom: Codable, Equatable, Sendable {
     public var instant: Bool
     public var enabled: Bool
     public var color: BlockColor? = nil
-    public init(id: String = UUID().uuidString, start: Double = 0, end: Double = 3, scale: Double = 2,
+    public init(id: String = makeProjectID().uuidString, start: Double = 0, end: Double = 3, scale: Double = 2,
                 mode: Mode = .manual, center: NormPoint = NormPoint(), instant: Bool = false, enabled: Bool = true) {
         self.id = id; self.start = start; self.end = end; self.scale = scale
         self.mode = mode; self.center = center; self.instant = instant; self.enabled = enabled
@@ -115,7 +115,7 @@ public struct Zoom: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey { case id, start, end, scale, mode, center, instant, enabled, color }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        id = try c.value(.id, default: UUID().uuidString)
+        id = try c.value(.id, default: makeProjectID().uuidString)
         start = try c.value(.start, default: 0)
         end = try c.value(.end, default: 3)
         scale = try c.value(.scale, default: 2)
@@ -139,13 +139,13 @@ public struct Layout: Codable, Equatable, Sendable {
     public var mediaRate: Double? = nil
     public var transition: Double = 0.3
     public var color: BlockColor? = nil
-    public init(id: String = UUID().uuidString, start: Double = 0, end: Double = 0, kind: Kind = .cameraFull, camera: Camera? = nil, keys: Keys? = nil) {
+    public init(id: String = makeProjectID().uuidString, start: Double = 0, end: Double = 0, kind: Kind = .cameraFull, camera: Camera? = nil, keys: Keys? = nil) {
         self.id = id; self.start = start; self.end = end; self.kind = kind; self.camera = camera; self.keys = keys
     }
     enum CodingKeys: String, CodingKey { case id, start, end, kind, camera, keys, transition, mediaStart, mediaRate, color }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        id = try c.value(.id, default: UUID().uuidString)
+        id = try c.value(.id, default: makeProjectID().uuidString)
         start = try c.value(.start, default: 0)
         end = try c.value(.end, default: 0)
         kind = try c.value(.kind, default: .cameraFull)
@@ -177,14 +177,14 @@ public struct Mask: Codable, Equatable, Sendable {
         return opacity * t * t * (3 - 2 * t)
     }
 
-    public init(id: String = UUID().uuidString, start: Double = 0, end: Double = 0, kind: Kind = .mask,
+    public init(id: String = makeProjectID().uuidString, start: Double = 0, end: Double = 0, kind: Kind = .mask,
                 rect: NormRect = NormRect(), opacity: Double = 0.8, transition: Double = 0) {
         self.id = id; self.start = start; self.end = end; self.kind = kind; self.rect = rect; self.opacity = opacity; self.transition = transition
     }
     enum CodingKeys: String, CodingKey { case id, start, end, kind, rect, opacity, transition, color }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        id = try c.value(.id, default: UUID().uuidString)
+        id = try c.value(.id, default: makeProjectID().uuidString)
         start = try c.value(.start, default: 0)
         end = try c.value(.end, default: 0)
         kind = try c.value(.kind, default: .mask)
@@ -205,7 +205,13 @@ public struct Word: Codable, Equatable, Sendable {
 }
 
 public struct TextBlock: Codable, Equatable, Sendable {
-    public enum Style: String, Codable, Sendable, CaseIterable { case caption, title, label, lowerThird, chapter }
+    public enum Style: String, Codable, Sendable, CaseIterable {
+        case caption, title, label, lowerThird, chapter
+        func sharesLane(with other: Style) -> Bool {
+            if self == .lowerThird || self == .chapter || other == .lowerThird || other == .chapter { return self == other }
+            return true
+        }
+    }
     public var id: String
     public var start: Double
     public var end: Double
@@ -216,7 +222,7 @@ public struct TextBlock: Codable, Equatable, Sendable {
     public var size: Double
     public var color: BlockColor? = nil
 
-    public init(id: String = UUID().uuidString, start: Double = 0, end: Double = 0, text: String = "Text", words: [Word]? = nil,
+    public init(id: String = makeProjectID().uuidString, start: Double = 0, end: Double = 0, text: String = "Text", words: [Word]? = nil,
                 style: Style = .title, position: NormPoint? = nil, size: Double = 48) {
         self.id = id; self.start = start; self.end = end; self.text = text; self.words = words; self.style = style
         self.position = position ?? NormPoint(x: 0.5, y: style == .caption ? 0.8 : 0.5); self.size = size
@@ -224,7 +230,7 @@ public struct TextBlock: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey { case id, start, end, text, words, style, position, size, color }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        id = try c.value(.id, default: UUID().uuidString)
+        id = try c.value(.id, default: makeProjectID().uuidString)
         start = try c.value(.start, default: 0)
         end = try c.value(.end, default: 0)
         text = try c.value(.text, default: "")
@@ -278,13 +284,13 @@ public struct WindowShot: Codable, Equatable, Sendable {
     public var end: Double
     public var window: Int
     public var color: BlockColor? = nil
-    public init(id: String = UUID().uuidString, start: Double = 0, end: Double = 0, window: Int = 0) {
+    public init(id: String = makeProjectID().uuidString, start: Double = 0, end: Double = 0, window: Int = 0) {
         self.id = id; self.start = start; self.end = end; self.window = window
     }
     enum CodingKeys: String, CodingKey { case id, start, end, window, color }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        id = try c.value(.id, default: UUID().uuidString)
+        id = try c.value(.id, default: makeProjectID().uuidString)
         start = try c.value(.start, default: 0)
         end = try c.value(.end, default: 0)
         window = try c.value(.window, default: 0)
@@ -300,7 +306,7 @@ public struct CameraClip: Codable, Equatable, Sendable {
     public var mediaStart: Double
     public var mediaRate: Double? = nil
     public var color: BlockColor? = nil
-    public init(id: String = UUID().uuidString, start: Double, end: Double, mediaStart: Double? = nil) {
+    public init(id: String = makeProjectID().uuidString, start: Double, end: Double, mediaStart: Double? = nil) {
         self.id = id; self.start = start; self.end = end; self.mediaStart = mediaStart ?? start
     }
 }
@@ -311,13 +317,13 @@ public struct AudioTrack: Codable, Equatable, Sendable {
     public var volume: Double
     public var muted: Bool
 
-    public init(id: String = UUID().uuidString, name: String, volume: Double = 1, muted: Bool = false) {
+    public init(id: String = makeProjectID().uuidString, name: String, volume: Double = 1, muted: Bool = false) {
         self.id = id; self.name = name; self.volume = volume; self.muted = muted
     }
     enum CodingKeys: String, CodingKey { case id, name, volume, muted }
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        id = try container.value(.id, default: UUID().uuidString)
+        id = try container.value(.id, default: makeProjectID().uuidString)
         name = try container.value(.name, default: "Audio 1")
         volume = try container.value(.volume, default: 1)
         muted = try container.value(.muted, default: false)
@@ -348,7 +354,7 @@ public struct AudioClip: Codable, Equatable, Sendable {
     public var fadeOut: Double? { didSet { envelope = nil } }
     public var color: BlockColor? = nil
 
-    public init(id: String = UUID().uuidString, start: Double, end: Double, mediaStart: Double = 0,
+    public init(id: String = makeProjectID().uuidString, start: Double, end: Double, mediaStart: Double = 0,
                 mediaRate: Double? = nil, file: String, track: Int = 0, link: Link? = nil, layer: String? = nil,
                 gain: Double = 1, fadeIn: Double? = nil, fadeOut: Double? = nil) {
         self.id = id; self.start = start; self.end = end; self.mediaStart = mediaStart; self.mediaRate = mediaRate
@@ -360,7 +366,7 @@ public struct AudioClip: Codable, Equatable, Sendable {
     }
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        id = try container.value(.id, default: UUID().uuidString)
+        id = try container.value(.id, default: makeProjectID().uuidString)
         start = try container.value(.start, default: 0)
         end = try container.value(.end, default: 0)
         mediaStart = try container.value(.mediaStart, default: 0)
@@ -445,7 +451,7 @@ public struct LayerBlock: Codable, Equatable, Sendable {
     public var aboveCamera: Bool
     public var color: BlockColor? = nil
 
-    public init(id: String = UUID().uuidString, kind: Kind, start: Double, end: Double, file: String,
+    public init(id: String = makeProjectID().uuidString, kind: Kind, start: Double, end: Double, file: String,
                 mediaStart: Double = 0, track: Int = 0, rect: NormRect, backdrop: Backdrop = .dim,
                 motion: Motion = .fade, fadeIn: Double? = 0.3, fadeOut: Double? = 0.3, aboveCamera: Bool = false, mediaRate: Double? = nil, scene: SceneEffects? = nil) {
         self.id = id; self.kind = kind; self.start = start; self.end = end; self.file = file
@@ -458,7 +464,7 @@ public struct LayerBlock: Codable, Equatable, Sendable {
     }
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        id = try container.value(.id, default: UUID().uuidString)
+        id = try container.value(.id, default: makeProjectID().uuidString)
         kind = try container.value(.kind, default: .image)
         start = try container.value(.start, default: 0)
         end = try container.value(.end, default: 0)
@@ -721,7 +727,7 @@ public struct Marker: Codable, Equatable, Sendable {
     public var id: String
     public var time: Double
     public var label: String
-    public init(id: String = UUID().uuidString, time: Double, label: String) {
+    public init(id: String = makeProjectID().uuidString, time: Double, label: String) {
         self.id = id; self.time = time; self.label = label
     }
 }
@@ -769,7 +775,7 @@ public struct Project: Codable, Equatable, Sendable {
 
     public init(
         version: Int = 3,
-        id: String = UUID().uuidString,
+        id: String = makeProjectID().uuidString,
         title: String = "Untitled",
         createdAt: String = ISO8601DateFormatter().string(from: Date()),
         source: Source = Source(),
@@ -816,7 +822,7 @@ public struct Project: Codable, Equatable, Sendable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         version = try c.value(.version, default: 3)
-        id = try c.value(.id, default: UUID().uuidString)
+        id = try c.value(.id, default: makeProjectID().uuidString)
         title = try c.value(.title, default: "Untitled")
         createdAt = try c.value(.createdAt, default: ISO8601DateFormatter().string(from: Date()))
         source = try c.value(.source, default: Source())

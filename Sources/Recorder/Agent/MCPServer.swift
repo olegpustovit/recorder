@@ -2,6 +2,48 @@ import AppKit
 import Darwin
 import Foundation
 import Observation
+import RecorderCore
+
+struct AgentDraft {
+    let id = UUID().uuidString
+    var base: String
+    var baseProject: Project
+    var calls: [[EditOp]] = []
+    var changes: [[EditChange]] = []
+    var contexts: [EditContext] = []
+    var note: String?
+    var submitted = false
+    var verdict: String?
+    var excluded: Set<[Int]> = []
+    var revision: String
+
+    init(base: String, baseProject: Project) { self.base = base; self.baseProject = baseProject; revision = base }
+    private func replayContext(_ context: EditContext, call: Int, indices: [Int]) -> EditContext {
+        var context = context
+        context.operationSeeds = indices.map { "\(id):\(call):\($0)" }
+        return context
+    }
+    func project(from start: Project? = nil, context: EditContext) throws -> Project {
+        // shortcut: replay every call on each change/read; cache prefixes if measured drafts exceed tens of ops.
+        var project = start ?? baseProject
+        for (callIndex, call) in calls.enumerated() {
+            let indices = call.indices.filter { !excluded.contains([callIndex, $0]) }
+            guard !indices.isEmpty else { continue }
+            let frozen = contexts.indices.contains(callIndex) ? contexts[callIndex] : context
+            let result = try project.applying(indices.map { call[$0] }, context: replayContext(frozen, call: callIndex, indices: indices))
+            project = result.project
+        }
+        return project
+    }
+    mutating func append(_ ops: [EditOp], context: EditContext) throws -> (project: Project, changes: [EditChange]) {
+        let current = try project(context: context)
+        let result = try current.applying(ops, context: replayContext(context, call: calls.count, indices: Array(ops.indices)))
+        let nextRevision = try MCPTools.revision(result.project)
+        calls.append(ops); changes.append(result.changes); contexts.append(context)
+        revision = nextRevision
+        return result
+    }
+}
 
 enum MCPSocket {
     static func error(_ operation: String) -> NSError {
@@ -238,6 +280,9 @@ enum AgentAccess: String, CaseIterable {
     let connectedSince = Date()
     var agentName = "MCP client"
     var projectURL: URL?
+    // shortcut: drafts are memory-only and disappear when Recorder quits; persist only if recovery is requested.
+    var draft: AgentDraft?
+    var lastDraftVerdict: String?
     var renderTask: Task<[URL], Error>?
     var renderJobID: UUID?
     private let send: ([String: Any]) -> Void

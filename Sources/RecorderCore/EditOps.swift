@@ -1,4 +1,27 @@
+import CryptoKit
 import Foundation
+
+private final class EditIDSequence: @unchecked Sendable {
+    let seed: String
+    private var count = 0
+    private let lock = NSLock()
+    init(_ seed: String) { self.seed = seed }
+    func next() -> UUID {
+        let index = lock.withLock { let value = count; count += 1; return value }
+        let bytes = Array(SHA256.hash(data: Data("\(seed):\(index)".utf8)).prefix(16))
+        return bytes.withUnsafeBufferPointer { NSUUID(uuidBytes: $0.baseAddress!) as UUID }
+    }
+}
+
+private enum EditIDs {
+    @TaskLocal static var sequence: EditIDSequence?
+    static func withSeed<T>(_ seed: String?, _ body: () throws -> T) rethrows -> T {
+        try $sequence.withValue(seed.map(EditIDSequence.init), operation: body)
+    }
+}
+
+/// Draft replay scopes deterministic ids to a synchronous edit; ordinary editor operations keep random UUIDs.
+@usableFromInline func makeProjectID() -> UUID { EditIDs.sequence?.next() ?? UUID() }
 
 public enum JSONValue: Codable, Equatable, Sendable {
     case null, bool(Bool), number(Double), string(String), array([JSONValue]), object([String: JSONValue])
@@ -94,7 +117,10 @@ public enum EditOp: Codable, Equatable, Sendable {
 public struct EditContext: Sendable {
     public var words: [Word]
     public var silent: [TimeRange]
-    public init(words: [Word] = [], silent: [TimeRange] = []) { self.words = words; self.silent = silent }
+    public var operationSeeds: [String]
+    public init(words: [Word] = [], silent: [TimeRange] = [], operationSeeds: [String] = []) {
+        self.words = words; self.silent = silent; self.operationSeeds = operationSeeds
+    }
 }
 public struct EditChange: Codable, Equatable, Sendable {
     public var op: Int
@@ -127,6 +153,9 @@ private func mergedEditRanges(_ ranges: [TimeRange]) -> [TimeRange] {
 public extension Project {
     /// Resolves every output range against the base project before applying any changes.
     func applying(_ ops: [EditOp], context: EditContext) throws -> (project: Project, changes: [EditChange]) {
+        guard context.operationSeeds.isEmpty || context.operationSeeds.count == ops.count else {
+            throw EditError.invalidOp(index: 0, reason: "one replay seed is required per op")
+        }
         if let error = checkInvariants() { throw EditError.invariant(error) }
         let baseMap = TimeMap(clips)
         let duration = baseMap.outputDuration
@@ -221,146 +250,150 @@ public extension Project {
         var cuts: [(index: Int, ranges: [TimeRange])] = []
         func stamp(_ time: Double) -> String { String(format: "%d:%04.1f", Int(time) / 60, time.truncatingRemainder(dividingBy: 60)) }
         for (index, item) in prepared.enumerated() {
-            let before = TimeMap(result.clips).outputDuration
-            let span = item.ranges.first.map { TimeRange(start: $0.start, end: item.ranges.last!.end) }
-            var summary: String
-            switch item.op {
-            case .cut, .cutPauses, .cutWords:
-                cuts.append((index, item.ranges))
-                let kind: String
-                switch item.op { case .cutPauses: kind = "Cut pause"; case .cutWords: kind = "Cut words"; default: kind = "Cut" }
-                summary = "\(kind) \(stamp(item.at))"
-            case let .speed(_, _, speed):
-                guard speed.isFinite, (0.25...16).contains(speed) else { throw EditError.invalidOp(index: index, reason: "speed must be 0.25–16") }
-                for range in item.ranges.reversed() {
-                    try result.agentSplit(range, index: index)
-                    let indices = result.clips.indices.filter { !result.clips[$0].isEmpty && result.clips[$0].sourceStart >= range.start - 1e-9 && result.clips[$0].sourceEnd <= range.end + 1e-9 }
-                    for i in indices.reversed() {
-                        result.setSpeed(i, speed)
-                        guard abs(result.clips[i].speed - speed) < 1e-9 else { throw EditError.invalidOp(index: index, reason: "speed cannot fit this clip; enable linked video edits") }
+            let seed = context.operationSeeds.isEmpty ? nil : context.operationSeeds[index]
+            let change = try EditIDs.withSeed(seed) {
+                let before = TimeMap(result.clips).outputDuration
+                let span = item.ranges.first.map { TimeRange(start: $0.start, end: item.ranges.last!.end) }
+                var summary: String
+                switch item.op {
+                case .cut, .cutPauses, .cutWords:
+                    cuts.append((index, item.ranges))
+                    let kind: String
+                    switch item.op { case .cutPauses: kind = "Cut pause"; case .cutWords: kind = "Cut words"; default: kind = "Cut" }
+                    summary = "\(kind) \(stamp(item.at))"
+                case let .speed(_, _, speed):
+                    guard speed.isFinite, (0.25...16).contains(speed) else { throw EditError.invalidOp(index: index, reason: "speed must be 0.25–16") }
+                    for range in item.ranges.reversed() {
+                        try result.agentSplit(range, index: index)
+                        let indices = result.clips.indices.filter { !result.clips[$0].isEmpty && result.clips[$0].sourceStart >= range.start - 1e-9 && result.clips[$0].sourceEnd <= range.end + 1e-9 }
+                        for i in indices.reversed() {
+                            result.setSpeed(i, speed)
+                            guard abs(result.clips[i].speed - speed) < 1e-9 else { throw EditError.invalidOp(index: index, reason: "speed cannot fit this clip; enable linked video edits") }
+                        }
                     }
-                }
-                summary = "Speed \(speed)× \(stamp(item.at))"
-            case let .zoom(_, _, scale, center):
-                try positive(scale, index: index); try point(center, index: index)
-                guard scale >= 1, let span else { throw EditError.invalidOp(index: index, reason: "zoom scale must be at least 1") }
-                if let overlap = result.zooms.first(where: { $0.start < span.end && $0.end > span.start }) {
-                    throw EditError.invalidOp(index: index, reason: "zoom overlaps \(overlap.id)")
-                }
-                guard span.end - span.start >= 0.5, let id = result.addZoom(atSource: span.start, length: span.end - span.start, mode: center == nil ? .auto : .manual),
-                      let i = result.zooms.firstIndex(where: { $0.id == id.uuidString }) else { throw EditError.invalidOp(index: index, reason: "zoom needs at least 0.5 source seconds in a free lane") }
-                result.zooms[i].scale = scale
-                if let center { result.zooms[i].center = center }
-                summary = "Zoom \(scale)× \(stamp(item.at))"
-            case let .text(_, _, style, text, position, size):
-                try point(position, index: index); try positive(size, index: index)
-                guard let span, span.end - span.start >= 0.5, !result.texts.contains(where: { $0.start < span.end && $0.end > span.start }),
-                      let id = result.addText(atSource: span.start, length: span.end - span.start, style: style, text: text),
-                      let i = result.texts.firstIndex(where: { $0.id == id.uuidString }) else { throw EditError.invalidOp(index: index, reason: "text overlaps a block or is shorter than 0.5 source seconds") }
-                if let position { result.texts[i].position = position }
-                if let size { result.texts[i].size = size }
-                summary = "Add \(style.rawValue) \(stamp(item.at))"
-            case let .captions(maxWords):
-                guard !context.words.isEmpty, maxWords > 0, maxWords <= 100 else { throw EditError.invalidOp(index: index, reason: "captions need a transcript and maxWords between 1 and 100") }
-                let mapped = context.words.flatMap { word in
-                    baseMap.sourceRanges(forMedia: [TimeRange(start: word.start, end: word.end)]).map {
-                        Word(text: word.text, start: $0.start, end: $0.end)
+                    summary = "Speed \(speed)× \(stamp(item.at))"
+                case let .zoom(_, _, scale, center):
+                    try positive(scale, index: index); try point(center, index: index)
+                    guard scale >= 1, let span else { throw EditError.invalidOp(index: index, reason: "zoom scale must be at least 1") }
+                    if let overlap = result.zooms.first(where: { $0.start < span.end && $0.end > span.start }) {
+                        throw EditError.invalidOp(index: index, reason: "zoom overlaps \(overlap.id)")
                     }
-                }.sorted { $0.start < $1.start }
-                result.replaceCaptions(captionPhrases(words: mapped, maxWords: maxWords))
-                summary = "Generate captions"
-            case let .highlight(_, _, rect, opacity):
-                guard [rect.x, rect.y, rect.w, rect.h, opacity ?? 0.6].allSatisfy(\.isFinite), rect.x >= 0, rect.y >= 0, rect.w > 0, rect.h > 0,
-                      rect.x + rect.w <= 1, rect.y + rect.h <= 1, (0...1).contains(opacity ?? 0.6),
-                      let span, span.end - span.start >= 0.5, !result.masks.contains(where: { $0.start < span.end && $0.end > span.start }),
-                      result.addMask(atSource: span.start, length: span.end - span.start, kind: .highlight, rect: rect, opacity: opacity ?? 0.6) != nil else {
-                    throw EditError.invalidOp(index: index, reason: "highlight needs a normalized rect, opacity 0–1 and a free range of at least 0.5 source seconds")
-                }
-                summary = "Highlight \(stamp(item.at))"
-            case let .marker(_, label):
-                result.markers.append(Marker(time: baseMap.sourceTime(atOutput: item.at), label: label))
-                result.markers.sort { $0.time < $1.time }
-                summary = "Marker \(stamp(item.at))"
-            case let .update(id, _, to, text, position, size, scale, center):
-                try point(position, index: index); try point(center, index: index); try positive(size, index: index); try positive(scale, index: index)
-                if let i = result.markers.firstIndex(where: { $0.id == id }) {
-                    guard to == nil, position == nil, size == nil, scale == nil, center == nil else {
-                        throw EditError.invalidOp(index: index, reason: "marker update supports from and text (label) only")
-                    }
-                    if let span { result.markers[i].time = span.start }
-                    if let text { result.markers[i].label = text }
-                    result.markers.sort { $0.time < $1.time }
-                    summary = "Update marker \(stamp(item.at))"
-                    break
-                }
-                if let span, span.end - span.start < 0.5 { throw EditError.invalidOp(index: index, reason: "updated block needs at least 0.5 source seconds") }
-                if let i = result.zooms.firstIndex(where: { $0.id == id }) {
-                    guard text == nil, position == nil, size == nil, scale == nil || scale! >= 1 else { throw EditError.invalidOp(index: index, reason: "zoom supports scale/center and times") }
-                    if let span { result.zooms[i].start = span.start; result.zooms[i].end = span.end }
-                    if let scale { result.zooms[i].scale = scale }
-                    if let center { result.zooms[i].center = center; result.zooms[i].mode = .manual }
-                    result.zooms.sort { $0.start < $1.start }
-                } else if let i = result.texts.firstIndex(where: { $0.id == id }) {
-                    guard scale == nil, center == nil else { throw EditError.invalidOp(index: index, reason: "text supports text/position/size and times") }
-                    if let span { result.texts[i].start = span.start; result.texts[i].end = span.end }
-                    if let text { result.texts[i].setText(text) }
+                    guard span.end - span.start >= 0.5, let id = result.addZoom(atSource: span.start, length: span.end - span.start, mode: center == nil ? .auto : .manual),
+                          let i = result.zooms.firstIndex(where: { $0.id == id.uuidString }) else { throw EditError.invalidOp(index: index, reason: "zoom needs at least 0.5 source seconds in a free lane") }
+                    result.zooms[i].scale = scale
+                    if let center { result.zooms[i].center = center }
+                    summary = "Zoom \(scale)× \(stamp(item.at))"
+                case let .text(_, _, style, text, position, size):
+                    try point(position, index: index); try positive(size, index: index)
+                    guard let span, span.end - span.start >= 0.5, !result.texts.contains(where: { style.sharesLane(with: $0.style) && $0.start < span.end && $0.end > span.start }),
+                          let id = result.addText(atSource: span.start, length: span.end - span.start, style: style, text: text),
+                          let i = result.texts.firstIndex(where: { $0.id == id.uuidString }) else { throw EditError.invalidOp(index: index, reason: "text overlaps a block or is shorter than 0.5 source seconds") }
                     if let position { result.texts[i].position = position }
                     if let size { result.texts[i].size = size }
-                    result.texts.sort { $0.start < $1.start }
-                } else if let i = result.masks.firstIndex(where: { $0.id == id }) {
-                    guard text == nil, position == nil, size == nil, scale == nil, center == nil else { throw EditError.invalidOp(index: index, reason: "mask update supports times only") }
-                    if let span { result.masks[i].start = span.start; result.masks[i].end = span.end }
-                    result.masks.sort { $0.start < $1.start }
-                } else { throw EditError.invalidOp(index: index, reason: "unknown block \(id)") }
-                summary = "Update block \(stamp(item.at))"
-            case let .remove(id):
-                if result.markers.contains(where: { $0.id == id }) {
-                    result.markers.removeAll { $0.id == id }
-                    summary = "Remove marker"
-                    break
-                }
-                guard result.zooms.contains(where: { $0.id == id }) || result.texts.contains(where: { $0.id == id }) || result.masks.contains(where: { $0.id == id }) else { throw EditError.invalidOp(index: index, reason: "unknown block \(id)") }
-                result.removeBlock(id: id)
-                summary = "Remove block"
-            case let .style(patch):
-                do {
-                    let encoder = JSONEncoder(), decoder = JSONDecoder()
-                    var original = try decoder.decode([String: JSONValue].self, from: encoder.encode(Preset(name: "Agent", from: result)))
-                    // Codable omits nil options; keep their known keys available to a patch.
-                    for (section, key) in [("frame", "enabled"), ("camera", "position")] {
-                        if case .object(var fields) = original[section] {
-                            if fields[key] == nil { fields[key] = .null }
-                            original[section] = .object(fields)
+                    summary = "Add \(style.rawValue) \(stamp(item.at))"
+                case let .captions(maxWords):
+                    guard !context.words.isEmpty, maxWords > 0, maxWords <= 100 else { throw EditError.invalidOp(index: index, reason: "captions need a transcript and maxWords between 1 and 100") }
+                    let mapped = context.words.flatMap { word in
+                        baseMap.sourceRanges(forMedia: [TimeRange(start: word.start, end: word.end)]).map {
+                            Word(text: word.text, start: $0.start, end: $0.end)
                         }
+                    }.sorted { $0.start < $1.start }
+                    result.replaceCaptions(captionPhrases(words: mapped, maxWords: maxWords))
+                    summary = "Generate captions"
+                case let .highlight(_, _, rect, opacity):
+                    guard [rect.x, rect.y, rect.w, rect.h, opacity ?? 0.6].allSatisfy(\.isFinite), rect.x >= 0, rect.y >= 0, rect.w > 0, rect.h > 0,
+                          rect.x + rect.w <= 1, rect.y + rect.h <= 1, (0...1).contains(opacity ?? 0.6),
+                          let span, span.end - span.start >= 0.5, !result.masks.contains(where: { $0.start < span.end && $0.end > span.start }),
+                          result.addMask(atSource: span.start, length: span.end - span.start, kind: .highlight, rect: rect, opacity: opacity ?? 0.6) != nil else {
+                        throw EditError.invalidOp(index: index, reason: "highlight needs a normalized rect, opacity 0–1 and a free range of at least 0.5 source seconds")
                     }
-                    func merge(_ base: JSONValue, _ patch: JSONValue, path: String) throws -> JSONValue {
-                        guard case .object(var fields) = base else {
-                            if case .number(let value) = patch, !value.isFinite { throw EditError.invalidOp(index: index, reason: "nonfinite style value at \(path)") }
-                            if path == "camera.position.", case .object(let fields) = patch, !Set(fields.keys).isSubset(of: ["x", "y"]) {
-                                throw EditError.invalidOp(index: index, reason: "camera.position accepts x and y only")
+                    summary = "Highlight \(stamp(item.at))"
+                case let .marker(_, label):
+                    result.markers.append(Marker(time: baseMap.sourceTime(atOutput: item.at), label: label))
+                    result.markers.sort { $0.time < $1.time }
+                    summary = "Marker \(stamp(item.at))"
+                case let .update(id, _, to, text, position, size, scale, center):
+                    try point(position, index: index); try point(center, index: index); try positive(size, index: index); try positive(scale, index: index)
+                    if let i = result.markers.firstIndex(where: { $0.id == id }) {
+                        guard to == nil, position == nil, size == nil, scale == nil, center == nil else {
+                            throw EditError.invalidOp(index: index, reason: "marker update supports from and text (label) only")
+                        }
+                        if let span { result.markers[i].time = span.start }
+                        if let text { result.markers[i].label = text }
+                        result.markers.sort { $0.time < $1.time }
+                        summary = "Update marker \(stamp(item.at))"
+                        break
+                    }
+                    if let span, span.end - span.start < 0.5 { throw EditError.invalidOp(index: index, reason: "updated block needs at least 0.5 source seconds") }
+                    if let i = result.zooms.firstIndex(where: { $0.id == id }) {
+                        guard text == nil, position == nil, size == nil, scale == nil || scale! >= 1 else { throw EditError.invalidOp(index: index, reason: "zoom supports scale/center and times") }
+                        if let span { result.zooms[i].start = span.start; result.zooms[i].end = span.end }
+                        if let scale { result.zooms[i].scale = scale }
+                        if let center { result.zooms[i].center = center; result.zooms[i].mode = .manual }
+                        result.zooms.sort { $0.start < $1.start }
+                    } else if let i = result.texts.firstIndex(where: { $0.id == id }) {
+                        guard scale == nil, center == nil else { throw EditError.invalidOp(index: index, reason: "text supports text/position/size and times") }
+                        if let span { result.texts[i].start = span.start; result.texts[i].end = span.end }
+                        if let text { result.texts[i].setText(text) }
+                        if let position { result.texts[i].position = position }
+                        if let size { result.texts[i].size = size }
+                        result.texts.sort { $0.start < $1.start }
+                    } else if let i = result.masks.firstIndex(where: { $0.id == id }) {
+                        guard text == nil, position == nil, size == nil, scale == nil, center == nil else { throw EditError.invalidOp(index: index, reason: "mask update supports times only") }
+                        if let span { result.masks[i].start = span.start; result.masks[i].end = span.end }
+                        result.masks.sort { $0.start < $1.start }
+                    } else { throw EditError.invalidOp(index: index, reason: "unknown block \(id)") }
+                    summary = "Update block \(stamp(item.at))"
+                case let .remove(id):
+                    if result.markers.contains(where: { $0.id == id }) {
+                        result.markers.removeAll { $0.id == id }
+                        summary = "Remove marker"
+                        break
+                    }
+                    guard result.zooms.contains(where: { $0.id == id }) || result.texts.contains(where: { $0.id == id }) || result.masks.contains(where: { $0.id == id }) else { throw EditError.invalidOp(index: index, reason: "unknown block \(id)") }
+                    result.removeBlock(id: id)
+                    summary = "Remove block"
+                case let .style(patch):
+                    do {
+                        let encoder = JSONEncoder(), decoder = JSONDecoder()
+                        var original = try decoder.decode([String: JSONValue].self, from: encoder.encode(Preset(name: "Agent", from: result)))
+                        // Codable omits nil options; keep their known keys available to a patch.
+                        for (section, key) in [("frame", "enabled"), ("camera", "position")] {
+                            if case .object(var fields) = original[section] {
+                                if fields[key] == nil { fields[key] = .null }
+                                original[section] = .object(fields)
                             }
-                            return patch
                         }
-                        guard case .object(let updates) = patch else { throw EditError.invalidOp(index: index, reason: "\(path) must be an object") }
-                        for (key, value) in updates {
-                            guard let existing = fields[key], key != "name" else { throw EditError.invalidOp(index: index, reason: "unknown style key \(path)\(key)") }
-                            fields[key] = try merge(existing, value, path: "\(path)\(key).")
+                        func merge(_ base: JSONValue, _ patch: JSONValue, path: String) throws -> JSONValue {
+                            guard case .object(var fields) = base else {
+                                if case .number(let value) = patch, !value.isFinite { throw EditError.invalidOp(index: index, reason: "nonfinite style value at \(path)") }
+                                if path == "camera.position.", case .object(let fields) = patch, !Set(fields.keys).isSubset(of: ["x", "y"]) {
+                                    throw EditError.invalidOp(index: index, reason: "camera.position accepts x and y only")
+                                }
+                                return patch
+                            }
+                            guard case .object(let updates) = patch else { throw EditError.invalidOp(index: index, reason: "\(path) must be an object") }
+                            for (key, value) in updates {
+                                guard let existing = fields[key], key != "name" else { throw EditError.invalidOp(index: index, reason: "unknown style key \(path)\(key)") }
+                                fields[key] = try merge(existing, value, path: "\(path)\(key).")
+                            }
+                            return .object(fields)
                         }
-                        return .object(fields)
-                    }
-                    let merged = try merge(.object(original), .object(patch), path: "")
-                    let preset = try decoder.decode(Preset.self, from: encoder.encode(merged))
-                    guard preset.frame.padding >= 0, preset.frame.padding < 0.5, preset.frame.cornerRadius >= 0, preset.frame.inset >= 0,
-                          preset.frame.shadow >= 0, preset.cursor.size > 0, preset.camera.size > 0, preset.camera.aspect > 0,
-                          preset.background.blur >= 0 else { throw EditError.invalidOp(index: index, reason: "style dimensions are outside their valid range") }
-                    try point(preset.camera.position, index: index)
-                    preset.apply(to: &result)
-                } catch let error as EditError { throw error }
-                catch { throw EditError.invalidOp(index: index, reason: "invalid style patch: \(error.localizedDescription)") }
-                summary = "Update styling"
+                        let merged = try merge(.object(original), .object(patch), path: "")
+                        let preset = try decoder.decode(Preset.self, from: encoder.encode(merged))
+                        guard preset.frame.padding >= 0, preset.frame.padding < 0.5, preset.frame.cornerRadius >= 0, preset.frame.inset >= 0,
+                              preset.frame.shadow >= 0, preset.cursor.size > 0, preset.camera.size > 0, preset.camera.aspect > 0,
+                              preset.background.blur >= 0 else { throw EditError.invalidOp(index: index, reason: "style dimensions are outside their valid range") }
+                        try point(preset.camera.position, index: index)
+                        preset.apply(to: &result)
+                    } catch let error as EditError { throw error }
+                    catch { throw EditError.invalidOp(index: index, reason: "invalid style patch: \(error.localizedDescription)") }
+                    summary = "Update styling"
+                }
+                if let error = result.checkInvariants() { throw EditError.invariant("op \(index): \(error)") }
+                return EditChange(op: index, summary: summary, at: item.at, delta: TimeMap(result.clips).outputDuration - before)
             }
-            if let error = result.checkInvariants() { throw EditError.invariant("op \(index): \(error)") }
-            changes.append(EditChange(op: index, summary: summary, at: item.at, delta: TimeMap(result.clips).outputDuration - before))
+            changes.append(change)
         }
         // Remove the union once; overlapping cut ops must never remove the same footage twice.
         var removed: [TimeRange] = []
@@ -394,7 +427,8 @@ public extension Project {
             }
         }
         let beforeCut = TimeMap(result.clips).outputDuration
-        result.agentRemoveSourceRanges(union, includeImported: true)
+        let cutSeed = context.operationSeeds.isEmpty ? nil : cuts.map { context.operationSeeds[$0.index] }.joined(separator: "|") + ":cuts"
+        EditIDs.withSeed(cutSeed) { result.agentRemoveSourceRanges(union, includeImported: true) }
         let expected = -changes.filter { change in cuts.contains { $0.index == change.op } }.reduce(0) { $0 + $1.delta }
         guard abs(beforeCut - TimeMap(result.clips).outputDuration - expected) < 1e-7 else {
             throw EditError.invalidOp(index: cuts.first?.index ?? 0, reason: "cut could not remove the exact range; keep at least 0.1 seconds of media at each split")

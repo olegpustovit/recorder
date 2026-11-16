@@ -3,6 +3,42 @@ import Testing
 @testable import RecorderCore
 
 @Suite struct EditOpsTests {
+    @Test func replaySeedsKeepCreatedAndSplitIDsStable() throws {
+        let base = project()
+        let ops: [EditOp] = [.zoom(from: 1, to: 5, scale: 2, center: nil), .speed(from: 2, to: 4, speed: 2), .cut(from: 6, to: 7)]
+        let context = EditContext(operationSeeds: ["zoom", "speed", "cut"])
+        let first = try base.applying(ops, context: context)
+        let replayed = try base.applying(ops, context: context)
+        #expect(first.project == replayed.project && first.changes == replayed.changes)
+        #expect(first.project.checkInvariants() == nil)
+        let additions: [EditOp] = [.marker(at: 2, label: "Marker"), .text(from: 4, to: 6, style: .label, text: "Label", position: nil, size: nil)]
+        let all = try base.applying(additions, context: EditContext(operationSeeds: ["marker", "label"]))
+        let excluded = try base.applying([additions[1]], context: EditContext(operationSeeds: ["label"]))
+        #expect(all.project.texts == excluded.project.texts)
+        let ordinary = try base.applying([additions[1]], context: EditContext())
+        #expect(ordinary.project.texts[0].id != excluded.project.texts[0].id)
+        #expect(all.project.checkInvariants() == nil && excluded.project.checkInvariants() == nil)
+    }
+
+    @Test func motionTextCanOverlapCaptionsAndRetainsLaneValidation() throws {
+        let base = project()
+        let context = EditContext(words: [Word(text: "spoken", start: 2, end: 4)])
+        var result = try base.applying([.captions(maxWords: 4), .text(from: 1, to: 5, style: .lowerThird, text: "Sam", position: nil, size: nil)], context: context).project
+        #expect(result.texts.count == 2)
+        let id = try #require(result.texts.first { $0.style == .lowerThird }.flatMap { UUID(uuidString: $0.id) })
+        result.moveText(id, toStart: 1.5)
+        result.resizeText(id, edge: .trailing, to: 6)
+        #expect(result.texts.first { $0.id == id.uuidString }?.start == 1.5)
+        result.replaceCaptions(captionPhrases(words: context.words))
+        #expect(result.texts.count == 2 && result.checkInvariants() == nil)
+        var invalid = result
+        invalid.texts[invalid.texts.firstIndex { $0.id == id.uuidString }!].style = .title
+        #expect(invalid.checkInvariants() != nil)
+        #expect(throws: EditError.self) {
+            try result.applying([.text(from: 2, to: 4, style: .lowerThird, text: "Collision", position: nil, size: nil)], context: context)
+        }
+    }
+
     @Test func markerOpsUseBaseTimeAndCanBeUpdatedAndRemoved() throws {
         let base = project()
         let result = try base.applying([.cut(from: 2, to: 4), .marker(at: 8, label: "Start"), .marker(at: 3, label: "Cut")], context: EditContext())

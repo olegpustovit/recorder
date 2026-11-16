@@ -28,6 +28,7 @@ enum SelfTest {
     private static let captureCases: [String: Case] = [
         "mcp-roundtrip": { args in try await checkMCPRoundtrip(args) },
         "mcp-render": { args in try await checkMCPRender(args) },
+        "mcp-edit": { args in try await checkMCPEdit(args) },
         "capture-exclusion": { _ in
             struct Fail: Error { let description: String }
             let first = await MainActor.run { () -> NSWindow in
@@ -4315,6 +4316,105 @@ private final class MCPTestClient {
         }
         return structured
     }
+}
+
+@MainActor private func checkMCPEdit(_ args: [String]) async throws {
+    guard let path = args.first else { throw MCPTestFailure(description: "usage: mcp-edit <fixture.recorder>") }
+    let root = URL(fileURLWithPath: "/tmp/recorder-mcp-edit-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let package = root.appendingPathComponent("Fixture.recorder")
+    try FileManager.default.copyItem(at: URL(fileURLWithPath: path), to: package)
+    let projectURL = package.appendingPathComponent("project.json")
+    var fixture = try Project.load(from: projectURL)
+    fixture.id = UUID().uuidString; fixture.source.hasMic = true
+    fixture.audioTracks = [AudioTrack(name: "Mic")]
+    fixture.audioClips = [AudioClip(start: 0, end: fixture.source.duration, file: "mic.m4a", link: .screen)]
+    try fixture.save(to: projectURL)
+    try synthesizeSineM4A(at: package.appendingPathComponent("mic.m4a"), duration: fixture.source.duration, silence: 1...2)
+    let words = [Word(text: "Um,", start: 0.2, end: 0.4), Word(text: "there", start: 1.3, end: 1.7)]
+    try JSONEncoder().encode(words).write(to: package.appendingPathComponent("transcript.json"))
+    NSApplication.shared.setActivationPolicy(.accessory); NSApplication.shared.finishLaunching()
+    guard let controller = await EditorWindowController.open(package: package).value else { throw MCPTestFailure(description: "Could not open edit fixture") }
+    let model = controller.model
+    let session = MCPSession(); session.agentName = "edit-test"; session.projectURL = model.packageURL.standardizedFileURL
+    defer {
+        controller.close()
+        UserDefaults.standard.removeObject(forKey: "agentAccess.\(fixture.id)")
+        try? FileManager.default.removeItem(at: AgentRender.cacheFolder(session: session.id))
+        try? FileManager.default.removeItem(at: root)
+    }
+    func tool(_ name: String, _ args: [String: Any], error: String? = nil) async throws -> [String: Any] {
+        let result = await MCPTools.call(name, args, session: session)
+        let payload = result["structuredContent"] as? [String: Any] ?? [:]
+        if let error {
+            guard result["isError"] as? Bool == true, payload["error"] as? String == error else { throw MCPTestFailure(description: "Edit test expected \(error), got \(payload["error"] ?? "success")") }
+        } else if result["isError"] as? Bool != false { throw MCPTestFailure(description: "Edit test \(name): \(payload["message"] ?? "unknown")") }
+        return payload
+    }
+    let base = model.project, baseRevision = try MCPTools.revision(model.project), saved = try Data(contentsOf: projectURL)
+    let style: [[String: Any]] = [["op": "style", "patch": ["frame": ["padding": 0.04]]]]
+    let dry = try await tool("edit", ["action": "apply", "ifRevision": baseRevision, "ops": style, "dryRun": true])
+    guard dry["revision"] as? String == baseRevision, session.draft == nil, model.project == base else { throw MCPTestFailure(description: "Dry run mutated state") }
+    let first = try await tool("edit", ["action": "apply", "ifRevision": baseRevision, "ops": [
+        ["op": "cut", "from": 0.5, "to": 1.0], ["op": "text", "from": 1.0, "to": 2.0, "style": "title", "text": "Draft"]]])
+    let timeline = try await tool("timeline", ["action": "get"])
+    guard let textID = (timeline["blocks"] as? [[String: Any]])?.first(where: { $0["lane"] as? String == "text" })?["id"] as? String,
+          timeline["revision"] as? String == first["revision"] as? String else { throw MCPTestFailure(description: "Draft timeline/revision") }
+    let second = try await tool("edit", ["action": "apply", "ifRevision": first["revision"]!, "ops": [
+        ["op": "update", "id": textID, "text": "Revised", "size": 44], ["op": "cut", "from": 1.8, "to": 2.1]]])
+    let third = try await tool("edit", ["action": "apply", "ifRevision": second["revision"]!, "ops": [
+        ["op": "zoom", "from": 0.15, "to": 0.85, "scale": 1.8, "center": ["x": 0.6, "y": 0.4]]]])
+    guard let draft = session.draft else { throw MCPTestFailure(description: "Draft missing") }
+    let replayed = try draft.project(context: EditContext(words: words))
+    guard try MCPTools.revision(replayed) == draft.revision, draft.calls.count == 3, replayed.texts.first?.id == textID,
+          replayed.texts.first?.text == "Revised", abs(replayed.exportDuration - 2.2) < 1e-8,
+          model.project == base, model.undoStepNames.isEmpty, (try Data(contentsOf: projectURL)) == saved else { throw MCPTestFailure(description: "Draft replay/ids/live/disk isolation") }
+    var excluded = draft
+    excluded.excluded.insert([0, 0])
+    let partial = try excluded.project(context: EditContext(words: words))
+    guard partial.texts.first?.id == textID, partial == (try excluded.project(context: EditContext(words: words))), partial.checkInvariants() == nil else { throw MCPTestFailure(description: "Excluded-op replay changed retained ids") }
+    func inline(_ result: [String: Any]) -> String? { (result["content"] as? [[String: Any]])?.first { $0["type"] as? String == "image" }?["data"] as? String }
+    let draftRender = await MCPTools.call("render", ["action": "frames", "at": [0.7], "longEdge": 160], session: session)
+    let liveRender = await MCPTools.call("render", ["action": "frames", "at": [0.7], "longEdge": 160, "draft": false], session: session)
+    guard let image = inline(draftRender), image != inline(liveRender),
+          (draftRender["structuredContent"] as? [String: Any])?["revision"] as? String == third["revision"] as? String else { throw MCPTestFailure(description: "Draft/live render selection or revision") }
+    _ = try await tool("edit", ["action": "apply", "ifRevision": baseRevision, "ops": style], error: "STALE_REVISION")
+    model.edit("Human") { $0.frame.shadow = 0.8 }
+    _ = try await tool("edit", ["action": "apply", "ifRevision": draft.revision, "ops": style], error: "STALE_REVISION")
+    guard try await tool("draft", ["action": "status"])["stale"] as? Bool == true else { throw MCPTestFailure(description: "Stale draft status") }
+    model.undo()
+    let submitted = try await tool("draft", ["action": "submit", "note": "Review test"])
+    guard submitted["submitted"] as? Bool == true, model.project == base else { throw MCPTestFailure(description: "Submit changed the live project") }
+    _ = try await tool("edit", ["action": "apply", "ifRevision": draft.revision, "ops": style], error: "REVIEW_IN_PROGRESS")
+    let discarded = try await tool("draft", ["action": "discard"])
+    guard discarded["verdict"] as? String == "discarded", session.draft == nil else { throw MCPTestFailure(description: "Discard verdict") }
+    _ = try await tool("edit", ["action": "apply", "ifRevision": baseRevision, "ops": [["op": "cutWords", "transcript": "stale", "words": ["w0"]]]], error: "TRANSCRIPT_CHANGED")
+    _ = try await tool("edit", ["action": "apply", "ifRevision": baseRevision, "ops": [["op": "zoom", "from": 0, "to": 1, "scale": 2, "center": ["typo": 0.5]]]], error: "INVALID_OP")
+    let warned = try await tool("edit", ["action": "apply", "ifRevision": baseRevision, "ops": [
+        ["op": "captions", "maxWords": 4], ["op": "text", "from": 0.1, "to": 2.0, "style": "lowerThird", "text": "Sam"]]])
+    guard !(warned["warnings"] as? [String] ?? []).isEmpty, try MCPTools.viewedProject(model, session: session).texts.count == 3 else { throw MCPTestFailure(description: "Lower-third/caption warnings") }
+    _ = try await tool("draft", ["action": "discard"])
+    let paused = try await tool("edit", ["action": "apply", "ifRevision": baseRevision, "ops": [["op": "cutPauses", "minDuration": 0.6, "keepTail": 0.1]]])
+    guard ((paused["duration"] as? [String: Double])?["after"] ?? 3) < 3, model.project == base else { throw MCPTestFailure(description: "Pause context/draft isolation") }
+    _ = try await tool("draft", ["action": "discard"])
+    AgentAccess.set(.live, for: base.id)
+    _ = try await tool("edit", ["action": "apply", "ifRevision": baseRevision, "ops": style + [["op": "marker", "at": 2, "label": "Live"]]])
+    guard model.undoStepNames.count == 1, model.undoStepNames.last?.hasPrefix("Claude:") == true, model.project.markers.count == 1 else { throw MCPTestFailure(description: "Live edits must be one named undo step") }
+    _ = try await tool("edit", ["action": "undo"])
+    guard model.project == base, model.undoStepNames.isEmpty else { throw MCPTestFailure(description: "Live undo did not restore base") }
+    model.edit("Human") { $0.frame.shadow = 0.9 }
+    _ = try await tool("edit", ["action": "undo"], error: "PERMISSION_DENIED")
+    model.undo()
+    model.isReviewingDraft = true
+    model.edit("Blocked") { $0.title = "blocked" }; model.beginGesture(); model.update { $0.title = "blocked" }; model.redo()
+    _ = try await tool("edit", ["action": "apply", "ifRevision": baseRevision, "ops": style], error: "REVIEW_IN_PROGRESS")
+    guard model.project == base, !model.isEditingGesture else { throw MCPTestFailure(description: "Review guard allowed a user edit") }
+    model.isReviewingDraft = false
+    model.beginGesture()
+    _ = try await tool("edit", ["action": "apply", "ifRevision": baseRevision, "ops": style], error: "REVIEW_IN_PROGRESS")
+    model.cancelGesture()
+    guard model.project.checkInvariants() == nil, MCPTools.operationSchemas.count == 12 else { throw MCPTestFailure(description: "Edit invariants/schemas") }
+    print("MCP edit: deterministic replay/ids/exclusions, dry-run and disk isolation, draft reads/renders, stale revisions, submit/discard, pause/word contexts, overlap warnings, live undo and review/gesture guards verified")
 }
 
 @MainActor private func checkMCPRender(_ args: [String]) async throws {

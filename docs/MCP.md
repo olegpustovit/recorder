@@ -403,7 +403,9 @@ enum AgentRender {
 
 ### T-806 App: `edit` and `draft` tools
 
-**Files.** `MCPTools.swift`, `MCPServer.swift` (`AgentDraft`), `EditorModel.swift` (review guard only).
+**Files.** `MCPTools.swift`, `MCPServer.swift` (`AgentDraft`), `EditorModel.swift` (review/gesture guards),
+`SelfTest.swift`; `RecorderCore/EditOps.swift`, `Project.swift`, `TimelineOps.swift` and `Tests/RecorderCoreTests/EditOpsTests.swift`
+(deterministic replay ids and motion-text overlap groups); `Inspector/TextPanel.swift` (validate style changes).
 
 ```swift
 struct AgentDraft {
@@ -424,6 +426,13 @@ struct AgentDraft {
 - Why calls, not one flat op list: each call's times refer to the project **that call saw** (its `ifRevision`). The
   first call sees `baseProject`; the second sees the draft after call 1; and so on. Replaying the calls in order
   reproduces exactly that. `// ponytail: replays all calls on every change; fine for tens of ops.`
+- Keep a frozen `EditContext` per call so refreshing the derived transcript does not silently change an existing
+  proposal. Replay uses that call's context, with the method's `context` as a fallback for manually constructed drafts.
+- New ids must survive replay and exclusions: `EditContext.operationSeeds` (default empty) supplies one internal seed
+  per op, based on draft id/call index/original op index. Core scopes a deterministic UUID sequence to that synchronous
+  op (and to the combined cut phase). All ordinary editor ids stay random. These seeds are not MCP arguments or saved
+  project metadata. Motion styles have separate overlap groups so lower thirds can coexist with captions and produce
+  the warnings below; Caption/Title/Label keep their shared non-overlap rule.
 - `edit.apply`:
   1. Draft mode: `ifRevision` must equal the draft's `revision` (or the editor's revision when no draft exists yet) →
      else `STALE_REVISION`. Live mode: must equal the editor's revision.
@@ -435,15 +444,25 @@ struct AgentDraft {
      `model.edit("Claude: \(changes[0].summary)\(n > 1 ? " +\(n-1)" : "")") { $0 = result.project }`.
   5. `dryRun`: run `applying`, return changes, store nothing.
   6. Warnings: a `lowerThird` text overlapping a `caption` in time → `"lowerThird <id> overlaps captions <from>–<to>"`.
-- `draft.submit {note}`: mark submitted; bring the editor window front; start review (T-807). `draft.status` returns the
-  verdict once the human decides (`accepted`, `accepted 7 of 9`, `discarded`). `draft.discard` clears it.
+- Dry runs return the unchanged current `revision` plus `dryRun: true`; the duration/changes describe the prospective
+  result. Empty batches do not create a draft or undo step. Recheck project/draft identity, revision, call count,
+  transcript, access and editing guards after any awaited audio analysis.
+- Timeline/transcript/activity reads and renders use the session's active draft and its revision. `render` with
+  `draft: false` uses the live project. Reject an apply when the human has changed the draft's base, even if the client
+  passes the draft's own latest revision. Live edits require discarding any pending draft first.
+- `draft.submit {note}`: mark submitted; bring the editor window front; start review (T-807). Further applies are
+  blocked while submitted. `draft.status` returns the verdict once the human decides (`accepted`, `accepted 7 of 9`,
+  `discarded`) and a `stale` flag when the base differs. `draft.discard` clears the draft and remembers `discarded` for
+  the next status query. A session keeps its pending draft when opening another project, but must reopen the original
+  project or explicitly discard before editing another one.
 - `EditorModel`: add `var isReviewingDraft = false` and make `edit(_:_:)` and `beginGesture()` return early while it is
-  true (same pattern as the existing `voiceover.isActive` guard). Review uses its own gesture via a private path
+  true (same pattern as the existing `voiceover.isActive` guard); guard update/commit/cancel/undo/redo too. Review uses its own gesture via a private path
   (`beginReview`/`updateReview`/`endReview(commit:name:)`) that bypasses the guard.
 - Selftest `mcp-edit <package>`: draft mode leaves `model.project` unchanged; live mode adds exactly one undo step named
   `Claude: …`; a stale `ifRevision` returns `STALE_REVISION`; two calls in one draft replay correctly.
 
-**Verify.** `--selftest mcp-edit <fixture>`, `make test`.
+**Verify.** `make test FILTER=EditOps` (replay ids/splits/exclusions and motion-text overlap invariants),
+`--selftest mcp-edit <fixture>`, `make test`.
 
 ### T-807 App: review UI (Signal UI)
 

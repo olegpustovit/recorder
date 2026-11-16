@@ -126,7 +126,7 @@ public extension Project {
             pieces(blocks, in: range).map { block in
                 var part = block
                 part.start -= range.lowerBound; part.end -= range.lowerBound
-                if copy { part.id = UUID().uuidString }
+                if copy { part.id = makeProjectID().uuidString }
                 return part
             }
         }
@@ -143,7 +143,7 @@ public extension Project {
             let audio = pieces(working.audioClips.filter { $0.link == .screen }, in: range).map { original -> AudioClip in
                 var part = original
                 part.start -= clip.sourceStart; part.end -= clip.sourceStart
-                if copy { part.id = UUID().uuidString }
+                if copy { part.id = makeProjectID().uuidString }
                 return part
             }
             return (layer, audio, atOutput + clip.sourceStart - origin)
@@ -184,7 +184,7 @@ public extension Project {
                         part.advanceMedia(by: lo - block.start)
                         part.start = clip.sourceStart + (lo - output) * clip.timeScale
                         part.end = clip.sourceStart + (hi - output) * clip.timeScale
-                        if !result.isEmpty { part.id = UUID().uuidString }
+                        if !result.isEmpty { part.id = makeProjectID().uuidString }
                         result.append(part)
                     }
                     return result
@@ -407,7 +407,7 @@ public extension Project {
         guard let first = kept.min(), let last = kept.max() else { return [] }
         let run = clipGroup(containing: first).lowerBound...clipGroup(containing: last).upperBound
         guard run.count > 1, !clips[first].isEmpty, !clips[last].isEmpty, Set(run.map { clips[$0].group }).count > 1 || clips[first].group == nil else { return joined ? kept : [] }
-        let id = UUID().uuidString
+        let id = makeProjectID().uuidString
         // The pieces' current speeds become the new group's 1× baseline.
         for i in run { clips[i].group = id; clips[i].groupSpeed = nil }
         return Set(run)
@@ -503,7 +503,7 @@ public extension Project {
         let track = importedAudioTrack(start: time, end: time + duration, matching: settings)
         if track == audioTracks.count { addAudioTrack(matching: settings) }
         let start = TimeMap(clips).sourceTime(atOutput: time)
-        let id = UUID()
+        let id = makeProjectID()
         audioClips.append(AudioClip(id: id.uuidString, start: start, end: start + duration, file: file,
                                     track: track, link: layer == nil ? nil : .layer, layer: layer))
         audioClips.sort { $0.start < $1.start }
@@ -522,7 +522,7 @@ public extension Project {
         extendAudioClock(toOutput: time)
         guard let track = freeLayerTrack(kind: kind, start: time, end: time + length, preferred: preferredTrack) else { self = before; return nil }
         let start = TimeMap(clips).sourceTime(atOutput: time)
-        let id = UUID()
+        let id = makeProjectID()
         layers.append(LayerBlock(id: id.uuidString, kind: kind, start: start, end: start + length, file: file, track: track, rect: rect))
         layers.sort { $0.start < $1.start }
         if kind == .video, hasAudio,
@@ -795,7 +795,7 @@ public extension Project {
                     let lo = max(block.start, clip.sourceStart), hi = min(block.end, clip.sourceEnd)
                     guard hi > lo else { continue }
                     var piece = block
-                    if !pieces.isEmpty { piece.id = UUID().uuidString }
+                    if !pieces.isEmpty { piece.id = makeProjectID().uuidString }
                     piece.advanceMedia(by: lo - block.start)
                     piece.start = output(lo); piece.end = output(hi)
                     piece[keyPath: rate] = (block[keyPath: rate] ?? 1) * clip.timeScale
@@ -949,7 +949,7 @@ public extension Project {
                 let lower = max(output.start, range.lowerBound), upper = min(output.end, range.upperBound)
                 guard upper > lower else { return nil }
                 var part = output
-                part.id = UUID().uuidString; part.advanceMedia(by: lower - output.start)
+                part.id = makeProjectID().uuidString; part.advanceMedia(by: lower - output.start)
                 part.start = lower; part.end = upper
                 layerOrigins[part.id] = layer.id
                 return connectedFromOutput(part)
@@ -970,7 +970,7 @@ public extension Project {
                     let lower = max(output.start, range.start), upper = min(output.end, range.end)
                     guard upper > lower else { return nil }
                     var part = output
-                    if lower != output.start { part.id = UUID().uuidString }
+                    if lower != output.start { part.id = makeProjectID().uuidString }
                     part.advanceMedia(by: lower - output.start)
                     part.start = lower; part.end = upper; part.layer = layer.id
                     return connectedFromOutput(part)
@@ -1048,7 +1048,7 @@ public extension Project {
             var part = block
             part.advanceMedia(by: start - block.start)
             part.start = start; part.end = end
-            if start != block.start { part.id = UUID().uuidString }
+            if start != block.start { part.id = makeProjectID().uuidString }
             return part
         }
         var pastedIDs: Set<UUID> = []
@@ -1064,7 +1064,7 @@ public extension Project {
             }
             for block in incoming {
                 var pasted = block
-                let id = UUID()
+                let id = makeProjectID()
                 pasted.id = preservingIDs ? block.id : id.uuidString
                 pastedLinks[block.id] = pasted.id
                 pasted.start += t; pasted.end += t
@@ -1158,7 +1158,7 @@ public extension Project {
             pasted.sourceStart += t; pasted.sourceEnd += t
             // A pasted copy is its own group, never a continuation of the one it was copied from.
             if !preservingIDs, let group = clip.group {
-                if pastedGroups[group] == nil { pastedGroups[group] = UUID().uuidString }
+                if pastedGroups[group] == nil { pastedGroups[group] = makeProjectID().uuidString }
                 pasted.group = pastedGroups[group]
             }
             pastedClips.insert(before.count)
@@ -1410,7 +1410,7 @@ public extension Project {
             guard let i = blocks.firstIndex(where: { $0.id == id.uuidString }),
                   s - blocks[i].start >= minimum, blocks[i].end - s >= minimum else { return false }
             var right = blocks[i]
-            right.id = UUID().uuidString
+            right.id = makeProjectID().uuidString
             right.advanceMedia(by: s - right.start)
             right.start = s
             blocks[i].end = s
@@ -2149,7 +2149,9 @@ public extension Project {
         if let e = zooms.blockInvariantError(kind: "zoom", duration: timelineSourceDuration) { return e }
         if let e = layouts.blockInvariantError(kind: "layout", duration: timelineSourceDuration) { return e }
         if let e = masks.blockInvariantError(kind: "mask", duration: timelineSourceDuration) { return e }
-        if let e = texts.blockInvariantError(kind: "text", duration: timelineSourceDuration) { return e }
+        for style in [TextBlock.Style.caption, .lowerThird, .chapter] {
+            if let e = texts.filter({ $0.style.sharesLane(with: style) }).blockInvariantError(kind: "text", duration: timelineSourceDuration) { return e }
+        }
         if let e = windowShots.blockInvariantError(kind: "window shot", duration: timelineSourceDuration) { return e }
         func mediaIsValid(file: String, start: Double, length: Double) -> Bool {
             guard start.isFinite, start >= 0, length.isFinite, length > 0 else { return false }
@@ -2258,7 +2260,7 @@ private func applyLinkedEdit<Block: TimedBlock>(_ blocks: inout [Block], in rang
         var part = block
         part.advanceMedia(by: start - block.start)
         part.start = start; part.end = end
-        if newID { part.id = UUID().uuidString }
+        if newID { part.id = makeProjectID().uuidString }
         return part
     }
     var stationary: [Block] = [], moved: [Block] = []
@@ -2304,10 +2306,10 @@ extension LayerBlock: TimedBlock {
         guard var carried = scene else { return }
         carried.padding = nil
         carried.cameraContext?.retainedEffectIDs = nil
-        for i in carried.zooms.indices { carried.zooms[i].id = UUID().uuidString }
-        for i in carried.masks.indices { carried.masks[i].id = UUID().uuidString }
+        for i in carried.zooms.indices { carried.zooms[i].id = makeProjectID().uuidString }
+        for i in carried.masks.indices { carried.masks[i].id = makeProjectID().uuidString }
         if var windows = carried.windowShots {
-            for i in windows.indices { windows[i].id = UUID().uuidString }
+            for i in windows.indices { windows[i].id = makeProjectID().uuidString }
             carried.windowShots = windows
         }
         scene = carried
@@ -2423,7 +2425,7 @@ public extension Project {
     @discardableResult
     private mutating func addBlock<T: TimedBlock>(atSource s: Double, length: Double, in keyPath: WritableKeyPath<Project, [T]>,
                                                     make: (_ id: String, _ start: Double, _ end: Double) -> T) -> UUID? {
-        let newID = UUID()
+        let newID = makeProjectID()
         guard self[keyPath: keyPath].addBlock(atSource: s, length: length, duration: timelineSourceDuration, minLength: Self.minBlockLength,
                                                make: { start, end in make(newID.uuidString, start, end) }) != nil else { return nil }
         assert(checkInvariants() == nil)
@@ -2486,7 +2488,7 @@ public extension Project {
 
     @discardableResult
     mutating func addSceneZoom(layerID: String, atLocal s: Double, length: Double = 3, mode: Zoom.Mode = .manual) -> UUID? {
-        let id = UUID()
+        let id = makeProjectID()
         let added = editSceneZooms(layerID: layerID) { zooms, duration in
             zooms.addBlock(atSource: s, length: length, duration: duration, minLength: Self.minBlockLength) {
                 Zoom(id: id.uuidString, start: $0, end: $1, mode: mode)
@@ -2588,19 +2590,41 @@ public extension Project {
     /// `[0, duration]` is dropped (ponytail: drop rather than trim).
     mutating func replaceCaptions(_ captions: [TextBlock]) {
         texts.removeAll { $0.style == .caption }
-        for c in captions where c.end <= timelineSourceDuration + 1e-9 && !texts.contains(where: { c.start < $0.end && c.end > $0.start }) {
+        for c in captions where c.end <= timelineSourceDuration + 1e-9 && !texts.contains(where: { c.style.sharesLane(with: $0.style) && c.start < $0.end && c.end > $0.start }) {
             texts.append(c)
         }
         texts.sort { $0.start < $1.start }
         assert(checkInvariants() == nil)
     }
 
+    private mutating func editTextLane<R>(style: TextBlock.Style, _ edit: (inout [TextBlock]) -> R) -> R {
+        var lane = texts.filter { style.sharesLane(with: $0.style) }
+        let others = texts.filter { !style.sharesLane(with: $0.style) }
+        let result = edit(&lane)
+        texts = (others + lane).sorted { $0.start < $1.start }
+        assert(checkInvariants() == nil)
+        return result
+    }
+
     @discardableResult
     mutating func addText(atSource s: Double, length: Double = 3, style: TextBlock.Style = .title, text: String = "Text") -> UUID? {
-        addBlock(atSource: s, length: length, in: \.texts) { id, start, end in TextBlock(id: id, start: start, end: end, text: text, style: style) }
+        let id = makeProjectID(), duration = timelineSourceDuration
+        return editTextLane(style: style) { lane in
+            lane.addBlock(atSource: s, length: length, duration: duration, minLength: Self.minBlockLength) {
+                TextBlock(id: id.uuidString, start: $0, end: $1, text: text, style: style)
+            } == nil ? nil : id
+        }
     }
-    mutating func moveText(_ id: UUID, toStart s: Double) { moveBlock(id, in: \.texts, toStart: s) }
-    mutating func resizeText(_ id: UUID, edge: Edge, to s: Double) { resizeBlock(id, in: \.texts, edge: edge, to: s) }
+    mutating func moveText(_ id: UUID, toStart s: Double) {
+        guard let style = texts.first(where: { $0.id == id.uuidString })?.style else { return }
+        let duration = timelineSourceDuration
+        editTextLane(style: style) { $0.moveBlock(id: id.uuidString, toStart: s, duration: duration) }
+    }
+    mutating func resizeText(_ id: UUID, edge: Edge, to s: Double) {
+        guard let style = texts.first(where: { $0.id == id.uuidString })?.style else { return }
+        let duration = timelineSourceDuration
+        editTextLane(style: style) { $0.resizeBlock(id: id.uuidString, edge: edge, to: s, duration: duration, minLength: Self.minBlockLength) }
+    }
 
     /// Removes the zoom, layout, mask or text block with `id`, whichever track it's in.
     mutating func removeBlock(_ id: UUID, propagate: Bool = true) {
@@ -2660,7 +2684,7 @@ public extension Project {
     @discardableResult
     mutating func duplicateBlock(_ id: UUID) -> UUID? {
         let key = id.uuidString
-        let newID = UUID()
+        let newID = makeProjectID()
         if let layer = layers.first(where: { $0.id == key }), let range = outputRange(layer, connected: true) {
             let before = self
             let length = range.end - range.start
@@ -2675,7 +2699,7 @@ public extension Project {
                 guard let interval = before.outputRange(audio, connected: true) else { continue }
                 let output = interval.start + length
                 extendAudioClock(toOutput: output)
-                var part = audio; part.id = UUID().uuidString; part.layer = copy.id
+                var part = audio; part.id = makeProjectID().uuidString; part.layer = copy.id
                 part.start = TimeMap(clips).sourceTime(atOutput: output); part.end = part.start + interval.end - interval.start
                 part.track = importedAudioTrack(start: output, end: output + interval.end - interval.start, matching: audioTracks[audio.track])
                 if part.track == audioTracks.count { addAudioTrack(matching: audioTracks[audio.track]) }
@@ -2709,7 +2733,7 @@ public extension Project {
         guard let zoom = zooms.first(where: { $0.id == id.uuidString }) else { return nil }
         let size = 1 / max(zoom.scale, 1)
         let rect = NormRect(x: min(max(zoom.center.x - size / 2, 0), 1 - size), y: min(max(zoom.center.y - size / 2, 0), 1 - size), w: size, h: size)
-        let newID = UUID()
+        let newID = makeProjectID()
         guard masks.addBlock(atSource: zoom.start, length: zoom.end - zoom.start, duration: timelineSourceDuration, minLength: Self.minBlockLength, make: { start, end in
             Mask(id: newID.uuidString, start: start, end: end, kind: .highlight, rect: rect, opacity: 0.6)
         }) != nil else { return nil }

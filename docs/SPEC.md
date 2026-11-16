@@ -1044,6 +1044,8 @@ Source: proposal https://claude.ai/artifact/5AM3Z6uVtk3nBi142picJA (decisions 20
   Caption (Barlow Semi Condensed 500, white with dark outline, current word inverted in a white box), Title (Barlow 300 on a
   black bar), Label (mono 12 on a square chip). Selection shows TextPanel (text field, style segment, size, 3×3 position,
   Remove). Pinned footer "Add text at playhead"; `T` on the timeline does the same. 9:16 keeps captions above the bottom 18 %.
+  Agent motion styles `lowerThird` and `chapter` each use a separate overlap group, so they can coexist with captions;
+  Caption/Title/Label retain their shared non-overlapping group. Lower-third/caption collisions produce agent warnings.
 - **Captions.** Sound ▸ Microphone ▸ *Generate Captions* runs on-device speech recognition on `mic.m4a` (never server),
   groups words into phrases of ≤ 4 words breaking on gaps > 0.5 s and sentence punctuation, and replaces only Caption-style
   blocks (one undo step). Editing a caption's text re-spreads word timings evenly.

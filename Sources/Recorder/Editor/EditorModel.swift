@@ -195,6 +195,7 @@ import RecorderCore
 
     private var gestureSnapshot: Project?
     var isEditingGesture: Bool { gestureSnapshot != nil }
+    var isReviewingDraft = false
     private var autosaveWork: DispatchWorkItem?
     private(set) var saveStatus = "Saved"
     private(set) var saveError: String?
@@ -260,7 +261,7 @@ import RecorderCore
 
     /// The ONLY way to mutate `project` outside a gesture. One call = one undo step.
     func edit(_ name: String, _ change: (inout Project) -> Void) {
-        guard !voiceover.isActive else { return }
+        guard !voiceover.isActive, !isReviewingDraft else { return }
         push(project, name: name)
         let before = project
         change(&project)
@@ -273,18 +274,19 @@ import RecorderCore
     /// For drags: begin → many `update` → commit | cancel. One undo step total. Paths rebuild once,
     /// at `commitGesture` — not per `update` call, which a drag can call dozens of times a second.
     func beginGesture() {
-        guard !voiceover.isActive else { return }
+        guard !voiceover.isActive, !isReviewingDraft else { return }
         autosaveWork?.cancel()
         autosaveWork = nil
         gestureSnapshot = project
     }
 
     func update(_ change: (inout Project) -> Void) {
-        guard !voiceover.isActive else { return }
+        guard !voiceover.isActive, !isReviewingDraft else { return }
         change(&project)
     }
 
     func commitGesture(_ name: String) {
+        guard !isReviewingDraft else { return }
         guard let snapshot = gestureSnapshot else { return }
         gestureSnapshot = nil
         guard snapshot != project else { return }
@@ -296,6 +298,7 @@ import RecorderCore
     }
 
     func cancelGesture() {
+        guard !isReviewingDraft else { return }
         guard let snapshot = gestureSnapshot else { return }
         project = snapshot
         gestureSnapshot = nil
@@ -311,7 +314,7 @@ import RecorderCore
     }
 
     func undo() {
-        guard !voiceover.isActive else { return }
+        guard !voiceover.isActive, !isReviewingDraft else { return }
         guard let previous = undoStack.popLast(), let name = undoNames.popLast() else { return }
         redoStack.append(project)
         redoNames.append(name)
@@ -323,7 +326,7 @@ import RecorderCore
     }
 
     func redo() {
-        guard !voiceover.isActive else { return }
+        guard !voiceover.isActive, !isReviewingDraft else { return }
         guard let next = redoStack.popLast(), let name = redoNames.popLast() else { return }
         undoStack.append(project)
         undoNames.append(name)

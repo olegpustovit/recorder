@@ -58,7 +58,11 @@ struct TextPanel: View {
 
     /// One-shot change = one undo step.
     private func edit(_ body: @escaping (inout TextBlock) -> Void) {
-        model.edit("Text") { if let i = $0.texts.firstIndex(where: { $0.id == textID.uuidString }) { body(&$0.texts[i]) } }
+        var trial = model.project
+        guard let i = trial.texts.firstIndex(where: { $0.id == textID.uuidString }) else { return }
+        body(&trial.texts[i])
+        guard trial.checkInvariants() == nil else { return }
+        model.edit("Text") { $0 = trial }
     }
 }
 
