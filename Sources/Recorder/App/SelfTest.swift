@@ -4865,6 +4865,83 @@ private final class MCPTestClient {
     do { _ = try MCPTools.decodeOps([["op": "layer", "from": 1, "to": 3]]); throw fail("sourceless layer decoded") } catch is MCPFailure { }
 }
 
+@MainActor private func checkDraftPlaybackHeadless() async throws {
+    func fail(_ message: String) -> MCPTestFailure { MCPTestFailure(description: "draft playback: " + message) }
+    typealias Identity = DraftPlayback.Identity
+    let fm = FileManager.default
+    let folder = fm.temporaryDirectory.appendingPathComponent("recorder-playback-\(UUID().uuidString)", isDirectory: true)
+    try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+    defer { try? fm.removeItem(at: folder) }
+    let playback = DraftPlayback.shared
+    playback.closePreview(); playback.cancel()
+    let first = Identity(projectID: "p", sessionID: "s", draftID: "d", revision: "r1")
+    var presented: [(URL, Identity)] = []
+    func makeFile() throws -> URL { let url = folder.appendingPathComponent(UUID().uuidString + ".mp4"); try Data("x".utf8).write(to: url); return url }
+    func wait(_ what: String, _ done: () -> Bool) async throws {
+        for _ in 0..<400 where !done() { try await Task.sleep(for: .milliseconds(5)) }
+        guard done() else { throw fail("timed out waiting for " + what) }
+    }
+    // 1. Normal flow: progress is reported, the result is presented once with its identity, and the file is kept for playback.
+    playback.start(first, current: { first }, render: { progress in progress(0.5); try await Task.sleep(for: .milliseconds(30)); return try makeFile() },
+                   present: { presented.append(($0, $1)) })
+    guard playback.isRendering, playback.identity == first else { throw fail("did not enter rendering") }
+    try await wait("progress") { playback.state == .rendering(0.5) }
+    try await wait("normal render") { presented.count == 1 }
+    guard playback.state == .idle, playback.presented == first, fm.fileExists(atPath: presented[0].0.path) else { throw fail("normal flow state") }
+    // 2. Repeated request while rendering is ignored (the identity stays the first one); a request after completion replaces the preview.
+    var release = false
+    let second = Identity(projectID: "p", sessionID: "s", draftID: "d", revision: "r2")
+    let previous = presented[0].0
+    playback.start(second, current: { second }, render: { _ in while !release { try await Task.sleep(for: .milliseconds(5)) }; return try makeFile() }, present: { presented.append(($0, $1)) })
+    guard !fm.fileExists(atPath: previous.path), playback.presented == nil else { throw fail("starting a new preview kept the previous one") }
+    var ignoredCalls = 0
+    playback.start(first, current: { first }, render: { _ in ignoredCalls += 1; return try makeFile() }, present: { presented.append(($0, $1)) })
+    try await Task.sleep(for: .milliseconds(30))
+    guard playback.identity == second, ignoredCalls == 0 else { throw fail("repeated request while rendering was not ignored") }
+    release = true
+    try await wait("second render") { presented.count == 2 }
+    guard presented[1].1 == second, playback.presented == second else { throw fail("second preview identity") }
+    // 3. Cancel while rendering: back to idle, nothing presented, even a renderer that ignores cancellation leaves no file behind.
+    var stubborn: URL?
+    var finishing = false
+    playback.start(first, current: { first }, render: { _ in
+        while !finishing { try? await Task.sleep(for: .milliseconds(5)) }
+        let url = try makeFile(); stubborn = url; return url
+    }, present: { presented.append(($0, $1)) })
+    playback.cancel()
+    guard playback.state == .idle, playback.identity == nil else { throw fail("cancel state") }
+    finishing = true
+    try await wait("cancelled render to finish") { stubborn != nil }
+    try await Task.sleep(for: .milliseconds(40))
+    guard presented.count == 2, !fm.fileExists(atPath: stubborn!.path), playback.state == .idle else { throw fail("cancelled render was presented or left a file") }
+    // 4. Draft changed while rendering: result discarded with a message, never presented.
+    var currentIdentity: Identity? = first
+    var staleFile: URL?
+    playback.start(first, current: { currentIdentity }, render: { _ in
+        try await Task.sleep(for: .milliseconds(20)); currentIdentity = Identity(projectID: "p", sessionID: "s", draftID: "d", revision: "r9")
+        let url = try makeFile(); staleFile = url; return url
+    }, present: { presented.append(($0, $1)) })
+    try await wait("stale render") { if case .failed = playback.state { return true }; return false }
+    guard presented.count == 2, !fm.fileExists(atPath: staleFile!.path), playback.identity == nil else { throw fail("stale render was presented or kept") }
+    playback.dismissFailure()
+    guard playback.state == .idle else { throw fail("dismissFailure") }
+    // 5. Errors: renderer failures surface their message, a cancelled-by-tool (DENIED) render is quiet.
+    playback.start(first, current: { first }, render: { _ in throw MCPFailure(code: "OUT_OF_RANGE", message: "boom") }, present: { presented.append(($0, $1)) })
+    try await wait("failure") { if case .failed("boom") = playback.state { return true }; return false }
+    playback.start(first, current: { first }, render: { _ in throw MCPFailure(code: "DENIED", message: "cancelled") }, present: { presented.append(($0, $1)) })
+    try await wait("quiet cancel") { playback.state == .idle && !playback.isRendering }
+    // 6. Invalidation by the owning session closes the preview and deletes its file; other sessions are untouched.
+    playback.start(first, current: { first }, render: { _ in try makeFile() }, present: { presented.append(($0, $1)) })
+    try await wait("final preview") { presented.count == 3 }
+    let kept = presented[2].0
+    playback.invalidate(sessionID: "someone-else")
+    guard fm.fileExists(atPath: kept.path), playback.presented == first else { throw fail("another session's invalidation closed the preview") }
+    playback.invalidate(sessionID: "s")
+    guard !fm.fileExists(atPath: kept.path), playback.presented == nil else { throw fail("invalidate left the preview open") }
+    // 7. Identity is the draft being reviewed: nothing to play without a reviewing draft.
+    guard !playback.isRendering, playback.state == .idle else { throw fail("final state") }
+}
+
 @MainActor private func checkMCPEdit(_ args: [String]) async throws {
     if args.contains("--headless") {
         let ops = try MCPTools.decodeOps([["op": "cut", "from": 0.01, "to": 1.0, "snap": true],
@@ -4940,7 +5017,8 @@ private final class MCPTestClient {
             guard renderProperties?["grid"] != nil else { throw MCPTestFailure(description: "render schema lacks grid") }
         }
         try await checkMCPAssetsHeadless()
-        print("MCP edit headless: layer assets (trusted paths, immutable import, dedupe, isolation, atomic failure, purge, replay), snap/anchor schemas and decoding, grid geometry/drawing, zoom follow/ease and text colour/size schema, warnings, current-time offsets, frozen replay, exclusions/dependent reasons and stable recovery verified; no application windows created")
+        try await checkDraftPlaybackHeadless()
+        print("MCP edit headless: draft playback state machine, layer assets (trusted paths, immutable import, dedupe, isolation, atomic failure, purge, replay), snap/anchor schemas and decoding, grid geometry/drawing, zoom follow/ease and text colour/size schema, warnings, current-time offsets, frozen replay, exclusions/dependent reasons and stable recovery verified; no application windows created")
         return
     }
     guard let path = args.first else { throw MCPTestFailure(description: "usage: mcp-edit <fixture.recorder>") }

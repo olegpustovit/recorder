@@ -444,6 +444,7 @@ enum AgentAccess: String, CaseIterable {
         let note = (draft?.note?.replacingOccurrences(of: "\n", with: " ") ?? "Review edits").prefix(40)
         model?.endReview(commit: commit, name: "Claude: \(note)")
         MCPAssets.purge(session, keeping: model?.liveProject)
+        DraftPlayback.shared.invalidate(sessionID: session.id)
         let count = draft?.selectedCount ?? 0, total = draft?.calls.flatMap { $0 }.count ?? 0
         let verdict = commit ? (count == total ? "accepted" : "accepted \(count) of \(total)") : "discarded"
         session.lastDraftVerdict = verdict
@@ -455,6 +456,7 @@ enum AgentAccess: String, CaseIterable {
     @discardableResult func takeOverWatching(_ model: EditorModel) -> Bool {
         guard model.isWatchingDraft, let id = model.reviewSessionID, let session = sessions.first(where: { $0.id == id }) else { return false }
         model.endReview(commit: false, name: "")
+        DraftPlayback.shared.invalidate(sessionID: session.id)
         session.previewSuppressed = true
         session.reviewError = nil
         return true
@@ -462,6 +464,7 @@ enum AgentAccess: String, CaseIterable {
     func editorClosing(_ model: EditorModel) {
         guard let id = model.reviewSessionID else { return }
         model.endReview(commit: false, name: "")
+        DraftPlayback.shared.invalidate(sessionID: id)
         sessions.first { $0.id == id }?.draft?.submitted = false
     }
     private func updateMarks(_ model: EditorModel, base: Project) {

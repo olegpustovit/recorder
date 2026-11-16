@@ -57,6 +57,11 @@ extension EnvironmentValues {
                             .accessibilityLabel("Agent access")
                     }
                     statusStrip
+                    if case .failed(let message) = DraftPlayback.shared.state {
+                        Text("Play draft: \(message)").font(Font(Theme.labelFont)).foregroundStyle(Theme.dangerColor)
+                            .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("agent-play-error")
+                            .onTapGesture { DraftPlayback.shared.dismissFailure() }
+                    }
                     if let notice = model.reviewNotice {
                         Text(notice).font(Font(Theme.labelFont)).foregroundStyle(Theme.textPrimaryColor)
                             .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("agent-watching-notice")
@@ -90,6 +95,11 @@ extension EnvironmentValues {
             }
             Divider().overlay(Theme.strokeColor)
             HStack {
+                let playback = DraftPlayback.shared
+                Button(playButtonTitle(playback)) { if let session { playback.toggle(model: model, session: session) } }
+                    .buttonStyle(TechButtonStyle(kind: .secondary, compact: true))
+                    .disabled(!playback.isRendering && !playback.canPlay(model: model, session: session))
+                    .accessibilityIdentifier("agent-play-draft")
                 Spacer()
                 let draft = session?.draft
                 let canAccept = session != nil && draft?.submitted == true && draft?.verdict == nil && model.reviewSessionID == session?.id
@@ -107,6 +117,11 @@ extension EnvironmentValues {
             if id == nil { activityExpanded = false }
         }
         .onChange(of: session?.id) { _, _ in activityExpanded = false }
+    }
+
+    private func playButtonTitle(_ playback: DraftPlayback) -> String {
+        if case .rendering(let value) = playback.state { return "Cancel \(Int((value * 100).rounded()))%" }
+        return "Play draft"
     }
 
     private var statusStrip: some View {

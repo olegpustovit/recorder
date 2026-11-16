@@ -1239,6 +1239,13 @@ The thirteen edit operations are `cut`, `cutPauses`, `cutWords`, `speed`, `zoom`
 Filler suggestions are lexical and depend on words retained by on-device recognition. Imported clips have no
 recorded transcript and are excluded from word/pause cuts.
 
+**Play draft.** While a draft is being watched or reviewed, the Claude panel footer's **Play draft** renders that draft's 540p
+proxy with the `render.clip` pipeline (progress in the button, which becomes **Cancel n%** while rendering; repeat clicks never queue a
+second render) and plays it with audio in a native player window. The preview is tied to the draft id and revision: a new
+`edit.apply`, accept, discard, take-over or editor close cancels the render and closes/deletes the preview, and a render that
+finishes for a draft that has since moved on is deleted and reported ("The draft changed while rendering"), never shown. Audio
+edit operations remain outside the MCP scope.
+
 **Assets and layers.** `project.assets` lists the image/video media already used as layers (`asset` = its `media/…` file) and
 the other library recordings the agent may read (same per-recording access gate as `project.list`). A `layer` op places one
 on the timeline from exactly one source: `asset` (existing package media), `path` (an absolute image or video file) or

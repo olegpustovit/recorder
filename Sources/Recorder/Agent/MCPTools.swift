@@ -212,6 +212,7 @@ enum MCPTools {
                 do { try MCPServer.shared.review(session, watching: true) }
                 catch { session.draft = previous; throw error }
                 session.lastDraftVerdict = nil; session.reviewError = nil; nextRevision = session.draft?.revision ?? draft.revision
+                DraftPlayback.shared.invalidate(sessionID: session.id)   // a preview of the previous revision is stale
                 if active == nil, EditorWindowController.allOpen.first(where: { $0.model === model })?.window?.isKeyWindow == true {
                     model.inspectorShowsAgent = true
                 }
