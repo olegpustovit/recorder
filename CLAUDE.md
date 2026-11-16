@@ -52,6 +52,7 @@ Bug fixes go to the root cause in the shared function (e.g. fix `TimeMap`/`Timel
 ```
 make build                 # swift build -c release   (CONFIG=debug for debug)
 make test                  # all tests
+make mcp-smoke             # build app; pipe initialize + tools/list through --mcp
 make test FILTER=timeMap   # a single test or suite (passed to --filter)
 make app                   # assemble + codesign build/Recorder.app
 make run                   # app + open it
@@ -59,6 +60,7 @@ make dev                   # incremental debug build, quit old instance, run in 
 make install               # signed local install, normal quit and targeted permission resets
 make cert                  # one-time: create the self-signed "Recorder Dev" signing identity
 make clean
+build/Recorder.app/Contents/MacOS/Recorder --mcp                    # stdio MCP shim, auto-launches the app
 build/Recorder.app/Contents/MacOS/Recorder --selftest <name> [args]   # headless app checks (cases are added by plan tasks)
 scripts/freeze-dump.sh [pid]                                          # hung main thread: sample+ps into a new snapshot folder, path to clipboard
 ```
@@ -69,13 +71,19 @@ and copies its path (SPEC §8.1) — for handing an AI assistant one path instea
 
 Always test via `make test`, not bare `swift test` — see the first constraint below.
 
+Agent protocol/tools: [SPEC §10](docs/SPEC.md#10-agents-mcp) and [MCP.md](docs/MCP.md). Draft is the default;
+review/accept uses one undo step, final exports require native approval, and agent renders hide key overlays.
+Quit the source-build app before `make app` or `make mcp-smoke` replaces its bundle.
+
 ## Toolchain constraints (verified on this machine — these drive the architecture)
 
-This machine has **Command Line Tools only, no Xcode**:
+The app supports **Command Line Tools or Xcode**, using SwiftPM in both cases. The Makefile honors
+`DEVELOPER_DIR` (otherwise `xcode-select -p`), selects the corresponding Testing paths, and uses the native
+SwiftPM build system to avoid the newer default engine's property-list parsing failure:
 
-- **No XCTest.** Tests use swift-testing (`import Testing`, `@Test`, `#expect`). Its frameworks ship with CLT but are off the
+- **No XCTest.** Tests use swift-testing (`import Testing`, `@Test`, `#expect`). Its frameworks ship with the developer toolchain but can be off the
   default search path; the Makefile's `TESTFLAGS` add the `-F`/`-rpath` flags. Bare `swift test` fails with `no such module 'Testing'`.
-- **No offline `metal` compiler.** Never add `.metal` files. Shaders are MSL source in a Swift string compiled at launch with
+- **No offline `metal` compiler required.** Never add `.metal` files. Shaders are MSL source in a Swift string compiled at launch with
   `MTLDevice.makeLibrary(source:options:)`.
 - **No `xcodebuild`.** SwiftPM only; the `.app` bundle is assembled by the Makefile from `.build/<config>/Recorder` + `Resources/Info.plist`.
   No asset catalogs, xibs, or storyboards — loose resource files copied into the bundle, SF Symbols for icons.

@@ -1,6 +1,6 @@
 # Recorder MCP — agent editing (implementation guide)
 
-Status: proposed 2026-11-16 · tasks **T-801…T-810** in `docs/PLAN.md` · prototype: https://artifacts.microapps.space/a/0shbfprqwqz2
+Status: implemented and verified 2026-11-16 · tasks **T-801…T-810** in `docs/PLAN.md` · prototype: https://artifacts.microapps.space/a/0shbfprqwqz2
 
 This document is written for an implementing agent (any model). It says **what** to build, **where**, **with which
 existing code**, and **how to prove it works**. Read §0–§3 once, then do the tasks in §6 strictly in order, one per
@@ -604,7 +604,9 @@ it or that generated/cached speech proves live microphone capture/on-device tran
 
 **Files.** `docs/SPEC.md` (new §10 Agents: this document's §1, §4, §5 condensed; version 5 rule in §5), `README.md`
 (connect command), `CLAUDE.md` (commands: `Recorder --mcp`), `Makefile` (`mcp-smoke`: pipes the initialize + tools/list
-lines from T-804 through the shim and checks for `"name":"edit"`), `docs/PLAN.md` Log.
+lines from T-804 through the shim and checks for `"name":"edit"` and all nine tools), `docs/PLAN.md` Log.
+The Makefile selects Testing paths from
+`DEVELOPER_DIR`/`xcode-select` and uses SwiftPM's native build system, so these commands need no manual toolchain overrides.
 
 **Verify.** `make mcp-smoke`, `make test`, `--selftest menu-actions`.
 
@@ -633,3 +635,36 @@ lines from T-804 through the shim and checks for `"name":"edit"`), `docs/PLAN.md
 3. Recorder opens the project; the Claude tab shows activity; Claude reads, edits, renders, fixes an overlap, submits.
 4. The human unticks one change, presses Accept; one undo step `Claude: …` appears; ⌘Z restores the original.
 5. "Export it" → native sheet → Export → MP4 (+ SRT) in `~/Movies/Recorder/Exports/`.
+
+
+## 9. Completion evidence — 2026-11-16
+
+Compared the implementation with the freshly read prototype **version 2**: its decisions, nine tools,
+19 in-scope capability rows, flows and T-801…T-810 roadmap are covered. No MCP SDK or third-party package was added.
+The per-task evidence is recorded in [PLAN.md](PLAN.md#log); this table maps the prototype to those checks.
+
+| Prototype capability | Implementation and evidence |
+|---|---|
+| Timeline/transcript data, word IDs, fillers, output clocks | T-801; AgentViews tests, `mcp-roundtrip`, actual Claude Code timeline/transcript/filler reads |
+| Cut/split/ripple/speed, word/pause cuts, captions, zoom/cursor, highlights/style | T-802/T-806; EditOps tests, `mcp-edit`, actual client atomic-overlap rejection/retry and pause/filler/caption edits |
+| Markers, SRT, conditional version 5 | T-803; ProjectTests/EditOps, native MP4/SRT checks and decoded real-client export |
+| Lower thirds/chapter cards | T-808; `motion-text`, inspected native frames/inspector; preview/export `maxDelta=0` at 24 times each in 16:9 and 9:16 |
+| Same-binary shim, nine tools, access, privacy and activity | T-804; `mcp-roundtrip`; T-810 `make mcp-smoke` initializes the packaged app and asserts protocol plus all nine tools |
+| Frames, contact sheet, 540p proxy, progress/cancel, cache | T-805; `mcp-render` checks pixel parity, key suppression, order, audio/imports/tails, links, progress/cancel and retention; actual client rendered frames/sheets |
+| Draft review, per-change inclusion, stale replay, live undo | T-806/T-807; `mcp-edit`/`mcp-review`, inspected native layouts; actual Claude draft followed by native untick/Accept/Undo/Redo |
+| Final approval, MP4/SRT, client setup, UI navigation | T-809; `mcp-export` checks denial/timeout/cancel, races/collisions, stale/access guards, output decoding and presets; actual Settings Connect and Claude Code Export/Deny workflow |
+| Documentation and repeatable checks | T-810; plain `make build`, `make mcp-smoke`, `make test` (190/190), packaged-app `--selftest menu-actions`, diff check |
+
+The actual-client acceptance used Claude Code 2.1.325 with a disposable generated recording and cached words.
+A native checkbox excluded one of four proposed edits; accepting three produced 2.775 seconds, and one native
+Undo restored the original project. The approved 1280×720/24fps movie decoded with audio and the expected text;
+its duration was 2.791667 seconds after frame rounding. A second native approval was denied and wrote no files.
+The user waived HUMAN visual gates; these were agent-driven native checks, not a person's approval.
+
+Verification limits: fresh microphone capture and positive on-device transcription were not repeated; the existing
+on-device transcription engine is reused. Lexical filler detection can only flag words present in its transcript.
+Drafts remain memory-only, the shim requires client reconnection after app exit, and long draft replay remains
+uncached as documented in source. The native SwiftPM build system is currently required on this toolchain and is
+deprecated upstream; the Makefile honors `DEVELOPER_DIR`, with Xcode and CLT Testing-path selection checked.
+This completion covers the prototype's MCP scope, including its explicit exclusions in §1; unrelated older
+repository milestones retain their existing status.

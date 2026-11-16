@@ -436,7 +436,7 @@ source frame unless noted; media in-points use their own file's seconds):
 
 ```jsonc
 {
-  "version": 3,                 // 4 when a recording layer or a clip with "file" exists (rules below)
+  "version": 3,                 // 5 for motion text; else 4 for recording layers/imported clips; else 3
   "id": "UUID", "title": "My Recording", "createdAt": "ISO8601",
   "source": { "kind": "display|window|area", "pixelWidth": 2880, "pixelHeight": 1800, "scale": 2, "duration": 93.4, "hasCamera": true, "hasMic": true, "hasSystemAudio": false },
   "clips":   [ { "sourceStart": 0, "sourceEnd": 41.2, "speed": 1 }, { "sourceStart": 47.0, "sourceEnd": 93.4, "speed": 2 } ],
@@ -478,7 +478,7 @@ Rules:
   the project removes it. "Extract raw files" = reveal the package contents in Finder.
 - Chosen backdrop images use immutable `background-<id>.<ext>` files beside `project.json`; `background.imagePath`
   selects the current copy. Replacing a backdrop never overwrites the file a previous undo state references.
-- **Version rule.** Save `"version": 4` only when the project has a `layers` entry with `kind: "recording"` or a clip with `file`; otherwise save `3`. Older builds reject a newer version with the alert above and never rewrite it, so projects that don't use free editing stay openable in them. Opening a v3 project needs no migration.
+- **Version rule.** Save `"version": 5` when any text uses `lowerThird` or `chapter`; otherwise save `4` when a recording layer or a clip with `file` exists; otherwise save `3`. Markers (`id`, source-time `at`, `label`) are additive and default to `[]`, with no version bump. Older builds reject a newer version with the alert above and never rewrite it. Opening a v3 project needs no migration.
 - **Clip `group`**: optional string. Neighbouring clips with the same `group` show, select, move and trim as one clip
   (Join Clips ⌘J); each keeps its own `speed`, cuts and fades. Absent = not grouped. Older builds ignore it, so no
   version bump. A paste gets a fresh id so a copy never merges into the group it came from.
@@ -486,7 +486,7 @@ Rules:
   inspector — already multiplied into each member's `speed`/`clockSpeed`, so playback never reads it.
 - **Clip `file`** (v4): optional. `nil` = `screen.mov` (the default, and what every existing clip means). A string names an imported `media/` file that this clip plays instead; such clips have no cursor or zoom.
 - **Recording layer** (v4): `kind: "recording"` is a lifted clip (§7.2 Free editing). `file` is `"screen.mov"`, `mediaStart` is the in-point into it, `mediaRate` as for audio (default 1), `rect` is the full output canvas, and `scene` holds the carried effects: `{ "zooms": [...], "masks": [...], "hideCursor": false }`, with times **relative to the layer's `start`** (not the timeline clock). `scene` is `null` for image and video layers. Its cursor and zooms are drawn through the same screen pass as the Main footage.
-- `audioTracks`/`audioClips`/`layers` are additive version-3 keys; no version bump for them. The v4 kind and clip file above are the only additions that need one. When `audioClips` is absent, derive
+- `audioTracks`/`audioClips`/`layers` are additive version-3 keys; no version bump for them. Recording layers/imported clips require v4; motion text requires v5 as above. When `audioClips` is absent, derive
   Mic/System tracks and one linked audio clip per non-gap video clip from the legacy source/audio fields. Mic links
   to camera if present, otherwise screen; System links to screen. An explicit `audioClips: []` stays silent. Layers
   default to `[]`. Track volume/mute and clip gain/fades are authoritative; legacy `audio` volume/mute fields remain
@@ -507,8 +507,8 @@ Rules:
   Camera, key, layout and text lanes keep absolute output positions when recording clips move between lane kinds.
   Audio collisions preserve sound settings and may require another lane. Recording layers count toward the four
   video-decoder-lane limit; minimum length is 0.1 media seconds, including output spans below 0.1 seconds at speed.
-- Maximum supported format is 4. New/versionless models default to version 3 metadata; atomic `save` writes version
-  4 when recording layers exist, otherwise 3. The loaded version remains metadata in memory. File loading checks
+- Maximum supported format is 5. New/versionless models default to version 3 metadata; atomic `save` chooses the
+  minimum version using the rule above. The loaded version remains metadata in memory. File loading checks
   the version header before decoding feature enums so a future version fails clearly without rewriting it.
 - Screen/camera-linked audio uses timeline-clock start/end, with file playback rate `mediaRate ?? 1`, mapped through
   the overlapping video clips. Unlinked/layer-linked audio and all layers are **connected**: output start =
@@ -1126,3 +1126,63 @@ PLAN T-640…T-650.
   Fade in/out sit on the first/last piece; Remove deletes the whole group. The timeline label shows the group speed.
 - **Transcription engine:** macOS 26+ uses `SpeechAnalyzer` + `SpeechTranscriber` (long-form, always on-device, model
   installed by the system on first use per language); macOS 15 uses `SFSpeechRecognizer` with on-device required.
+
+
+## 10. Agents (MCP)
+
+Recorder exposes the nine tools below to a local MCP client through the same binary, `Recorder --mcp`.
+The stdio shim launches Recorder when needed and connects to its same-user Unix socket at
+`~/Library/Application Support/Recorder/mcp.sock`. Projects stay open in ordinary editor windows;
+all edits use `EditorModel`, the existing timeline operations, compositor, autosave and undo.
+No SDK, extra executable, headless editor or third-party dependency is required.
+
+### Access and review
+
+Per-project access is **Off**, **Read**, **Draft** (default) or **Live**, selected in the Claude inspector.
+Draft edits stay in app memory and do not change the saved project. `draft.submit` opens the Claude tab:
+review the rendered preview and timeline cut marks, untick individual operations, then Accept or Discard.
+Accept creates one named `Claude: …` undo step; Live mode applies each call directly as one named undo step.
+A stale draft offers **Replay on current** or Discard; replay reports invalid/dependent operations as skipped.
+Only one review can be active per project. Quitting Recorder loses pending drafts; disconnecting a client does
+not automatically accept them. Human gestures, active review and voiceover recording guard conflicting edits.
+
+Agents never receive key characters. Activity analysis returns ranges/times only; agent frames, sheets and proxies
+force the Keys overlay off. The last 200 activity summaries are kept in memory (the panel shows the last 50 for
+this project). Agent renders use UUID files under `~/Library/Caches/Recorder/Agent/<session>/`; files older than
+seven days are purged at launch. A final MP4 export requires a native approval sheet showing the client, project,
+range/preset and destination. Deny, timeout and cancellation write no final output. Existing destinations are never
+overwritten. Accepted final exports use the native saved settings (including configured visual effects), with an
+optional output-time SRT sidecar; the default destination is a unique name in `~/Movies/Recorder/Exports/`.
+
+### Protocol and tools
+
+Transport is newline-delimited UTF-8 JSON-RPC 2.0, MCP `2025-06-18`: `initialize`, `notifications/initialized`,
+`ping`, `tools/list` and `tools/call`. Unknown request methods return `-32601`. Tool results include text JSON plus
+`structuredContent`; failures set `isError` with a named code and a recovery message. Frames/sheets include inline
+images and local resource links; movies use local links. Long transcription/render/export calls support progress
+notifications when the client supplies a progress token. The shim exits if the app quits; the client reconnects.
+
+| Tool | Actions |
+|---|---|
+| `project` | `list`, `open`, `info` |
+| `timeline` | `get` clips, blocks and markers with IDs |
+| `transcript` | `get` words or phrases, stable `wN` IDs, filler flags |
+| `analyze` | `transcribe` on-device, `pauses`, `fillers`, `activity` |
+| `edit` | `apply` an atomic operation array, optional `dryRun`; `undo` the latest Live agent step |
+| `draft` | `status`, `submit`, `discard` |
+| `render` | `frames` (up to 6 PNGs, at most 640px), `sheet` (up to 24 tiles), `clip` (540p MP4), `cancel` |
+| `export` | `final`, with native approval and optional SRT |
+| `ui` | `show` a playhead time and optional selected IDs |
+
+All tool times are **output seconds** at the supplied `ifRevision`; Core converts to source time before mutation.
+Reads and renders include the calling session's draft by default; final export renders the accepted live project.
+The twelve edit operations are `cut`, `cutPauses`, `cutWords`, `speed`, `zoom`, `text`, `captions`, `highlight`,
+`marker`, `update`, `remove` and `style`. IDs come from timeline/transcript reads. Revision conflicts return
+`STALE_REVISION`; transcript identity changes return `TRANSCRIPT_CHANGED`; invalid batches leave the project intact.
+Filler suggestions are lexical and depend on words retained by on-device recognition. Imported clips have no
+recorded transcript and are excluded from word/pause cuts.
+
+Settings ▸ Agents offers **Connect** for Claude Code, **Copy JSON** for other clients, and live connection status.
+The complete schemas, error codes, operation examples and acceptance checks live in [MCP.md](MCP.md).
+Music ducking, LUFS, OCR, background music, counters, progress graphics, end cards, agent-written graphics,
+MCP resources/prompts and shim reconnect/replay remain outside this MCP scope.

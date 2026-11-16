@@ -4,7 +4,7 @@ Record a Mac display, window or area, then edit the recording with cuts, zooms, 
 
 ![Recorder editor with generated demo media, timeline tracks and canvas controls](docs/images/editor.png)
 
-*Existing native-editor capture with generated demo media. It was not recaptured on the Linux review host.*
+*Native-editor capture with generated demo media.*
 
 ## Install
 
@@ -37,7 +37,29 @@ There are no third-party Swift packages. The targets use Swift 5 language mode. 
 
 `make app` builds without replacing an installed copy or resetting its permissions. `make install` also creates or reuses a local signing identity, replaces /Applications/Recorder.app and resets Recorder's permission grants. Read the [local-install details](docs/INSTALLATION.md#self-signed-local-install-and-permission-reset) before using it.
 
-Native capture, Metal rendering, signing and export were not retested on this Linux host. Existing images show the app; they do not prove current permission migration or export behavior.
+Native MCP editing, review/undo, Metal preview/export parity and approved MP4/SRT exports have been checked on macOS with generated media. Live microphone capture, positive on-device transcription and extended recording performance were not repeated for the MCP work.
+
+## Connect an agent
+
+Open **Settings > Agents > Connect** for Claude Code, or add the installed app yourself:
+
+```sh
+claude mcp add recorder -s user -- /Applications/Recorder.app/Contents/MacOS/Recorder --mcp
+```
+
+For a source build, replace the executable path with the absolute path to
+`build/Recorder.app/Contents/MacOS/Recorder`. **Copy JSON** supplies configuration for other MCP clients.
+The shim starts Recorder when needed; projects open in ordinary editor windows.
+
+Ask Claude to open a recording, find pauses/fillers, propose cuts and captions, render a contact sheet and submit.
+Access defaults to **Draft**: inspect changes in the **Claude** tab, untick any you do not want, then Accept or Discard.
+Accept is one undo step. **Off**, **Read** and **Live** access are available per project.
+Final MP4 exports require a native approval sheet and can include an SRT sidecar.
+
+Tools never return key characters; agent previews hide key overlays. Render files expire from the agent cache after
+seven days. Drafts live in memory and are lost when Recorder quits. See [Agents](docs/SPEC.md#10-agents-mcp)
+and the [tool reference](docs/MCP.md). Run `make mcp-smoke` to build the app and check initialization and all nine tools;
+quit a running source-build app before rebuilding its bundle.
 
 ## Help and development
 

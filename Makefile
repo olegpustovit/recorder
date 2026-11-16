@@ -1,11 +1,14 @@
-# Command Line Tools only: no xcodebuild, no offline `metal`, no XCTest. See CLAUDE.md.
+# SwiftPM only: works with Xcode or Command Line Tools. See CLAUDE.md.
 APP      := build/Recorder.app
 VERSION  ?= $(shell scripts/version.sh version)
 BUILD    ?= $(shell scripts/version.sh build)
-CLT      := /Library/Developer/CommandLineTools/Library/Developer
-# swift-testing ships with CLT but is not on the default search path.
-TESTFLAGS := -Xswiftc -F -Xswiftc $(CLT)/Frameworks -Xlinker -F -Xlinker $(CLT)/Frameworks \
-             -Xlinker -rpath -Xlinker $(CLT)/Frameworks -Xlinker -rpath -Xlinker $(CLT)/usr/lib
+DEVELOPER_DIR ?= $(shell xcode-select -p)
+export DEVELOPER_DIR
+# Testing is outside the default search path in both developer toolchains.
+TEST_ROOT := $(if $(wildcard $(DEVELOPER_DIR)/Platforms/MacOSX.platform),$(DEVELOPER_DIR)/Platforms/MacOSX.platform/Developer,$(DEVELOPER_DIR)/Library/Developer)
+TEST_FRAMEWORKS := $(TEST_ROOT)/$(if $(wildcard $(DEVELOPER_DIR)/Platforms/MacOSX.platform),Library/)Frameworks
+TESTFLAGS := -Xswiftc -F -Xswiftc "$(TEST_FRAMEWORKS)" -Xlinker -F -Xlinker "$(TEST_FRAMEWORKS)" \
+             -Xlinker -rpath -Xlinker "$(TEST_FRAMEWORKS)" -Xlinker -rpath -Xlinker "$(TEST_ROOT)/usr/lib"
 # Stable identity keeps TCC grants (Screen Recording, Accessibility) across rebuilds. `-` = ad-hoc (grants reset every build).
 # A Developer ID in the keychain wins: same signer as the released app, so installs keep its grants. It lives in
 # recorder-signing.keychain (empty password, so it unlocks over SSH; the key is already in plain text in .apple).
@@ -19,19 +22,29 @@ UNLOCK   := kc="$$HOME/Library/Keychains/login.keychain-db"; security show-keych
 CONFIG   ?= release
 GALLERY_PNG ?= build/signal-ui-gallery.png
 
-.PHONY: build test app run dev gallery gallery-advanced gallery-png install uninstall clean cert
+.PHONY: build test app mcp-smoke run dev gallery gallery-advanced gallery-png install uninstall clean cert
 build:
-	@# The Command Line Tools build system can fail with "Unknown error parsing property list"; prefer full Xcode when installed.
-	@d=/Applications/Xcode.app/Contents/Developer; if [ -z "$$DEVELOPER_DIR" ] && [ -d "$$d" ]; then export DEVELOPER_DIR="$$d"; fi; swift build -c $(CONFIG)
+	swift build --build-system native -c $(CONFIG)
 
 # make test                 -> all tests
 # make test FILTER=timeMap  -> one test / suite
 test:
-	DEVELOPER_DIR=$${DEVELOPER_DIR:-$(CLT:/Library/Developer=)} swift test $(TESTFLAGS) $(if $(FILTER),--filter $(FILTER))
+	swift test --build-system native $(TESTFLAGS) $(if $(FILTER),--filter $(FILTER))
 
 app: build
 	@[ ! -e "$(SIGN_KC)" ] || security unlock-keychain -p "" "$(SIGN_KC)"
 	APP="$(APP)" BINARY=".build/$(CONFIG)/Recorder" VERSION="$(VERSION)" BUILD="$(BUILD)" SIGN_ID="$(SIGN_ID)" scripts/assemble-app.sh
+
+mcp-smoke: app
+	@python3 -c 'import json, subprocess, sys; \
+	requests = [{"jsonrpc":"2.0", "id":1, "method":"initialize", "params":{"protocolVersion":"2025-06-18", "capabilities":{}, "clientInfo":{"name":"make mcp-smoke", "version":"1"}}}, {"jsonrpc":"2.0", "id":2, "method":"tools/list"}]; \
+	reply = subprocess.run([sys.argv[1], "--mcp"], input="".join(json.dumps(r)+"\n" for r in requests), text=True, capture_output=True, check=True, timeout=30); \
+	responses = {r["id"]:r for line in reply.stdout.splitlines() if "id" in (r := json.loads(line))}; \
+	assert responses[1]["jsonrpc"] == responses[2]["jsonrpc"] == "2.0", responses; \
+	assert responses[1]["result"]["protocolVersion"] == "2025-06-18", responses; \
+	assert len(responses[2]["result"]["tools"]) == 9, responses; \
+	assert {t["name"] for t in responses[2]["result"]["tools"]} == {"project", "timeline", "transcript", "analyze", "edit", "draft", "render", "export", "ui"}, responses; \
+	print("MCP smoke passed: initialize + all nine tools (including edit)")' "$(APP)/Contents/MacOS/Recorder"
 
 run: app
 	open $(APP)
