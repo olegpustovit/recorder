@@ -571,12 +571,12 @@ Core tasks (T-801…T-803) are pure and unit-tested; app tasks use `--selftest` 
 
 | Scope | Tasks | Done |
 |---|---|---|
-| Core: views, edit ops, markers/styles | T-801…T-803 | 0/3 |
+| Core: views, edit ops, markers/styles | T-801…T-803 | 1/3 |
 | App: server, render, edit/draft | T-804…T-806 | 0/3 |
 | App: review UI, graphics, export/settings | T-807…T-809 | 0/3 |
 | Docs + smoke | T-810 | 0/1 |
 
-- [ ] **T-801 Core: agent views** · MCP.md §T-801 — `AgentViews.swift`: `agentTimeline`, `agentTranscript` (stable
+- [x] **T-801 Core: agent views** · MCP.md §T-801 — `AgentViews.swift`: `agentTimeline`, `agentTranscript` (stable
   `wN` ids, output time, fillers), `isFiller`, `transcriptID`. Verify: `make test FILTER=AgentViews`; `make test`.
 - [ ] **T-802 Core: `EditOp` + `Project.applying`** · MCP.md §T-802 — ops in base output time, converted to source
   before mutating; `removeSourceRanges` via `split`/`deleteClips`; atomic with `checkInvariants`. Verify:
@@ -1511,3 +1511,5 @@ T-731 T-732 · 2026-11-15 · Pencil tool (P), cross-lane box select, ⌘J groupi
 T-733 · 2026-11-16 · Joined clips get the clip inspector: group speed multiplies members (ratios kept, linked/ripple path), cursor/fades/remove on the group. make test 169/169 (Xcode DEVELOPER_DIR); selftests clip-fades (new group checks), clip-cursor, timeline-ops, timeline-selection, inspector, inspector-panels, menu-actions OK (debug build).
 
 T-734 · 2026-11-16 · Video-lane insert preview for Video 2+ drags (trial clip lane + index-aligned ripple from zero-length stand-ins). Selftests timeline-lift (new preview check), timeline-reorder/-ops/-tracks/-full-layers OK (debug build). HUMAN: judge the animation in the app.
+
+T-801 · 2026-11-16 · Added pure Codable output-time timeline/transcript views, stable transcript hash and full-array word IDs, filler detection and caption-based phrase formatting. Covers retained effect segments, window shots, connected audio/layer tails, range filters, imported/gap exclusion and copied footage with independent media clocks. Existing TimeMap media semantics retained rather than treating editing-clock positions as microphone media times. Tests live in the existing SwiftPM Tests/RecorderCoreTests directory. make test FILTER=AgentViews passes 5/5; full make test passes 174/174 using the documented Xcode native/platform Testing flags. No AppKit/AVFoundation imports in the new Core file; no project mutation or UI changes. Remaining MCP tasks T-802…T-810 are unimplemented.
