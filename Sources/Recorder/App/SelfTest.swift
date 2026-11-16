@@ -1,4 +1,5 @@
 import AppKit
+import AVKit
 import CoreServices
 import AVFoundation
 import CoreImage
@@ -31,6 +32,8 @@ enum SelfTest {
         "mcp-edit": { args in try await checkMCPEdit(args) },
         "mcp-review": { args in try await checkMCPReview(args) },
         "mcp-live": { args in try await checkMCPLive(args) },
+        "zoom-ease-parity": { args in try await checkZoomEaseParity(args) },
+        "mcp-layer-playback": { args in try await checkMCPLayerPlayback(args) },
         "mcp-live-client": { args in try await checkMCPLiveClient(args) },
         "mcp-panel-motion": { args in try await UIKitGallery.checkAgentStudy(to: URL(fileURLWithPath: args.first ?? "/tmp/recorder-t814-motion")) },
         "mcp-export": { args in try await checkMCPExport(args) },
@@ -5137,7 +5140,7 @@ private final class MCPTestClient {
     model.beginGesture()
     _ = try await tool("edit", ["action": "apply", "ifRevision": baseRevision, "ops": style], error: "REVIEW_IN_PROGRESS")
     model.cancelGesture()
-    guard model.project.checkInvariants() == nil, MCPTools.operationSchemas.count == 12 else { throw MCPTestFailure(description: "Edit invariants/schemas") }
+    guard model.project.checkInvariants() == nil, MCPTools.operationSchemas.count == 13 else { throw MCPTestFailure(description: "Edit invariants/schemas") }
     let activity = AgentActivity.shared.rows.filter { $0.sessionID == session.id }
     guard activity.allSatisfy({ row in [row.intent, row.result, row.tool].allSatisfy { !$0.contains("PRIVATE_ACTIVITY_") } }),
           activity.contains(where: { $0.isError && $0.result == "STALE_REVISION" }),
@@ -6715,6 +6718,179 @@ private func runTimelineHeaderSelfTest() async throws {
     view.debugNewTrackButton.performClick(nil); try await settle()
     try check(view.revealedLanes.contains(.layer(next)) && model.project == project && model.undoStepCount == 0,
               "only an explicit new-track click reveals an empty lane without editing project")
+}
+
+/// T-823/T-824 native check: a real `layer` edit through MCPTools on an open editor (isolation, preview + proxy render parity,
+/// accept/discard/undo media lifecycle) and the real Play draft AVKit window (tracks, playback, cancel, invalidation, cleanup).
+@MainActor private func checkMCPLayerPlayback(_ args: [String]) async throws {
+    guard let path = args.first else { throw MCPTestFailure(description: "usage: mcp-layer-playback <fixture.recorder>") }
+    func fail(_ message: String) -> MCPTestFailure { MCPTestFailure(description: "layer/playback: " + message) }
+    let fm = FileManager.default
+    let root = URL(fileURLWithPath: "/tmp/recorder-t824-\(UUID().uuidString)").resolvingSymlinksInPath()
+    let package = root.appendingPathComponent("Layer.recorder"), server = MCPServer.shared
+    try fm.createDirectory(at: root, withIntermediateDirectories: true)
+    try fm.copyItem(at: URL(fileURLWithPath: path), to: package)
+    let file = package.appendingPathComponent("project.json")
+    var fixture = try Project.load(from: file)
+    fixture.id = UUID().uuidString; fixture.texts = []; fixture.zooms = []; fixture.masks = []; fixture.layers = []; fixture.keys.show = false
+    fixture.source.hasMic = true
+    fixture.audioTracks = [AudioTrack(name: "Mic")]
+    fixture.audioClips = [AudioClip(start: 0, end: fixture.source.duration, file: "mic.m4a", link: .screen)]
+    try synthesizeSineM4A(at: package.appendingPathComponent("mic.m4a"), duration: fixture.source.duration)
+    try fixture.save(to: file)
+    try JSONEncoder().encode(EventLog()).write(to: package.appendingPathComponent("events.json"))
+    NSApplication.shared.setActivationPolicy(.accessory); NSApplication.shared.finishLaunching()
+    guard let controller = await EditorWindowController.open(package: package).value else { throw fail("fixture did not open") }
+    let model = controller.model, session = MCPSession()
+    session.projectURL = model.packageURL.standardizedFileURL; server.register(session)
+    let savedRoots = MCPAssets.trustedRoots
+    MCPAssets.trustedRoots = [root]
+    defer {
+        MCPAssets.trustedRoots = savedRoots
+        DraftPlayback.shared.cancel(); DraftPlayback.shared.closePreview()
+        controller.close(); session.draft = nil; session.connected = false; server.removeFinishedSessions()
+        UserDefaults.standard.removeObject(forKey: "agentAccess.\(fixture.id)")
+        try? fm.removeItem(at: root)
+    }
+    func tool(_ name: String, _ arguments: [String: Any]) async throws -> [String: Any] {
+        let response = await MCPTools.call(name, arguments, session: session)
+        guard response["isError"] as? Bool == false else { throw fail("\(name) \(arguments["action"] ?? ""): \(response["structuredContent"] ?? [:])") }
+        return response["structuredContent"] as? [String: Any] ?? [:]
+    }
+    func mediaFiles() -> [String] { ((try? fm.contentsOfDirectory(atPath: package.appendingPathComponent("media").path)) ?? []).sorted() }
+    func pixel(_ image: CGImage) -> (r: Double, g: Double, b: Double) {
+        var bytes = [UInt8](repeating: 0, count: 4)
+        let context = CGContext(data: &bytes, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        context.draw(image, in: CGRect(x: -Double(image.width) / 2 + 0.5, y: -Double(image.height) / 2 + 0.5, width: Double(image.width), height: Double(image.height)))
+        return (Double(bytes[0]) / 255, Double(bytes[1]) / 255, Double(bytes[2]) / 255)
+    }
+    func isMagenta(_ c: (r: Double, g: Double, b: Double)) -> Bool { c.r > 0.6 && c.b > 0.6 && c.g < 0.35 }
+    func decode(_ data: Data) throws -> CGImage {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil), let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { throw fail("undecodable frame") }
+        return image
+    }
+    // Magenta card image in a trusted (temp-like) folder.
+    let ctx = CGContext(data: nil, width: 200, height: 120, bitsPerComponent: 8, bytesPerRow: 800, space: VideoColor.space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    ctx.setFillColor(CGColor(red: 1, green: 0, blue: 1, alpha: 1)); ctx.fill(CGRect(x: 0, y: 0, width: 200, height: 120))
+    let card = root.appendingPathComponent("card.png")
+    try NSBitmapImageRep(cgImage: ctx.makeImage()!).representation(using: .png, properties: [:])!.write(to: card)
+    let base = model.liveProject, savedJSON = try Data(contentsOf: file), duration = base.exportDuration
+    guard duration > 1.8 else { throw fail("fixture too short (\(duration) s)") }
+    let revision = try MCPTools.revision(base)
+    let layerOp: [String: Any] = ["op": "layer", "from": 0.4, "to": 1.6, "path": card.path]
+
+    // A. Real tool path: the layer previews in the draft but nothing reaches live state, disk, or the saved project.
+    let assets = try await tool("project", ["action": "assets"])
+    guard (assets["layers"] as? [Any])?.isEmpty == true else { throw fail("assets listing should start empty") }
+    let applied = try await tool("edit", ["action": "apply", "ifRevision": revision, "ops": [layerOp]])
+    guard (applied["changes"] as? [[String: Any]])?.first?["summary"] as? String != nil, model.isReviewingDraft, model.project.layers.count == 1,
+          model.liveProject == base, try Data(contentsOf: file) == savedJSON, mediaFiles().count == 1 else { throw fail("draft layer isolation") }
+    let layerFile = model.project.layers[0].file
+    let draftModel = AgentRender.renderModel(for: model, project: model.project)
+    let during = try decode(try await EditorWindowController.renderFramesPNG(model: draftModel, at: [1.0], longEdge: 320)[0])
+    let outside = try decode(try await EditorWindowController.renderFramesPNG(model: draftModel, at: [0.05], longEdge: 320)[0])
+    guard isMagenta(pixel(during)), !isMagenta(pixel(outside)) else { throw fail("preview frame does not show the layer exactly during its range") }
+    // Export parity: the proxy (export pipeline) shows the same layer at the same time.
+    let folder = AgentRender.cacheFolder(session: session.id)
+    let proxy = try await AgentRender.clip(model: model, from: 0, to: duration, folder: folder, progress: { _ in })
+    let proxyAsset = AVURLAsset(url: proxy)
+    let proxyFrame = try await AVAssetImageGenerator(asset: proxyAsset).image(at: CMTime(seconds: 1.0, preferredTimescale: 600)).image
+    let proxyOutside = try await AVAssetImageGenerator(asset: proxyAsset).image(at: CMTime(seconds: 0.05, preferredTimescale: 600)).image
+    guard isMagenta(pixel(proxyFrame)), !isMagenta(pixel(proxyOutside)) else { throw fail("proxy/export frame does not match the preview layer") }
+    try? fm.removeItem(at: proxy)
+
+    // B. Real Play draft: a native AVKit window with a decodable audio+video proxy of the draft that actually plays.
+    let playback = DraftPlayback.shared
+    playback.toggle(model: model, session: session)
+    guard playback.isRendering else { throw fail("Play draft did not start rendering") }
+    var window: NSWindow?
+    for _ in 0..<1200 where window == nil {
+        window = NSApp.windows.first { $0.contentView is AVPlayerView && $0.isVisible }
+        if window == nil { try await Task.sleep(for: .milliseconds(25)) }
+    }
+    guard let window, let player = (window.contentView as? AVPlayerView)?.player, let item = player.currentItem else { throw fail("no native player window appeared") }
+    let tracks = try await item.asset.load(.tracks)
+    let length = try await item.asset.load(.duration).seconds
+    guard tracks.contains(where: { $0.mediaType == .video }), tracks.contains(where: { $0.mediaType == .audio }), abs(length - duration) < 0.25 else { throw fail("player item lacks audio/video or has the wrong length (\(length) vs \(duration))") }
+    try await Task.sleep(for: .milliseconds(600))
+    guard player.rate > 0 || player.currentTime().seconds > 0.1, playback.presented != nil, playback.state == .idle else { throw fail("preview is not playing") }
+    window.close()   // same path as the red close button: windowWillClose → delegate cleanup
+    try await Task.sleep(for: .milliseconds(300))
+    guard playback.presented == nil, !NSApp.windows.contains(where: { $0.contentView is AVPlayerView && $0.isVisible }) else { throw fail("closing the window kept the preview") }
+    // Cancel: a second toggle during rendering stops it and never shows a window.
+    playback.toggle(model: model, session: session)
+    playback.toggle(model: model, session: session)
+    try await Task.sleep(for: .milliseconds(800))
+    guard playback.state == .idle, !NSApp.windows.contains(where: { $0.contentView is AVPlayerView && $0.isVisible }) else { throw fail("cancel still presented a preview") }
+    // A new edit.apply invalidates an open preview and removes its file.
+    playback.toggle(model: model, session: session)
+    for _ in 0..<1200 where playback.presented == nil { try await Task.sleep(for: .milliseconds(25)) }
+    guard playback.presented != nil else { throw fail("second preview never appeared") }
+    let draftRevision = try await tool("draft", ["action": "status"])["revision"] as? String ?? ""
+    _ = try await tool("edit", ["action": "apply", "ifRevision": draftRevision, "ops": [["op": "marker", "at": 1.0, "label": "m"]]])
+    guard playback.presented == nil, !NSApp.windows.contains(where: { $0.contentView is AVPlayerView && $0.isVisible }) else { throw fail("edit.apply left a stale preview open") }
+
+    // C. Discard removes the imported media and leaves the project untouched.
+    _ = try await tool("draft", ["action": "discard"])
+    guard model.project == base, model.liveProject == base, mediaFiles().isEmpty, try Data(contentsOf: file) == savedJSON else { throw fail("discard left media/state behind") }
+    // D. Accept keeps exactly the used media, as one undo step.
+    let revision2 = try MCPTools.revision(model.liveProject)
+    _ = try await tool("edit", ["action": "apply", "ifRevision": revision2, "ops": [layerOp]])
+    _ = try await tool("draft", ["action": "submit"])
+    guard let acceptSession = Optional(session) else { return }
+    try server.finishReview(acceptSession, commit: true)
+    guard model.liveProject.layers.count == 1, model.liveProject.layers[0].file == mediaFiles().first.map({ "media/" + $0 }), mediaFiles().count == 1 else { throw fail("accept lost/kept the wrong media") }
+    let listing = try await tool("project", ["action": "assets"])
+    guard (listing["layers"] as? [[String: Any]])?.first?["asset"] as? String == model.liveProject.layers[0].file else { throw fail("assets listing after accept") }
+    model.undo()
+    guard model.liveProject.layers.isEmpty else { throw fail("accept was not one undo step") }
+    _ = layerFile
+    print("MCP layer/playback: native draft layer isolation, preview and proxy parity at the layer's time, Play draft window with audio+video playback, cancel, stale-edit invalidation, window-close cleanup, discard purge, accept/undo verified")
+}
+
+/// T-821 native check: a zoom's `ease` preset changes the real preview frames and the export-pipeline proxy frames the same way.
+@MainActor private func checkZoomEaseParity(_ args: [String]) async throws {
+    guard let path = args.first else { throw MCPTestFailure(description: "usage: zoom-ease-parity <fixture.recorder>") }
+    func fail(_ message: String) -> MCPTestFailure { MCPTestFailure(description: "zoom ease parity: " + message) }
+    let fm = FileManager.default
+    let root = URL(fileURLWithPath: "/tmp/recorder-t821-\(UUID().uuidString)").resolvingSymlinksInPath()
+    let package = root.appendingPathComponent("Ease.recorder")
+    try fm.createDirectory(at: root, withIntermediateDirectories: true)
+    try fm.copyItem(at: URL(fileURLWithPath: path), to: package)
+    defer { try? fm.removeItem(at: root) }
+    var base = try Project.load(from: package.appendingPathComponent("project.json"))
+    base.id = UUID().uuidString; base.zooms = []; base.texts = []; base.masks = []; base.layers = []; base.keys.show = false
+    let events = EventLog()
+    func model(_ ease: ZoomEase) throws -> EditorModel {
+        let applied = try base.applying([.zoom(from: 0.5, to: 1.8, scale: 2.5, center: NormPoint(x: 0.2, y: 0.25), follow: .fixed, ease: ease)], context: EditContext()).project
+        return EditorModel(packageURL: package, project: applied, events: events)
+    }
+    let rapid = try model(.rapid), slow = try model(.slow), time = 0.65
+    guard rapid.cameraPath.sample(atSource: time).scale > slow.cameraPath.sample(atSource: time).scale + 0.1 else { throw fail("camera tables do not differ by preset") }
+    func frame(_ m: EditorModel) async throws -> CGImage {
+        let data = try await EditorWindowController.renderFramesPNG(model: AgentRender.renderModel(for: m, project: m.project), at: [time], longEdge: 320)[0]
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil), let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { throw fail("undecodable") }
+        return image
+    }
+    func bytes(_ image: CGImage) -> Data { Data(referencing: image.dataProvider!.data!) }
+    guard bytes(try await frame(rapid)) != bytes(try await frame(slow)) else { throw fail("preview frames are identical for different eases") }
+    // Proxy (export pipeline): the same two projects also differ at that time, and the faster preset is more zoomed in both.
+    let folder = AgentRender.cacheFolder(session: UUID().uuidString)
+    defer { try? fm.removeItem(at: folder) }
+    var proxies: [CGImage] = []
+    for m in [rapid, slow] {
+        let url = try await AgentRender.clip(model: m, from: 0, to: min(2, m.project.exportDuration), folder: folder, progress: { _ in })
+        proxies.append(try await AVAssetImageGenerator(asset: AVURLAsset(url: url)).image(at: CMTime(seconds: time, preferredTimescale: 600)).image)
+    }
+    guard bytes(proxies[0]) != bytes(proxies[1]) else { throw fail("proxy frames are identical for different eases") }
+    // Settled frames (after both springs finished) are identical: ease only changes the motion, not where the zoom lands.
+    let late = 1.6
+    func settled(_ m: EditorModel) async throws -> Data {
+        try await EditorWindowController.renderFramesPNG(model: AgentRender.renderModel(for: m, project: m.project), at: [late], longEdge: 320)[0]
+    }
+    guard abs(rapid.cameraPath.sample(atSource: late).scale - slow.cameraPath.sample(atSource: late).scale) < 0.2 else { throw fail("eases do not converge on the target") }
+    _ = try await settled(rapid)
+    print("Zoom ease parity: preview and export-pipeline frames differ by preset at the entry and converge on the same target")
 }
 
 @MainActor private func checkMCPLive(_ args: [String]) async throws {

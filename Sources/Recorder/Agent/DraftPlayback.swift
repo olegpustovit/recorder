@@ -100,6 +100,7 @@ import RecorderCore
     // MARK: Native player
 
     func show(_ url: URL, _ identity: Identity, title: String) {
+        file = nil   // the new file is already recorded by start(); only an older window may be closed here
         closePreview()
         file = url
         presented = identity
@@ -124,6 +125,7 @@ import RecorderCore
             (window.contentView as? AVPlayerView)?.player?.pause()
             (window.contentView as? AVPlayerView)?.player = nil
             window.close()
+            window.contentView = nil
         }
         window = nil
         if let file { try? FileManager.default.removeItem(at: file) }
