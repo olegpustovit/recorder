@@ -62,7 +62,7 @@ final class TimelineView: NSView {
     private var dragOrigin: CGRect?
     private var selectionStart: CFTimeInterval?
     private var selectionKey = ""
-    private var reduceMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
+    private var reduceMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion || model?.reviewReduceMotionPreview == true }
 
     func toggleSnapping() {
         snappingEnabled.toggle()
@@ -394,6 +394,14 @@ final class TimelineView: NSView {
     private var cutLane: Lane = .clip
     private var bladeShakeStart: CFTimeInterval?
     private var animationLink: CADisplayLink?
+    private var reviewRevealStarts: [String: CFTimeInterval] = [:]
+    private var reviewSession: String?
+    private var reviewMarkedIDs: Set<String> = []
+    private var reviewLastCuts: [(id: String, time: Double, label: String)] = []
+    private var reviewSettlementStart: CFTimeInterval?
+    private var reviewMotionReduced = false
+    var debugReviewSettling: Bool { reviewSettlementStart != nil }
+    func debugReviewProgress(_ id: String) -> Double { reviewProgress(id) }
 
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
@@ -597,6 +605,11 @@ final class TimelineView: NSView {
     @objc private func animationTick(_ link: CADisplayLink) {
         let now = CACurrentMediaTime()
         var active = false
+        if reviewRevealStarts.values.contains(where: { now < $0 + (reduceMotion ? 0.14 : 0.32) }) { active = true }
+        if let start = reviewSettlementStart {
+            if now - start < (reduceMotion ? 0.14 : 0.22) { active = true }
+            else { reviewSettlementStart = nil; reviewMarkedIDs = []; reviewLastCuts = [] }
+        }
         if let start = cutFlash?.start {
             if now - start < Self.cutFlashDuration { active = true } else { cutFlash = nil }
         }
@@ -636,6 +649,7 @@ final class TimelineView: NSView {
     private func observeModel() {
         needsLayout = true
         guard let model else { return }
+        updateReviewAnimation(model)
         let previousContentHeight = contentHeight
         withObservationTracking {
             _ = model.project
@@ -652,6 +666,8 @@ final class TimelineView: NSView {
             _ = model.reviewCuts
             _ = model.reviewAddedIDs
             _ = model.isReviewingDraft
+            _ = model.isWatchingDraft
+            _ = model.reviewReduceMotionPreview
         } onChange: { [weak self] in
             DispatchQueue.main.async {
                 guard let self, let model = self.model else { return }
@@ -845,27 +861,79 @@ final class TimelineView: NSView {
         drawFooter()
     }
 
-    private func drawReviewMarks(_ model: EditorModel) {
-        guard model.isReviewingDraft else { return }
-        Theme.textPrimary.setStroke()
+    private func reviewRects(_ model: EditorModel) -> [(id: String, rect: CGRect)] {
         var rects = blockRects(model).map { ($0.id.uuidString, $0.rect) }
-        for audio in model.project.audioClips where model.reviewAddedIDs.contains(audio.id) {
+        for audio in model.project.audioClips {
             rects += model.project.audioSegments(audio).map { (audio.id, audioRect(audio, output: $0.output)) }
         }
-        for (id, rect) in rects where model.reviewAddedIDs.contains(id) {
+        return rects
+    }
+    private func updateReviewAnimation(_ model: EditorModel) {
+        let now = CACurrentMediaTime()
+        if model.isReviewingDraft, let session = model.reviewSessionID {
+            if session != reviewSession { reviewRevealStarts = [:]; reviewSettlementStart = nil }
+            let ids = model.reviewAddedIDs.union(model.reviewCuts.map { "cut:\($0.id)" })
+            if reviewMotionReduced != reduceMotion {
+                for (id, start) in reviewRevealStarts where now < start + 0.32 { reviewRevealStarts[id] = now - 0.32 }
+            }
+            let fresh = ids.subtracting(reviewRevealStarts.keys)
+            let rects = reviewRects(model).filter { fresh.contains($0.id) }
+            let rows = Array(Set(rects.map { $0.rect.minY })).sorted()
+            for id in fresh {
+                let row = rects.first { $0.id == id }.flatMap { rows.firstIndex(of: $0.rect.minY) } ?? 0
+                reviewRevealStarts[id] = now + (reduceMotion ? 0 : Double(row) * 0.075)
+            }
+            reviewRevealStarts = reviewRevealStarts.filter { ids.contains($0.key) }
+            reviewMarkedIDs = model.reviewAddedIDs; reviewLastCuts = model.reviewCuts
+            reviewSession = session
+            if !fresh.isEmpty { ensureAnimating() }
+        } else if reviewSession != nil {
+            reviewSession = nil; reviewRevealStarts = [:]
+            if model.reviewWasAccepted { reviewSettlementStart = now; ensureAnimating() }
+            else { reviewSettlementStart = nil; reviewMarkedIDs = []; reviewLastCuts = [] }
+        }
+        reviewMotionReduced = reduceMotion
+    }
+    private func reviewProgress(_ id: String) -> Double {
+        guard let start = reviewRevealStarts[id] else { return 1 }
+        let t = min(1, max(0, (CACurrentMediaTime() - start) / (reduceMotion ? 0.14 : 0.32)))
+        return 1 - pow(1 - t, 3)
+    }
+    private func applyReviewMask(_ rect: CGRect, id: String) {
+        guard model?.isReviewingDraft == true, reviewMarkedIDs.contains(id) || id.hasPrefix("cut:") else { return }
+        let progress = reviewProgress(id)
+        if reduceMotion { NSGraphicsContext.current?.cgContext.setAlpha(progress) }
+        else { CGRect(x: rect.minX - 3, y: rect.minY - 3, width: (rect.width + 6) * progress, height: rect.height + 6).clip() }
+    }
+    private func drawReviewMarks(_ model: EditorModel) {
+        guard model.isReviewingDraft || reviewSettlementStart != nil else { return }
+        let settled = reviewSettlementStart.map { min(1, (CACurrentMediaTime() - $0) / (reduceMotion ? 0.14 : 0.22)) } ?? 0
+        Theme.textPrimary.withAlphaComponent(1 - settled).setStroke()
+        for (id, rect) in reviewRects(model) where reviewMarkedIDs.contains(id) {
+            NSGraphicsContext.saveGraphicsState()
+            defer { NSGraphicsContext.restoreGraphicsState() }
+            applyReviewMask(rect, id: id)
             let outline = NSBezierPath(rect: rect.insetBy(dx: 1, dy: 1))
-            outline.lineWidth = 1; outline.setLineDash([4, 3], count: 2, phase: 0); outline.stroke()
+            outline.lineWidth = 1
+            let gap = reduceMotion ? 3 : 3 * (1 - settled)
+            if gap > 0.01 { outline.setLineDash([4, gap], count: 2, phase: 0) }
+            outline.stroke()
         }
         let attrs: [NSAttributedString.Key: Any] = [.font: Theme.captionFont, .foregroundColor: Theme.textPrimary]
-        for cut in model.reviewCuts {
+        for cut in reviewLastCuts {
+            NSGraphicsContext.saveGraphicsState()
+            defer { NSGraphicsContext.restoreGraphicsState() }
+            let progress = reviewProgress("cut:\(cut.id)")
+            NSGraphicsContext.current?.cgContext.setAlpha((1 - settled) * (reduceMotion ? progress : 1))
             let px = x(forOutput: cut.time)
             let rule = NSBezierPath()
             rule.move(to: CGPoint(x: px, y: Self.rulerHeight))
-            rule.line(to: CGPoint(x: px, y: contentHeight))
+            rule.line(to: CGPoint(x: px, y: Self.rulerHeight + (contentHeight - Self.rulerHeight) * (reduceMotion ? 1 : progress)))
             rule.lineWidth = 1; rule.stroke()
             let label = cut.label as NSString, size = label.size(withAttributes: attrs)
             let chip = CGRect(x: min(max(gutterWidth, px - size.width / 2 - 4), bounds.width - size.width - 8),
                               y: 1, width: size.width + 8, height: Self.rulerHeight - 2)
+            if !reduceMotion { CGRect(x: chip.minX, y: chip.minY, width: chip.width * progress, height: chip.height).clip() }
             Theme.bgControl.setFill(); NSBezierPath(roundedRect: chip, xRadius: 3, yRadius: 3).fill()
             label.draw(at: CGPoint(x: chip.minX + 4, y: chip.midY - size.height / 2), withAttributes: attrs)
         }
@@ -1046,6 +1114,7 @@ final class TimelineView: NSView {
         }
         if dragKind != nil { status += snapGuideX == nil ? "  · ⌘ free" : "  · Snapped" }
         if let trimChip { status = trimChip.text }
+        if let notice = model.reviewNotice { status = notice }
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineBreakMode = .byTruncatingTail
         let reveal = reduceMotion || dragKind != nil ? 1 : min(1, selectionStart.map { (CACurrentMediaTime() - $0) / Theme.Motion.contextReveal } ?? 1)
@@ -1224,7 +1293,7 @@ final class TimelineView: NSView {
                 let rect = CGRect(x: x(forOutput: segment.outStart), y: row.minY + 2,
                                   width: x(forOutput: segment.outEnd) - x(forOutput: segment.outStart), height: row.height - 4)
                 drawBlock(rect, fill: Theme.layout, tornLeft: false, tornRight: false, label: "Camera",
-                          selected: UUID(uuidString: clip.id).map { model?.selection.contains($0) == true } ?? false, tag: clip.color)
+                          selected: UUID(uuidString: clip.id).map { model?.selection.contains($0) == true } ?? false, tag: clip.color, reviewID: clip.id)
             }
         }
     }
@@ -1272,7 +1341,7 @@ final class TimelineView: NSView {
                 let rect = CGRect(x: x(forOutput: segment.outStart), y: row.minY + 2,
                                    width: max(0, x(forOutput: segment.outEnd) - x(forOutput: segment.outStart)), height: row.height - 4)
                 guard rect.width > 0.5 else { continue }
-                drawBlock(rect, fill: Theme.zoom, tornLeft: segment.tornLeft, tornRight: segment.tornRight, label: label, selected: selected, tag: zoom.color)
+                drawBlock(rect, fill: Theme.zoom, tornLeft: segment.tornLeft, tornRight: segment.tornRight, label: label, selected: selected, tag: zoom.color, reviewID: zoom.id)
             }
         }
     }
@@ -1287,7 +1356,7 @@ final class TimelineView: NSView {
                 let rect = CGRect(x: x(forOutput: segment.outStart), y: row.minY + 2,
                                    width: max(0, x(forOutput: segment.outEnd) - x(forOutput: segment.outStart)), height: row.height - 4)
                 guard rect.width > 0.5 else { continue }
-                drawBlock(rect, fill: Theme.layout, tornLeft: segment.tornLeft, tornRight: segment.tornRight, label: label, selected: selected, tag: layout.color)
+                drawBlock(rect, fill: Theme.layout, tornLeft: segment.tornLeft, tornRight: segment.tornRight, label: label, selected: selected, tag: layout.color, reviewID: layout.id)
             }
         }
     }
@@ -1302,7 +1371,7 @@ final class TimelineView: NSView {
                 let rect = CGRect(x: x(forOutput: segment.outStart), y: row.minY + 2,
                                    width: max(0, x(forOutput: segment.outEnd) - x(forOutput: segment.outStart)), height: row.height - 4)
                 guard rect.width > 0.5 else { continue }
-                drawBlock(rect, fill: Theme.layout, tornLeft: segment.tornLeft, tornRight: segment.tornRight, label: label, selected: selected, tag: layout.color)
+                drawBlock(rect, fill: Theme.layout, tornLeft: segment.tornLeft, tornRight: segment.tornRight, label: label, selected: selected, tag: layout.color, reviewID: layout.id)
             }
         }
     }
@@ -1320,7 +1389,7 @@ final class TimelineView: NSView {
                 let rect = CGRect(x: x(forOutput: segment.outStart), y: row.minY + 2,
                                    width: max(0, x(forOutput: segment.outEnd) - x(forOutput: segment.outStart)), height: row.height - 4)
                 guard rect.width > 0.5 else { continue }
-                drawBlock(rect, fill: Theme.mask, tornLeft: segment.tornLeft, tornRight: segment.tornRight, label: label, selected: selected, tag: mask.color)
+                drawBlock(rect, fill: Theme.mask, tornLeft: segment.tornLeft, tornRight: segment.tornRight, label: label, selected: selected, tag: mask.color, reviewID: mask.id)
             }
         }
     }
@@ -1334,7 +1403,7 @@ final class TimelineView: NSView {
                 let rect = CGRect(x: x(forOutput: segment.outStart), y: row.minY + 2,
                                    width: max(0, x(forOutput: segment.outEnd) - x(forOutput: segment.outStart)), height: row.height - 4)
                 guard rect.width > 0.5 else { continue }
-                drawBlock(rect, fill: Theme.text, tornLeft: segment.tornLeft, tornRight: segment.tornRight, label: text.text, selected: selected, tag: text.color)
+                drawBlock(rect, fill: Theme.text, tornLeft: segment.tornLeft, tornRight: segment.tornRight, label: text.text, selected: selected, tag: text.color, reviewID: text.id)
             }
         }
     }
@@ -1350,7 +1419,7 @@ final class TimelineView: NSView {
                 let rect = CGRect(x: x(forOutput: segment.outStart), y: row.minY + 2,
                                    width: max(0, x(forOutput: segment.outEnd) - x(forOutput: segment.outStart)), height: row.height - 4)
                 guard rect.width > 0.5 else { continue }
-                drawBlock(rect, fill: Theme.clip, tornLeft: segment.tornLeft, tornRight: segment.tornRight, label: "Window \(shot.window + 1)", selected: selected, tag: shot.color)
+                drawBlock(rect, fill: Theme.clip, tornLeft: segment.tornLeft, tornRight: segment.tornRight, label: "Window \(shot.window + 1)", selected: selected, tag: shot.color, reviewID: shot.id)
             }
         }
     }
@@ -1388,7 +1457,10 @@ final class TimelineView: NSView {
         CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: min(3, rect.height)).fill()
     }
 
-    private func drawBlock(_ rect: CGRect, fill: NSColor, tornLeft: Bool, tornRight: Bool, label: String?, selected: Bool = false, tag: BlockColor? = nil) {
+    private func drawBlock(_ rect: CGRect, fill: NSColor, tornLeft: Bool, tornRight: Bool, label: String?, selected: Bool = false, tag: BlockColor? = nil, reviewID: String? = nil) {
+        NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        if let reviewID { applyReviewMask(rect, id: reviewID) }
         let radius: CGFloat = 0
         let path = NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius)
         let hovered = hoverX.map { x in hoverY.map { rect.contains(CGPoint(x: x, y: $0)) } ?? false } ?? false
@@ -2426,6 +2498,9 @@ final class TimelineView: NSView {
         }
         for layer in project.layers {
             guard let rect = mediaLayerRect(layer), rect.maxX >= gutterWidth, rect.minX <= bounds.width else { continue }
+            NSGraphicsContext.saveGraphicsState()
+            defer { NSGraphicsContext.restoreGraphicsState() }
+            applyReviewMask(rect, id: layer.id)
             let color = tinted(layer.kind == .image ? Theme.mask : Theme.zoom, layer.color)
             drawBlock(rect, fill: color, tornLeft: false, tornRight: false, label: nil, selected: UUID(uuidString: layer.id).map(model.selection.contains) ?? false)
             NSGraphicsContext.saveGraphicsState()
@@ -2555,6 +2630,7 @@ final class TimelineView: NSView {
     }
 
     override func keyDown(with event: NSEvent) {
+        if event.keyCode == 53, let model, MCPServer.shared.takeOverWatching(model) { return }
         if model?.isReviewingDraft == true, ![49, 123, 124, 125, 126].contains(event.keyCode) { return }
         if let voiceover = model?.voiceover, voiceover.isActive {
             voiceover.handleRecordingKey(event)
@@ -3180,6 +3256,7 @@ final class TimelineView: NSView {
     /// SPEC §7.3: "Esc: cancel drag → exit split mode → deselect", checked in that order.
     /// AC-TL-6: `Esc` mid-drag restores the pre-drag project.
     override func cancelOperation(_ sender: Any?) {
+        if let model, model.isReviewingDraft { MCPServer.shared.takeOverWatching(model); return }
         if model?.voiceover.isActive == true { model?.voiceover.discard(); return }
         if marqueeStart != nil {
             model?.selectedClips = marqueeOriginalSelection.clips
@@ -4363,6 +4440,9 @@ extension TimelineView {
             for segment in segments {
                 let rect = audioRect(audio, output: segment.output)
                 guard rect.maxX >= gutterWidth, rect.minX <= bounds.width else { continue }
+                NSGraphicsContext.saveGraphicsState()
+                defer { NSGraphicsContext.restoreGraphicsState() }
+                applyReviewMask(rect, id: audio.id)
                 let voice = project.audioTracks[audio.track].name.hasPrefix("Voiceover")
                 drawBlock(rect, fill: voice ? Theme.voiceover : Theme.audio,
                           tornLeft: false, tornRight: false, label: nil, selected: selected, tag: audio.color)

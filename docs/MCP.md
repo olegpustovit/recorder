@@ -21,7 +21,7 @@ folders need the human's approval. Nothing the agent does bypasses `EditorModel`
 
 | # | Decision | Consequence for the code |
 |---|----------|--------------------------|
-| D1 | Agent edits land in a **draft** by default; per-project access `off · read · draft · live`. | Draft = in-memory `[EditOp]` on a base revision. Live = `model.edit("Claude: …")`. |
+| D1 | Agent edits land in a **draft** by default; per-project access `off · read · draft · live`. | Draft = in-memory `[EditOp]` on a frozen base, visible read-only from the first successful apply (watching); submit makes it ready for review. Live = `model.edit("Claude: …")`. |
 | D2 | **No MCP SDK.** Hand-rolled JSON-RPC 2.0, newline-delimited, protocol `2025-06-18`. | CLAUDE.md forbids third-party packages. ~300 lines in one file. |
 | D3 | Agents never receive key characters. | No tool returns `InputEvent.ch`. Agent renders force `project.keys.show = false`. |
 | D4 | Motion graphics = **two new text styles** (`lowerThird`, `chapter`) + existing highlight masks and zooms. | Rendered by the existing `Compositor.drawText` path. No shaders/HTML from agents. |
@@ -32,7 +32,7 @@ folders need the human's approval. Nothing the agent does bypasses `EditorModel`
 | D9 | All times in tool I/O are **output seconds of the project at `ifRevision`** (what the agent sees in renders). | Core converts with `TimeMap` before mutating. Agents never see source time. |
 
 Out of scope (do **not** build): MCP resources/prompts, music ducking, LUFS normalisation, OCR, background music, counters,
-progress bars, end cards, agent-written graphics, multiple simultaneous drafts per project, reconnect-and-replay in the shim.
+progress bars, end cards, agent-written graphics, multiple simultaneous visible draft previews per project, reconnect-and-replay in the shim.
 
 ## 2. Architecture
 
@@ -491,9 +491,13 @@ Layout (inspector, 320 pt; updated by T-812 to the [panel redesign](https://arti
 ```
 
 - The `Claude` tab appears when any session has this project open or a draft exists; otherwise hidden.
-- Document bar: left of `Saved`, `Claude · drafting|reviewing|rendering|idle` in `labelFont`/`textSecondary`; click
+- Document bar: left of `Saved`, `Claude · drafting|watching|reviewing|rendering|idle` in `labelFont`/`textSecondary`; click
   selects the Claude tab. No animation loops.
-- Review: on `draft.submit`, `model.beginReview()` and `updateReview { $0 = try draft.project(context:) }`. Toggling a
+- Watching/review: first successful non-dry `edit.apply` starts `beginReview(watching: true)` with the existing
+  frozen human base; each later apply updates the same preview once per call. First draft/Live apply selects
+  Claude only when the window is key. `draft.submit` changes watching to reviewing, enables inclusion/Accept
+  and focuses the editor; it does not change the proposal. Before submit the same review guards apply, with
+  the visible `Claude is editing, Esc to take over` notice in the panel/timeline footer. Toggling a
   checkbox recomputes with that op excluded. Group toggles validate all row ids and replay once atomically.
   Groups use fixed Cuts/Speed/Zoom/Text/Markers/Other order, omit empty kinds and start collapsed. Expanded
   rows retain individual checkboxes/skipped reasons; a row click maps its original call's clock through the
@@ -502,6 +506,11 @@ Layout (inspector, 320 pt; updated by T-812 to the [panel redesign](https://arti
   Accept 0 to close without changing the project or creating undo. `draft.discard` still restores the base;
   Escape does not discard a submitted review. No separate Discard button in the T-812 panel.
   The session's `draft.status` reports the verdict.
+- Escape during watching restores the frozen human project and suppresses automatic preview for that session,
+  retaining its draft in memory. Subsequent agent calls stay hidden; human edits make the old base stale.
+  Explicit submit/review can show the proposal again when the base is still current. Discard/close safely ends
+  the visible watch. A second Draft client may build an invisible draft but cannot submit over the current
+  preview (`REVIEW_IN_PROGRESS`); its panel says the draft stays hidden. Live edits cannot bypass this lock.
 - Review previews replace `model.project`; `model.liveProject` retains the saved human base until acceptance.
   Autosave/Save Now/close write only that base. Other sessions and explicit `render {draft:false}` read the live
   base; the reviewing session's default reads/renders use its checked proposal. Closing the editor restores the
@@ -516,6 +525,11 @@ Layout (inspector, 320 pt; updated by T-812 to the [panel redesign](https://arti
   a 1 pt dashed `textPrimary` outline. Pass `[(time: Double, label: String)]` and `Set<String>` (added ids) to `TimelineView`.
 - Review cut marks use each call's removed clock ranges after retiming, then map into the final draft's output
   timeline. Free-retiming gaps are retained space, not cut marks; adjacent cuts at one output position share a chip.
+- New block fills/outlines and cut marks reveal over320ms, with75ms lane staggering, through the existing
+  drawing paths. Stable added-block/source-cut identities preserve older reveals as calls arrive. Acceptance
+  closes/fades dashed outlines into normal solid block edges over220ms and removes cut marks; discard/replay
+  cancels them. Reduce Motion replaces wipes/stagger/dash movement with140ms opacity. The shared display link
+  stops when the finite animation ends. These states are UI-only, with no project JSON additions.
 - While reviewing, timeline/inspector edits are inert (EditorModel guard) and playback/scrubbing still work.
   Destructive menus, preview gestures, media imports, voiceover, crop and export entry points are also gated.
 - The summary/error/stale content scrolls while Accept stays pinned, including in a420pt panel. Disclosures
@@ -536,8 +550,21 @@ Layout (inspector, 320 pt; updated by T-812 to the [panel redesign](https://arti
   Accepted groups remain readable with disabled inclusion controls and an Accepted N footer; replay resets
   the activity disclosure and cancels unfinished child reveals.
   `make gallery` → **Claude panel motion study / Open study…** opens a generated recording and the real
-  inspector/preview/timeline, with Replay, Stop and a preview-only Reduce Motion toggle. This study uses
-  existing draft/review methods directly between calls; production live draft propagation remains T-815.
+  inspector/preview/timeline, with Replay, Stop and a preview-only Reduce Motion toggle. Its staged operations
+  now use the same production MCPTools apply/submit path; it no longer simulates propagation by swapping reviews.
+
+**T-815 Verify.** `mcp-live <fixture> [--reduce-motion]` checks three unsubmitted calls, real preview differences,
+cumulative marks and intermediate/settled timeline samples, immutable liveProject/disk/undo, pre-submit guards,
+hidden competing drafts/failed submit, in-place readiness, one undo/settlement, Escape through preview/timeline/
+controller, suppression/stale edits, background/Live focus and close. `mcp-live-client <generated-fixture> <out>`
+runs actual Claude Code with only the generated package and an isolated stdio-to-Unix-socket relay (normal
+same-binary production shim unchanged), records only its native window with `screencapture -v -l`, verifies each
+of three calls before submit and the unchanged human base, decodes three distinct recorded states, then discards.
+The relay/config/prompt, client JSONL, observations, PNGs and movie stay in the local output directory. Also run
+`mcp-edit`, `mcp-review` normal/reduced, `mcp-panel-motion`, `mcp-render`, `mcp-export`, `project-navigation`,
+`inspector-panels`, `make test` and gallery checks. The recorded study selects the Claude panel explicitly;
+conditional automatic selection is checked by `mcp-live`. Native package opening canonicalizes symlink aliases
+and file/directory URL forms so a client cannot silently open a second editor for the same human project.
 
 **T-814 Verify.** `mcp-edit` asserts a3-op intent/result and absence of private recorded key/edit/marker text.
 `mcp-render` checks in-flight state during an actual cancellable proxy. `mcp-panel-motion <output-directory>`

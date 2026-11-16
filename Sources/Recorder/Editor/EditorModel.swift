@@ -198,10 +198,14 @@ import RecorderCore
     private var gestureSnapshot: Project?
     var isEditingGesture: Bool { gestureSnapshot != nil }
     var isReviewingDraft = false
+    var isWatchingDraft = false
+    var reviewWasAccepted = false
+    var reviewReduceMotionPreview = false
+    var reviewNotice: String? { isWatchingDraft ? "Claude is editing, Esc to take over" : nil }
     private var reviewSnapshot: Project?
     var liveProject: Project { reviewSnapshot ?? project }
     var reviewSessionID: String?
-    var reviewCuts: [(time: Double, label: String)] = []
+    var reviewCuts: [(id: String, time: Double, label: String)] = []
     var reviewAddedIDs: Set<String> = []
     private var autosaveWork: DispatchWorkItem?
     private(set) var saveStatus = "Saved"
@@ -422,13 +426,14 @@ import RecorderCore
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
     }
 
-    @discardableResult func beginReview() -> Bool {
+    @discardableResult func beginReview(watching: Bool = false) -> Bool {
         guard !voiceover.isActive, !isEditingGesture, !isReviewingDraft, mediaImportStatus == nil else { return false }
         saveNow()
         reviewSnapshot = project
         isPlaying = false
         isReviewingDraft = true
-        inspectorShowsAgent = true
+        isWatchingDraft = watching; reviewWasAccepted = false
+        if !watching { inspectorShowsAgent = true }
         return true
     }
     func updateReview(_ change: (inout Project) throws -> Void) throws {
@@ -447,6 +452,7 @@ import RecorderCore
         let proposed = project
         project = base
         reviewSnapshot = nil; isReviewingDraft = false; reviewSessionID = nil
+        isWatchingDraft = false; reviewWasAccepted = commit
         reviewCuts = []; reviewAddedIDs = []
         if commit, proposed != base { edit(name) { $0 = proposed } }
         else { rebuildPathsIfNeeded(from: proposed); scheduleAutosave() }

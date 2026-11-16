@@ -1152,8 +1152,15 @@ binary (e.g. a source build). The agentpack pane runs `init` (if needed) → `mc
 
 
 Per-project access is **Off**, **Read**, **Draft** (default) or **Live**, selected in the Claude inspector.
-Draft edits stay in app memory and do not change the saved project. `draft.submit` opens the Claude tab:
-review the rendered preview and timeline cut marks, untick individual operations or whole groups, then Accept.
+Draft edits stay in app memory and do not change the saved project. The first successful `edit.apply` starts
+a read-only **watching** preview, showing the draft immediately; subsequent calls update that same preview.
+The human base remains frozen for autosave/Save Now/close, with no undo entry until acceptance. Before submit,
+inclusion/Accept are disabled and the panel/timeline say `Claude is editing, Esc to take over`. Escape restores
+the human base and pauses automatic preview for that session while retaining its draft. Later agent calls stay
+hidden; a human edit makes the old draft stale. `draft.submit` makes the visible draft ready for review, enables
+controls and focuses Claude. Review the preview/marks, untick individual operations or whole groups, then Accept.
+First Draft/Live apply selects Claude automatically only in a key editor window. Other clients can retain
+invisible drafts but cannot replace/submit over the current preview; their panel shows that the draft is hidden.
 Changes are collapsed by kind (Cuts, Speed, Zoom, Text, Markers, Other), with a native tri-state checkbox,
 lane swatch, count and selected duration delta. Expanding shows individual changes and skipped reasons;
 clicking a change seeks to its output time. The summary shows selected count, resulting duration and delta.
@@ -1168,6 +1175,10 @@ Reduce Motion replaces these wipes with140ms opacity and omits the edge. Sequenc
 when their view, replay or motion mode changes; there are no ambient loops or pulses.
 Accepted groups remain visible/read-only with Accepted N in the status/footer. Replay resets group/activity
 disclosures and cancels pending child reveals.
+New timeline blocks/marks wipe in over320ms,75ms apart by lane; existing marks keep their stable identities.
+Accepted dashed outlines settle to the normal solid block edge over220ms. Reduce Motion uses140ms opacity
+without wipes, lane delays or dash movement. One shared finite display link stops at settlement; discard or
+replacement cancels old motion. These preview/animation fields never enter project JSON.
 Accept creates one named `Claude: …` undo step; Live mode applies each call directly as one named undo step.
 A stale draft offers **Replay on current**; replay reports invalid/dependent operations as skipped.
 Only one review can be active per project. Quitting Recorder loses pending drafts; disconnecting a client does
@@ -1181,8 +1192,8 @@ Concurrent in-flight calls have separate identities; finishing/cancelling one pr
 The collapsed newest-first feed shows intent/result prominently, with time/duration as secondary detail.
 The gallery's **Claude panel motion study** opens a generated disposable recording with the real inspector,
 preview and timeline. Replay stages17 operations, ending ready for review; Stop/restart cancels old work,
-Reduce Motion supplements the system setting, and closing removes the sample/session. This replay study
-does not itself establish production live propagation (T-815).
+Reduce Motion supplements the system setting, and closing removes the sample/session. The study uses the
+production MCPTools apply/submit path, including live propagation and the same review/autosave protections.
 Agent renders use UUID files under `~/Library/Caches/Recorder/Agent/<session>/`; files older than
 seven days are purged at launch. A final MP4 export requires a native approval sheet showing the client, project,
 range/preset and destination. Deny, timeout and cancellation write no final output. Existing destinations are never

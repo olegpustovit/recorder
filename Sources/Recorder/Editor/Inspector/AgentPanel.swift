@@ -57,11 +57,20 @@ extension EnvironmentValues {
                             .accessibilityLabel("Agent access")
                     }
                     statusStrip
+                    if let notice = model.reviewNotice {
+                        Text(notice).font(Font(Theme.labelFont)).foregroundStyle(Theme.textPrimaryColor)
+                            .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("agent-watching-notice")
+                    }
                     if let session {
                         if sessions.count > 1 {
                             Menu {
                                 ForEach(sessions, id: \.id) { item in Button(item.agentName) { selectedSessionID = item.id } }
                             } label: { Text(session.agentName).font(Font(Theme.labelFont)) }.menuStyle(.borderlessButton)
+                        }
+                        if session.draft?.verdict == nil, session.draft != nil,
+                           session.previewSuppressed || (model.isReviewingDraft && model.reviewSessionID != session.id) {
+                            Text(session.previewSuppressed ? "Preview paused. Your edits take priority." : "Another draft is shown. This draft stays hidden.")
+                                .font(Font(Theme.labelFont)).foregroundStyle(Theme.warningColor).fixedSize(horizontal: false, vertical: true)
                         }
                         if let error = session.reviewError {
                             Text("Error: \(error)").font(Font(Theme.bodyFont)).foregroundStyle(Theme.dangerColor)

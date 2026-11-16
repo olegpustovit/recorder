@@ -472,7 +472,7 @@ final class PreviewView: MTKView {
     @objc func paste(_ sender: Any?) { nextResponder?.tryToPerform(#selector(NSText.paste(_:)), with: sender) }
 
     override func keyDown(with event: NSEvent) {
-        if model.isReviewingDraft, event.keyCode == 53 { return }
+        if model.isReviewingDraft, event.keyCode == 53 { MCPServer.shared.takeOverWatching(model); return }
         if model.voiceover.isActive {
             model.voiceover.handleRecordingKey(event)
             return
@@ -1094,7 +1094,7 @@ final class PreviewView: MTKView {
     }
 
     override func cancelOperation(_ sender: Any?) {
-        if model.isReviewingDraft { return }
+        if model.isReviewingDraft { MCPServer.shared.takeOverWatching(model); return }
         if model.voiceover.isActive { model.voiceover.discard(); return }
         if layerGestureID != nil { cancelLayerGesture(); return }
         if !layerRectView.isHidden { return }

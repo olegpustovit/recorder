@@ -30,6 +30,8 @@ enum SelfTest {
         "mcp-render": { args in try await checkMCPRender(args) },
         "mcp-edit": { args in try await checkMCPEdit(args) },
         "mcp-review": { args in try await checkMCPReview(args) },
+        "mcp-live": { args in try await checkMCPLive(args) },
+        "mcp-live-client": { args in try await checkMCPLiveClient(args) },
         "mcp-panel-motion": { args in try await UIKitGallery.checkAgentStudy(to: URL(fileURLWithPath: args.first ?? "/tmp/recorder-t814-motion")) },
         "mcp-export": { args in try await checkMCPExport(args) },
         "motion-text": { _ in try await Compositor.runMotionTextSelfTest() },
@@ -4310,8 +4312,8 @@ enum SelfTest {
                 exit(1)
             }
         }
-        // Presented-frame performance needs AppKit's real event processing, not only a headless run loop.
-        if name == "timeline-render-perf", args.contains("--dual-screen") {
+        // Presented frames and the recorded client workflow need AppKit events, not only a headless run loop.
+        if (name == "timeline-render-perf" && args.contains("--dual-screen")) || name == "mcp-live-client" {
             NSApplication.shared.setActivationPolicy(.accessory)
             NSApplication.shared.run()
         }
@@ -4484,7 +4486,7 @@ private final class MCPTestClient {
     let proposed = try await tool("edit", ["action": "apply", "ifRevision": try MCPTools.revision(base),
         "ops": [["op": "style", "patch": ["frame": ["padding": 0.04]]]]])
     let revealed = try await tool("ui", ["action": "show", "at": 0.4])
-    guard proposed["revision"] as? String == revealed["revision"] as? String, model.project == base else { throw MCPTestFailure(description: "ui.show lost the session's draft revision or applied it") }
+    guard proposed["revision"] as? String == revealed["revision"] as? String, model.liveProject == base, model.isWatchingDraft else { throw MCPTestFailure(description: "ui.show lost the session's draft revision or applied it") }
     _ = try await tool("draft", ["action": "discard"])
     let configuration = try JSONSerialization.jsonObject(with: Data(AgentConfig.genericJSON(command: AgentClient.recorderExecutable).utf8)) as? [String: Any]
     let server = (configuration?["mcpServers"] as? [String: Any])?["recorder"] as? [String: Any]
@@ -4510,6 +4512,7 @@ private final class MCPTestClient {
     session.agentName = "claude-code"; session.projectURL = model.packageURL.standardizedFileURL
     let reducedMotion = args.contains("--reduce-motion")
     if reducedMotion {
+        model.reviewReduceMotionPreview = true
         controller.inspectorView = NSHostingView(rootView: InspectorView(model: model).environment(\.agentReduceMotionPreview, true))
     }
     server.register(session)
@@ -4779,7 +4782,7 @@ private final class MCPTestClient {
     let replayed = try draft.project(context: EditContext(words: words))
     guard try MCPTools.revision(replayed) == draft.revision, draft.calls.count == 3, replayed.texts.first?.id == textID,
           replayed.texts.first?.text == "Revised", abs(replayed.exportDuration - 2.2) < 1e-8,
-          model.project == base, model.undoStepNames.isEmpty, (try Data(contentsOf: projectURL)) == saved else { throw MCPTestFailure(description: "Draft replay/ids/live/disk isolation") }
+          model.project == replayed, model.liveProject == base, model.isWatchingDraft, model.undoStepNames.isEmpty, (try Data(contentsOf: projectURL)) == saved else { throw MCPTestFailure(description: "Draft replay/ids/live/disk isolation") }
     var excluded = draft
     excluded.excluded.insert([0, 0])
     let partial = try excluded.project(context: EditContext(words: words))
@@ -4790,6 +4793,7 @@ private final class MCPTestClient {
     guard let image = inline(draftRender), image != inline(liveRender),
           (draftRender["structuredContent"] as? [String: Any])?["revision"] as? String == third["revision"] as? String else { throw MCPTestFailure(description: "Draft/live render selection or revision") }
     _ = try await tool("edit", ["action": "apply", "ifRevision": baseRevision, "ops": style], error: "STALE_REVISION")
+    guard MCPServer.shared.takeOverWatching(model) else { throw MCPTestFailure(description: "Could not take over the watching preview") }
     model.edit("Human") { $0.frame.shadow = 0.8 }
     _ = try await tool("edit", ["action": "apply", "ifRevision": draft.revision, "ops": style], error: "STALE_REVISION")
     guard try await tool("draft", ["action": "status"])["stale"] as? Bool == true else { throw MCPTestFailure(description: "Stale draft status") }
@@ -4806,7 +4810,7 @@ private final class MCPTestClient {
     guard !(warned["warnings"] as? [String] ?? []).isEmpty, try MCPTools.viewedProject(model, session: session).texts.count == 3 else { throw MCPTestFailure(description: "Lower-third/caption warnings") }
     _ = try await tool("draft", ["action": "discard"])
     let paused = try await tool("edit", ["action": "apply", "ifRevision": baseRevision, "ops": [["op": "cutPauses", "minDuration": 0.6, "keepTail": 0.1]]])
-    guard ((paused["duration"] as? [String: Double])?["after"] ?? 3) < 3, model.project == base else { throw MCPTestFailure(description: "Pause context/draft isolation") }
+    guard ((paused["duration"] as? [String: Double])?["after"] ?? 3) < 3, model.liveProject == base, model.isWatchingDraft else { throw MCPTestFailure(description: "Pause context/draft isolation") }
     _ = try await tool("draft", ["action": "discard"])
     AgentAccess.set(.live, for: base.id)
     _ = try await tool("edit", ["action": "apply", "ifRevision": baseRevision, "ops": style + [["op": "marker", "at": 2, "label": "Live"]]])
@@ -5036,6 +5040,18 @@ private final class MCPTestClient {
         guard (fillers["fillers"] as? [[String: Any]])?.first?["word"] as? String == "w0" else { throw MCPTestFailure(description: "MCP filler IDs") }
         let activity = try client.tool("analyze", ["action": "activity"])
         guard activity["clicks"] as? [Double] == [0.8] else { throw MCPTestFailure(description: "MCP clicks") }
+        let beforeWatch = try await MainActor.run { () throws -> Project in
+            guard let model = EditorWindowController.allOpen.first(where: { $0.model.liveProject.id == id })?.model else { throw MCPTestFailure(description: "Wire watch editor missing") }
+            return model.project
+        }
+        _ = try client.tool("edit", ["action": "apply", "ifRevision": opened["revision"]!, "ops": [["op": "style", "patch": ["frame": ["padding": 0.04]]]]])
+        try await MainActor.run {
+            guard let model = EditorWindowController.allOpen.first(where: { $0.model.liveProject.id == id })?.model,
+                  model.isWatchingDraft, model.liveProject == beforeWatch, model.project.frame.padding == 0.04 else {
+                throw MCPTestFailure(description: "Wire apply did not propagate into its existing editor")
+            }
+        }
+        _ = try client.tool("draft", ["action": "discard"])
         _ = try client.tool("timeline", ["action": "get", "from": -1], error: "OUT_OF_RANGE")
         _ = try client.tool("timeline", ["action": "get", "from": "1"], error: "INVALID_OP")
         _ = try client.tool("analyze", ["action": "pauses", "minDuration": true], error: "INVALID_OP")
@@ -6390,4 +6406,320 @@ private func runTimelineHeaderSelfTest() async throws {
     view.debugNewTrackButton.performClick(nil); try await settle()
     try check(view.revealedLanes.contains(.layer(next)) && model.project == project && model.undoStepCount == 0,
               "only an explicit new-track click reveals an empty lane without editing project")
+}
+
+@MainActor private func checkMCPLive(_ args: [String]) async throws {
+    guard let path = args.first else { throw MCPTestFailure(description: "usage: mcp-live <fixture.recorder> [--reduce-motion]") }
+    let root = URL(fileURLWithPath: "/tmp/recorder-t815-\(UUID().uuidString)")
+    let package = root.appendingPathComponent("Live.recorder"), server = MCPServer.shared
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    try FileManager.default.copyItem(at: URL(fileURLWithPath: path), to: package)
+    let file = package.appendingPathComponent("project.json")
+    var fixture = try Project.load(from: file)
+    fixture.id = UUID().uuidString; fixture.texts = []; fixture.zooms = []; fixture.masks = []
+    try fixture.save(to: file)
+    try JSONEncoder().encode(EventLog()).write(to: package.appendingPathComponent("events.json"))
+    NSApplication.shared.setActivationPolicy(.accessory); NSApplication.shared.finishLaunching()
+    guard let controller = await EditorWindowController.open(package: package).value else { throw MCPTestFailure(description: "Live fixture did not open") }
+    guard await EditorWindowController.open(package: package.resolvingSymlinksInPath()).value === controller else {
+        throw MCPTestFailure(description: "Package aliases opened different editors")
+    }
+    for directory in [false, true] {
+        guard await EditorWindowController.open(package: URL(fileURLWithPath: package.path, isDirectory: directory)).value === controller else {
+            throw MCPTestFailure(description: "File/directory URL forms opened different editors")
+        }
+    }
+    let model = controller.model, owner = MCPSession(), other = MCPSession()
+    for session in [owner, other] { session.projectURL = model.packageURL.standardizedFileURL; server.register(session) }
+    owner.agentName = "watching-client"; other.agentName = "hidden-client"
+    model.reviewReduceMotionPreview = args.contains("--reduce-motion")
+    let suffix = model.reviewReduceMotionPreview ? "reduced" : "normal"
+    let output = URL(fileURLWithPath: "/tmp/recorder-t815-\(suffix)")
+    try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+    if model.reviewReduceMotionPreview {
+        controller.inspectorView = NSHostingView(rootView: InspectorView(model: model).environment(\.agentReduceMotionPreview, true))
+    }
+    defer {
+        controller.close()
+        for session in [owner, other] { session.draft = nil; session.connected = false }
+        server.removeFinishedSessions()
+        UserDefaults.standard.removeObject(forKey: "agentAccess.\(fixture.id)")
+        try? FileManager.default.removeItem(at: root)
+    }
+    func tool(_ name: String, _ arguments: [String: Any], session: MCPSession? = nil, error expected: String? = nil) async throws -> [String: Any] {
+        let response = await MCPTools.call(name, arguments, session: session ?? owner)
+        let payload = response["structuredContent"] as? [String: Any] ?? [:]
+        if let expected {
+            guard response["isError"] as? Bool == true, payload["error"] as? String == expected else { throw MCPTestFailure(description: "Expected \(expected), received \(payload)") }
+        } else if response["isError"] as? Bool != false { throw MCPTestFailure(description: "Live \(name): \(payload)") }
+        return payload
+    }
+    func apply(_ ops: [[String: Any]], session: MCPSession? = nil) async throws {
+        let session = session ?? owner
+        let revision = try session.draft?.revision ?? MCPTools.revision(model.liveProject)
+        _ = try await tool("edit", ["action": "apply", "ifRevision": revision, "ops": ops], session: session)
+    }
+    func blocked(_ action: () throws -> Void) throws {
+        do { try action(); throw MCPTestFailure(description: "Watching operation was allowed before submit") }
+        catch let error as MCPFailure { guard error.code == "REVIEW_IN_PROGRESS" else { throw error } }
+    }
+    func capture(_ view: NSView, _ name: String) throws {
+        view.layoutSubtreeIfNeeded()
+        guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw MCPTestFailure(description: "Live bitmap unavailable") }
+        view.cacheDisplay(in: view.bounds, to: rep)
+        guard let png = rep.representation(using: .png, properties: [:]) else { throw MCPTestFailure(description: "Live PNG unavailable") }
+        try png.write(to: output.appendingPathComponent(name + ".png"))
+    }
+    func frame() async throws -> Data {
+        let image = try await controller.previewView.captureRenderedFrame(atOutput: 0.7)
+        guard let pixels = image.dataProvider?.data else { throw MCPTestFailure(description: "Live preview pixels unavailable") }
+        return Data(referencing: pixels as NSData)
+    }
+    func escape() -> NSEvent {
+        NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: controller.window!.windowNumber,
+            context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53)!
+    }
+    let base = model.project, saved = try Data(contentsOf: file), originalFrame = try await frame()
+    model.inspectorShowsAgent = false
+    controller.window?.makeKeyAndOrderFront(nil)
+    let keyed = controller.window?.isKeyWindow == true
+    let text: [[String: Any]] = [["op": "cut", "from": 0.5, "to": 1.0],
+        ["op": "text", "from": 0.2, "to": 2.4, "style": "title", "text": "Watching"]]
+    let zoom: [[String: Any]] = [["op": "zoom", "from": 0.1, "to": 1.5, "scale": 1.8, "center": ["x": 0.6, "y": 0.4]]]
+    var previousCutID: String?
+    for call in 1...3 {
+        if call == 1 { try await apply(text) }
+        else if call == 2 { try await apply(zoom) }
+        else {
+            guard let textID = model.project.texts.first?.id else { throw MCPTestFailure(description: "Watching text missing") }
+            try await apply([["op": "update", "id": textID, "text": "Three live calls"],
+                ["op": "highlight", "from": 0.1, "to": 1.2, "rect": ["x": 0.05, "y": 0.05, "w": 0.4, "h": 0.4], "opacity": 0.65]])
+        }
+        guard let draft = owner.draft, draft.calls.count == call, !draft.submitted,
+              model.isReviewingDraft, model.isWatchingDraft, model.reviewSessionID == owner.id,
+              model.project == (try draft.project(context: EditContext())), model.liveProject == base,
+              model.reviewNotice == "Claude is editing, Esc to take over", model.undoStepNames.isEmpty,
+              !model.reviewAddedIDs.isEmpty, model.reviewCuts.count == 1,
+              try Data(contentsOf: file) == saved else { throw MCPTestFailure(description: "Unsubmitted call \(call) failed preview/base/marks/disk/undo isolation") }
+        if call == 1 { guard model.inspectorShowsAgent == keyed else { throw MCPTestFailure(description: "First apply ignored key-window auto-selection") } }
+        if let previousCutID { guard model.reviewCuts[0].id == previousCutID else { throw MCPTestFailure(description: "A retained cut lost its motion identity") } }
+        previousCutID = model.reviewCuts[0].id
+        try await Task.sleep(for: .milliseconds(35))
+        let newID = call == 1 ? model.project.texts.first!.id : call == 2 ? model.project.zooms.first!.id : model.project.masks.first!.id
+        let progress = controller.coreTimelineView.debugReviewProgress(newID)
+        guard progress >= 0, progress < 1 else { throw MCPTestFailure(description: "Call \(call) did not expose an intermediate timeline reveal") }
+        try capture(controller.coreTimelineView, "call-\(call)-mid")
+        try await Task.sleep(for: .milliseconds(550))
+        guard controller.coreTimelineView.debugReviewProgress(newID) == 1, try await frame() != originalFrame else {
+            throw MCPTestFailure(description: "Call \(call) did not settle or change the real preview frame")
+        }
+        try capture(controller.coreTimelineView, "call-\(call)")
+        try capture(controller.inspectorView, "panel-\(call)")
+        let frozen = model.project
+        model.edit("Blocked") { $0.title = "Blocked" }; model.beginGesture(); model.update { $0.title = "Blocked" }
+        model.undo(); model.redo(); model.saveNow()
+        guard model.project == frozen, !model.isEditingGesture, model.liveProject == base, try Data(contentsOf: file) == saved else {
+            throw MCPTestFailure(description: "Human gesture or save leaked an unsubmitted preview")
+        }
+        try blocked { try server.include([0, 0], in: owner, included: false) }
+        try blocked { try server.finishReview(owner, commit: true) }
+    }
+    let visible = model.project
+    try await apply([["op": "style", "patch": ["frame": ["shadow": 0.9]]]], session: other)
+    guard other.draft != nil, model.project == visible, model.reviewSessionID == owner.id,
+          try MCPTools.viewedProject(model, session: other) != visible else { throw MCPTestFailure(description: "Another client replaced or read the visible draft") }
+    _ = try await tool("draft", ["action": "submit"], session: other, error: "REVIEW_IN_PROGRESS")
+    guard other.draft?.submitted == false else { throw MCPTestFailure(description: "Failed competing submit mutated its draft") }
+    _ = try await tool("draft", ["action": "discard"], session: other)
+    guard model.project == visible, model.isWatchingDraft else { throw MCPTestFailure(description: "Discarding an invisible draft ended another client's watch") }
+    _ = try await tool("draft", ["action": "submit", "note": "Three watched calls"])
+    guard !model.isWatchingDraft, model.isReviewingDraft, model.project == visible, owner.draft?.submitted == true else {
+        throw MCPTestFailure(description: "Submit did not switch watching to review in place")
+    }
+    try server.finishReview(owner, commit: true)
+    try await Task.sleep(for: .milliseconds(20))
+    guard model.project == visible, model.liveProject == visible, model.undoStepNames.count == 1,
+          controller.coreTimelineView.debugReviewSettling else { throw MCPTestFailure(description: "Accept did not make one undo step and start the settlement") }
+    try capture(controller.coreTimelineView, "accepted-mid")
+    try await Task.sleep(for: .milliseconds(400))
+    guard !controller.coreTimelineView.debugReviewSettling else { throw MCPTestFailure(description: "Accepted outline settlement did not terminate") }
+    model.undo()
+    guard model.project == base else { throw MCPTestFailure(description: "Watching acceptance undo did not restore the human base") }
+    owner.draft = nil
+    let style: [[String: Any]] = [["op": "style", "patch": ["frame": ["padding": 0.04]]]]
+    for route in 0..<3 {
+        try await apply(style)
+        if route == 0 { controller.previewView.keyDown(with: escape()) }
+        else if route == 1 { controller.coreTimelineView.keyDown(with: escape()) }
+        else { controller.cancelOperation(nil) }
+        guard !model.isReviewingDraft, !model.isWatchingDraft, model.project == base, owner.previewSuppressed,
+              owner.draft?.verdict == nil else { throw MCPTestFailure(description: "Escape route \(route) did not release the watch safely") }
+        try await apply([["op": "marker", "at": 1.5, "label": "Still hidden"]])
+        guard model.project == base, !model.isReviewingDraft else { throw MCPTestFailure(description: "Agent stole the preview back after Escape") }
+        model.edit("Human takeover") { $0.frame.shadow = 0.8 }
+        _ = try await tool("edit", ["action": "apply", "ifRevision": owner.draft!.revision, "ops": style], error: "STALE_REVISION")
+        _ = try await tool("draft", ["action": "discard"])
+        model.undo()
+    }
+    controller.window?.orderOut(nil); model.inspectorShowsAgent = false
+    try await apply(style)
+    guard model.isWatchingDraft, !model.inspectorShowsAgent else { throw MCPTestFailure(description: "Background apply stole inspector focus") }
+    _ = try await tool("draft", ["action": "discard"])
+    controller.window?.makeKeyAndOrderFront(nil)
+    AgentAccess.set(.live, for: base.id); model.inspectorShowsAgent = false
+    _ = try await tool("edit", ["action": "apply", "ifRevision": try MCPTools.revision(model.liveProject), "ops": style])
+    guard !model.isReviewingDraft, model.undoStepNames.count >= 1,
+          controller.window?.isKeyWindow != true || model.inspectorShowsAgent else { throw MCPTestFailure(description: "Live mode did not use normal edits/key-window feedback") }
+    model.undo(); AgentAccess.set(.draft, for: base.id)
+    try await apply(style)
+    controller.close()
+    guard !model.isReviewingDraft, model.project == base, owner.draft?.submitted == false, try Project.load(from: file) == base else {
+        throw MCPTestFailure(description: "Closing a watching editor saved its unaccepted preview")
+    }
+    print("MCP live: three real previews/marks before submit, normal/reduced reveals, frozen base/disk/undo, disabled pre-submit acceptance, hidden competing draft, in-place submit, one undo/settlement, three Escape routes, suppression/stale races, background/Live focus and safe close verified: \(output.path)")
+}
+
+@MainActor private func checkMCPLiveClient(_ args: [String]) async throws {
+    guard let path = args.first else { throw MCPTestFailure(description: "usage: mcp-live-client <generated-fixture.recorder> [output-directory]") }
+    let output = URL(fileURLWithPath: args[safe: 1] ?? "/tmp/recorder-t815-client-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+    let package = output.appendingPathComponent("Client.recorder").resolvingSymlinksInPath().standardizedFileURL
+    try FileManager.default.copyItem(at: URL(fileURLWithPath: path), to: package)
+    let file = package.appendingPathComponent("project.json")
+    var fixture = try Project.load(from: file)
+    fixture.id = UUID().uuidString; fixture.texts = []; fixture.zooms = []; fixture.masks = []; fixture.keys.show = false
+    try fixture.save(to: file)
+    try JSONEncoder().encode(EventLog()).write(to: package.appendingPathComponent("events.json"))
+    NSApplication.shared.setActivationPolicy(.accessory); NSApplication.shared.finishLaunching()
+    guard let controller = await EditorWindowController.open(package: package).value, let window = controller.window else {
+        throw MCPTestFailure(description: "Client fixture failed to open")
+    }
+    window.makeKeyAndOrderFront(nil); NSApp.activate()
+    try await Task.sleep(for: .milliseconds(300))
+    let model = controller.model, server = MCPServer.shared, saved = try Data(contentsOf: file), base = model.project
+    model.inspectorShowsAgent = true
+    let socket = "/tmp/recorder-t815-\(UUID().uuidString).sock"
+    try server.start(socketPath: socket)
+    let relay = output.appendingPathComponent("stdio-relay.py")
+    try """
+    import socket, sys, threading
+    peer = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    peer.connect(sys.argv[1])
+    def send():
+        for line in sys.stdin.buffer:
+            peer.sendall(line)
+        peer.shutdown(socket.SHUT_WR)
+    threading.Thread(target=send, daemon=True).start()
+    while True:
+        data = peer.recv(65536)
+        if not data: break
+        sys.stdout.buffer.write(data)
+        sys.stdout.buffer.flush()
+    """.write(to: relay, atomically: true, encoding: .utf8)
+    let config = output.appendingPathComponent("mcp.json")
+    try JSONSerialization.data(withJSONObject: ["mcpServers": ["recorder": ["command": "/usr/bin/python3",
+        "args": ["-u", relay.path, socket]]]], options: [.prettyPrinted, .sortedKeys]).write(to: config)
+    let prompt = """
+    Validate Recorder's MCP on this GENERATED disposable recording only: \(package.path)
+    Use only the recorder MCP tools. Do exactly these calls sequentially:
+    1. project.open by that path; timeline.get.
+    2. edit.apply with the current ifRevision: cut from0.5 to1.0; text from0.2 to2.4, style title, text 'Watching the client'.
+    3. edit.apply with the latest returned ifRevision: zoom from0.1 to1.5 scale1.8 center x0.6 y0.4.
+    4. edit.apply with the latest returned ifRevision: highlight from0.1 to1.2 rect x0.05 y0.05 w0.4 h0.4 opacity0.65; marker at1.5 label 'Third call'.
+    Do not submit until all THREE edit.apply calls have succeeded. Then draft.submit note 'Three live client calls'.
+    Do not accept, discard, export, change access, or operate on any other recording. Finish by saying DONE.
+    """
+    try prompt.write(to: output.appendingPathComponent("prompt.txt"), atomically: true, encoding: .utf8)
+    func log(_ name: String) throws -> FileHandle {
+        let url = output.appendingPathComponent(name)
+        FileManager.default.createFile(atPath: url.path, contents: nil)
+        return try FileHandle(forWritingTo: url)
+    }
+    let record = Process(), client = Process()
+    let recordLog = try log("capture.log"), clientLog = try log("client.jsonl"), clientError = try log("client.stderr")
+    defer {
+        if client.isRunning { client.terminate() }
+        if record.isRunning { record.interrupt() }
+        server.stop(); controller.close()
+        UserDefaults.standard.removeObject(forKey: "agentAccess.\(fixture.id)")
+        try? recordLog.close(); try? clientLog.close(); try? clientError.close()
+    }
+    record.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+    record.arguments = ["-x", "-v", "-V", "180", "-l", String(window.windowNumber), output.appendingPathComponent("live-client.mov").path]
+    record.standardOutput = recordLog; record.standardError = recordLog
+    try record.run()
+    try await Task.sleep(for: .milliseconds(700))
+    guard record.isRunning else { throw MCPTestFailure(description: "Window recording did not start; see \(output.path)/capture.log") }
+    client.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+    client.arguments = ["claude", "-p", "--strict-mcp-config", "--mcp-config", config.path, "--setting-sources", "",
+        "--tools", "", "--allowedTools", "mcp__recorder__project,mcp__recorder__timeline,mcp__recorder__edit,mcp__recorder__draft",
+        "--max-turns", "12", "--output-format", "stream-json", "--verbose", prompt]
+    client.standardOutput = clientLog; client.standardError = clientError
+    try client.run()
+    print("Live client process \(client.processIdentifier), recording process \(record.processIdentifier), evidence \(output.path)")
+    let deadline = Date().addingTimeInterval(160)
+    var seen = 0, snapshots: [[String: Any]] = []
+    while (client.isRunning || seen < 3), Date() < deadline {
+        if let session = server.projectSessions(model).first(where: { $0.draft != nil }), let draft = session.draft, draft.calls.count > seen {
+            let replayed = try draft.project(context: EditContext())
+            let checks: [String: Bool] = ["nextCall": draft.calls.count == seen + 1, "unsubmitted": !draft.submitted,
+                "watching": model.isWatchingDraft, "owner": model.reviewSessionID == session.id,
+                "matchesDraft": model.project == replayed, "humanBase": model.liveProject == base, "agentPanel": model.inspectorShowsAgent,
+                "undoEmpty": model.undoStepNames.isEmpty, "disk": try Data(contentsOf: file) == saved]
+            guard checks.values.allSatisfy({ $0 }) else {
+                for (name, project) in [("before", base), ("live", model.liveProject), ("shown", model.project), ("replayed", replayed)] {
+                    try JSONEncoder().encode(project).write(to: output.appendingPathComponent("failed-\(name).json"))
+                }
+                throw MCPTestFailure(description: "Real client call \(seen + 1) invariant failure: \(checks)")
+            }
+            seen += 1
+            snapshots.append(["call": seen, "revision": draft.revision, "ops": draft.calls.flatMap { $0 }.count,
+                "duration": model.project.exportDuration, "added": model.reviewAddedIDs.count, "cuts": model.reviewCuts.count,
+                "watching": model.isWatchingDraft, "humanBaseUnchanged": model.liveProject == base,
+                "observedAt": Date().timeIntervalSince1970])
+            try await Task.sleep(for: .milliseconds(200))
+            let image = Process(); image.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+            image.arguments = ["-x", "-o", "-l", String(window.windowNumber), output.appendingPathComponent("call-\(seen).png").path]
+            image.standardError = recordLog
+            try image.run()
+            while image.isRunning { try await Task.sleep(for: .milliseconds(10)) }
+            guard image.terminationStatus == 0 else { throw MCPTestFailure(description: "Real client window snapshot failed") }
+        }
+        if !client.isRunning, seen < 3 { throw MCPTestFailure(description: "Claude Code stopped before three applies; see \(output.path)/client.jsonl") }
+        try await Task.sleep(for: .milliseconds(40))
+    }
+    guard !client.isRunning, client.terminationStatus == 0, seen == 3,
+          let session = server.projectSessions(model).first(where: { $0.draft?.submitted == true }),
+          !model.isWatchingDraft, model.isReviewingDraft, model.liveProject == base else {
+        throw MCPTestFailure(description: "Real client did not finish three watched calls and submit; see \(output.path)")
+    }
+    try JSONSerialization.data(withJSONObject: snapshots, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("observations.json"))
+    let recordDeadline = Date().addingTimeInterval(185)
+    while record.isRunning, Date() < recordDeadline { try await Task.sleep(for: .milliseconds(50)) }
+    guard !record.isRunning else { throw MCPTestFailure(description: "Window recording did not finish") }
+    let recordedEnd = Date().timeIntervalSince1970
+    let movie = AVURLAsset(url: output.appendingPathComponent("live-client.mov"))
+    let seconds = try await movie.load(.duration).seconds
+    guard seconds > 1, try await movie.loadTracks(withMediaType: .video).count == 1 else {
+        throw MCPTestFailure(description: "Real client recording is not a decodable video")
+    }
+    let generator = AVAssetImageGenerator(asset: movie)
+    generator.requestedTimeToleranceBefore = .zero; generator.requestedTimeToleranceAfter = .zero
+    var recordedFrames: Set<Data> = []
+    for observation in snapshots {
+        let time = min(seconds - 0.1, max(0, seconds - (recordedEnd - (observation["observedAt"] as! Double)) + 0.2))
+        let image = try await generator.image(at: CMTime(seconds: time, preferredTimescale: 600)).image
+        guard let pixels = image.dataProvider?.data else { throw MCPTestFailure(description: "Recorded window has no pixels") }
+        let data = Data(referencing: pixels as NSData)
+        guard Set(data).count > 8 else { throw MCPTestFailure(description: "Recorded window is blank") }
+        recordedFrames.insert(data)
+        let png = output.appendingPathComponent("recorded-\(observation["call"] as! Int).png")
+        guard let destination = CGImageDestinationCreateWithURL(png as CFURL, UTType.png.identifier as CFString, 1, nil) else { throw MCPTestFailure(description: "Recorded PNG destination") }
+        CGImageDestinationAddImage(destination, image, nil)
+        guard CGImageDestinationFinalize(destination) else { throw MCPTestFailure(description: "Recorded PNG encoding") }
+    }
+    guard recordedFrames.count == 3 else { throw MCPTestFailure(description: "Recording did not show three changing client states") }
+    try server.finishReview(session, commit: false)
+    guard model.project == base, try Data(contentsOf: file) == saved else { throw MCPTestFailure(description: "Real client discard did not preserve the original package") }
+    print("Actual Claude Code: three unsubmitted calls observed in the real window, cumulative panel/marks and frozen base verified, submitted for review, recording decoded, then safely discarded: \(output.path)")
 }

@@ -765,7 +765,7 @@ private struct GalleryReveal: ViewModifier {
     let base: Project
     var generation = 0
     var playing = false
-    var reducedMotion = false
+    var reducedMotion = false { didSet { model.reviewReduceMotionPreview = reducedMotion } }
     private(set) var closed = false
 
     private init(_ controller: EditorWindowController, package: URL) {
@@ -829,22 +829,18 @@ private struct GalleryReveal: ViewModifier {
             do {
                 try await Task.sleep(for: .milliseconds(450))
                 try Task.checkCancellation()
-                var draft = try session.draft ?? AgentDraft(base: MCPTools.revision(base), baseProject: base)
-                let before = draft.duration
-                let result = try draft.append(ops, context: EditContext())
-                session.draft = draft
-                // The study previews between calls; production live propagation is tracked separately in T-815.
-                try MCPServer.shared.review(session)
-                session.draft?.submitted = false
-                let changes = try JSONSerialization.jsonObject(with: JSONEncoder().encode(result.changes))
-                AgentActivity.shared.finish(call, result: MCPTools.activityResult("edit", "apply", ["changes": changes,
-                    "duration": ["before": before, "after": result.project.exportDuration]]))
+                var request = args
+                request["action"] = "apply"
+                request["ifRevision"] = try session.draft?.revision ?? MCPTools.revision(model.liveProject)
+                let response = await MCPTools.call("edit", request, session: session)
+                guard response["isError"] as? Bool == false else { throw CocoaError(.fileReadCorruptFile) }
+                AgentActivity.shared.clearPending(call)
                 try await Task.sleep(for: .milliseconds(850))
             } catch { AgentActivity.shared.finish(call, result: error is CancellationError ? "Cancelled" : "INVALID_OP", isError: !(error is CancellationError)); throw error }
         }
         try Task.checkCancellation()
-        session.draft?.note = "Tightened playback, added section labels, a zoom and markers."
-        session.draft?.submitted = true
+        let response = await MCPTools.call("draft", ["action": "submit", "note": "Tightened playback, added section labels, a zoom and markers."], session: session)
+        guard response["isError"] as? Bool == false else { throw CocoaError(.fileReadCorruptFile) }
     }
     func close() {
         guard !closed else { return }

@@ -287,6 +287,7 @@ enum AgentAccess: String, CaseIterable {
     private(set) var current: [UUID: Row] = [:]
     func log(_ row: Row) { rows.append(row); if rows.count > 200 { rows.removeFirst(rows.count - 200) } }
     @discardableResult func begin(_ row: Row) -> UUID { current[row.id] = row; return row.id }
+    func clearPending(_ id: UUID) { current.removeValue(forKey: id) }
     func finish(_ id: UUID, result: String, isError: Bool = false, projectID: String? = nil) {
         guard var row = current.removeValue(forKey: id) else { return }
         row.result = result; row.isError = isError; row.ms = Int(Date().timeIntervalSince(row.time) * 1000)
@@ -377,7 +378,7 @@ enum AgentAccess: String, CaseIterable {
         return sessions.filter { $0.projectURL?.resolvingSymlinksInPath().standardizedFileURL == url || $0.draft?.baseProject.id == model.liveProject.id }
     }
     func phase(_ session: MCPSession, model: EditorModel) -> String {
-        if model.reviewSessionID == session.id { return "reviewing" }
+        if model.reviewSessionID == session.id { return model.isWatchingDraft ? "watching" : "reviewing" }
         if session.renderJobID != nil { return "rendering" }
         if session.draft?.submitted == true, session.draft?.verdict == nil { return "reviewing" }
         if session.draft?.verdict == nil, session.draft != nil { return "drafting" }
@@ -386,27 +387,30 @@ enum AgentAccess: String, CaseIterable {
     func removeFinishedSessions() {
         sessions.removeAll { !$0.connected && $0.renderJobID == nil && ($0.draft == nil || $0.draft?.verdict != nil) }
     }
-    func review(_ session: MCPSession, rebase: Bool = false) throws {
+    func review(_ session: MCPSession, rebase: Bool = false, watching: Bool = false) throws {
         let model = try MCPTools.model(for: session)
         guard var draft = session.draft, draft.verdict == nil, draft.baseProject.id == model.liveProject.id else {
             throw MCPFailure(code: "NO_PROJECT", message: "Open the draft's project before reviewing it")
         }
+        if watching, session.previewSuppressed || (model.isReviewingDraft && model.reviewSessionID != session.id) { return }
         guard !model.voiceover.isActive, !model.isEditingGesture, model.mediaImportStatus == nil,
               !model.isReviewingDraft || model.reviewSessionID == session.id else {
             throw MCPFailure(code: "REVIEW_IN_PROGRESS", message: "Finish the current review, recording or gesture first")
         }
         register(session)
-        model.inspectorShowsAgent = true
+        if !watching { model.inspectorShowsAgent = true }
         session.reviewError = nil
         if !rebase, draft.base != (try MCPTools.revision(model.liveProject)) { return }
         let proposed = try draft.refreshReview(on: rebase ? model.liveProject : nil, context: EditContext(words: model.transcript ?? []))
         if !model.isReviewingDraft {
             EditorWindowController.allOpen.first { $0.model === model }?.coreTimelineView.cancelOperation(nil)
-            guard model.beginReview() else { throw MCPFailure(code: "REVIEW_IN_PROGRESS", message: "Finish the current gesture before reviewing") }
+            guard model.beginReview(watching: watching) else { throw MCPFailure(code: "REVIEW_IN_PROGRESS", message: "Finish the current gesture before reviewing") }
         }
         model.reviewSessionID = session.id
+        model.isWatchingDraft = watching
         try model.updateReview { $0 = proposed }
-        draft.submitted = true; session.draft = draft
+        draft.submitted = !watching; session.draft = draft
+        if !watching { session.previewSuppressed = false }
         updateMarks(model, base: draft.baseProject)
     }
     func include(_ row: [Int], in session: MCPSession, included: Bool) throws {
@@ -414,7 +418,7 @@ enum AgentAccess: String, CaseIterable {
     }
     func include(_ rows: [[Int]], in session: MCPSession, included: Bool) throws {
         let model = try MCPTools.model(for: session)
-        guard model.reviewSessionID == session.id, var draft = session.draft,
+        guard model.reviewSessionID == session.id, !model.isWatchingDraft, var draft = session.draft, draft.submitted,
               rows.allSatisfy({ $0.count == 2 && draft.calls.indices.contains($0[0]) && draft.calls[$0[0]].indices.contains($0[1]) }) else {
             throw MCPFailure(code: "REVIEW_IN_PROGRESS", message: "Start this draft's review before changing its checkboxes")
         }
@@ -428,7 +432,9 @@ enum AgentAccess: String, CaseIterable {
     }
     func finishReview(_ session: MCPSession, commit: Bool) throws {
         let model = EditorWindowController.allOpen.first { $0.model.reviewSessionID == session.id }?.model
-        if commit, model == nil { throw MCPFailure(code: "REVIEW_IN_PROGRESS", message: "Start reviewing the draft before accepting it") }
+        if commit, model == nil || model?.isWatchingDraft == true || session.draft?.submitted != true {
+            throw MCPFailure(code: "REVIEW_IN_PROGRESS", message: "Wait for draft.submit before accepting the draft")
+        }
         let draft = session.draft
         let note = (draft?.note?.replacingOccurrences(of: "\n", with: " ") ?? "Review edits").prefix(40)
         model?.endReview(commit: commit, name: "Claude: \(note)")
@@ -437,7 +443,15 @@ enum AgentAccess: String, CaseIterable {
         session.lastDraftVerdict = verdict
         if commit { session.draft?.verdict = verdict } else { session.draft = nil }
         session.reviewError = nil
+        session.previewSuppressed = false
         removeFinishedSessions()
+    }
+    @discardableResult func takeOverWatching(_ model: EditorModel) -> Bool {
+        guard model.isWatchingDraft, let id = model.reviewSessionID, let session = sessions.first(where: { $0.id == id }) else { return false }
+        model.endReview(commit: false, name: "")
+        session.previewSuppressed = true
+        session.reviewError = nil
+        return true
     }
     func editorClosing(_ model: EditorModel) {
         guard let id = model.reviewSessionID else { return }
@@ -451,21 +465,24 @@ enum AgentAccess: String, CaseIterable {
         }
         model.reviewAddedIDs = ids(model.project).subtracting(ids(base))
         let draft = sessions.first { $0.id == model.reviewSessionID }?.draft
-        var cuts: [(Double, Double)] = []
+        var cuts: [(id: String, time: Double, duration: Double)] = []
         for cut in draft?.cutRanges ?? [] {
             var output = 0.0
             for retained in model.project.clips {
                 if retained.sourceStart >= cut.end - 1e-9 { break }
                 output += retained.outputDuration
             }
-            cuts.append((model.timeMap.outputTime(atSource: cut.start) ?? output, cut.duration))
+            cuts.append(("\(cut.start):\(cut.end)", model.timeMap.outputTime(atSource: cut.start) ?? output, cut.duration))
         }
-        var merged: [(Double, Double)] = []
-        for cut in cuts.sorted(by: { $0.0 < $1.0 }) {
-            if let last = merged.last, abs(last.0 - cut.0) < 1e-6 { merged[merged.count - 1].1 += cut.1 }
+        var merged: [(id: String, time: Double, duration: Double)] = []
+        for cut in cuts.sorted(by: { $0.time < $1.time }) {
+            if let last = merged.last, abs(last.time - cut.time) < 1e-6 {
+                merged[merged.count - 1].duration += cut.duration
+                merged[merged.count - 1].id += ";\(cut.id)"
+            }
             else { merged.append(cut) }
         }
-        model.reviewCuts = merged.map { ($0.0, String(format: "−%.1f s", $0.1)) }
+        model.reviewCuts = merged.map { ($0.id, $0.time, String(format: "−%.1f s", $0.duration)) }
     }
     func stop() {
         for controller in EditorWindowController.allOpen { editorClosing(controller.model) }
@@ -488,6 +505,8 @@ enum AgentAccess: String, CaseIterable {
     // shortcut: drafts are memory-only and disappear when Recorder quits; persist only if recovery is requested.
     var draft: AgentDraft?
     var lastDraftVerdict: String?
+    var previewSuppressed = false
+    var shownLiveProjects: Set<String> = []
     @ObservationIgnored var renderTask: Task<[URL], Error>?
     var renderJobID: UUID?
     private let send: ([String: Any]) -> Void

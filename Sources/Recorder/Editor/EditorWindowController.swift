@@ -143,7 +143,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
     /// `Recorder --open <package>`; `RecordingController.finish`/the library call this too.
     @discardableResult
     static func open(package: URL) -> Task<EditorWindowController?, Never> {
-        let key = package.standardizedFileURL
+        let key = URL(fileURLWithPath: package.resolvingSymlinksInPath().path, isDirectory: true).standardizedFileURL
         if let existing = openWindows[key] {
             existing.focus()
             return Task { existing }
@@ -706,6 +706,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
     // (transport) then the timeline (tools). Their own unhandled keys bubble back here, hence the flag.
     private var isRoutingKey = false
     override func keyDown(with event: NSEvent) {
+        if event.keyCode == 53, MCPServer.shared.takeOverWatching(model) { return }
         if model.voiceover.isActive { previewView.keyDown(with: event); return }
         if VoiceoverRecorder.isShortcut(event), !isTextEditing { model.voiceover.toggle(); return }
         guard !isRoutingKey else { return super.keyDown(with: event) }
@@ -722,7 +723,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
     }
 
     override func cancelOperation(_ sender: Any?) {
-        if model.isReviewingDraft { return }
+        if model.isReviewingDraft { MCPServer.shared.takeOverWatching(model); return }
         if model.voiceover.isActive { model.voiceover.discard() }
         else { super.cancelOperation(sender) }
     }

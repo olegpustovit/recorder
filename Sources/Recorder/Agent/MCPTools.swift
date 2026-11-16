@@ -115,9 +115,15 @@ enum MCPTools {
             catch { throw MCPFailure(code: "INVALID_OP", message: "op \(index) has an invalid value; revise it using tools/list") }
         }
     }
-    @MainActor private static func requireEditable(_ model: EditorModel) throws {
+    @MainActor private static func requireEditable(_ model: EditorModel, draftSession: MCPSession? = nil, allowInvisible: Bool = false) throws {
         guard !model.voiceover.isActive else { throw MCPFailure(code: "PERMISSION_DENIED", message: "Recording a voiceover; stop it before editing or reviewing") }
-        guard !model.isReviewingDraft, !model.isEditingGesture, model.mediaImportStatus == nil else { throw MCPFailure(code: "REVIEW_IN_PROGRESS", message: "Finish the review, import or timeline gesture before editing") }
+        guard !model.isEditingGesture, model.mediaImportStatus == nil else { throw MCPFailure(code: "REVIEW_IN_PROGRESS", message: "Finish the import or timeline gesture before editing") }
+        if model.isReviewingDraft {
+            guard let session = draftSession, let owner = model.reviewSessionID, AgentAccess.level(for: model.liveProject.id) == .draft,
+                  (owner == session.id && model.isWatchingDraft) || (allowInvisible && owner != session.id) else {
+                throw MCPFailure(code: "REVIEW_IN_PROGRESS", message: "Finish the current review before editing or submitting another draft")
+            }
+        }
     }
     @MainActor private static func editContext(_ ops: [EditOp], model: EditorModel) async throws -> EditContext {
         var needsWords = false, needsSilence = false
@@ -133,7 +139,7 @@ enum MCPTools {
         return context
     }
     @MainActor private static func edit(_ action: String, _ args: [String: Any], model: EditorModel, session: MCPSession) async throws -> [String: Any] {
-        try requireEditable(model)
+        try requireEditable(model, draftSession: action == "apply" ? session : nil, allowInvisible: true)
         let level = AgentAccess.level(for: model.liveProject.id)
         guard level == .draft || level == .live else { throw MCPFailure(code: "PERMISSION_DENIED", message: "Editing needs Draft or Live access in the Claude tab") }
         let active = session.draft.flatMap { $0.verdict == nil ? $0 : nil }
@@ -157,7 +163,7 @@ enum MCPTools {
         let originalDraftID = session.draft?.id
         let context = try await editContext(ops, model: model)
         guard try MCPTools.model(for: session) === model else { throw MCPFailure(code: "NO_PROJECT", message: "Project changed during analysis; reopen it and retry") }
-        try requireAccess(model.liveProject, tool: "edit"); try requireEditable(model)
+        try requireAccess(model.liveProject, tool: "edit"); try requireEditable(model, draftSession: session, allowInvisible: true)
         guard level == AgentAccess.level(for: model.liveProject.id) else { throw MCPFailure(code: "PERMISSION_DENIED", message: "Access changed during analysis; check access and retry") }
         guard liveRevision == (try revision(model.liveProject)), originalDraftID == session.draft?.id,
               active?.revision == session.draft.flatMap({ $0.verdict == nil ? $0.revision : nil }),
@@ -175,13 +181,26 @@ enum MCPTools {
         if level == .draft {
             var draft = active ?? AgentDraft(base: liveRevision, baseProject: model.liveProject)
             result = try draft.append(ops, context: context)
-            if !dryRun, !ops.isEmpty { session.draft = draft; session.lastDraftVerdict = nil; session.reviewError = nil; nextRevision = draft.revision }
+            if !dryRun, !ops.isEmpty {
+                let previous = session.draft
+                session.draft = draft
+                do { try MCPServer.shared.review(session, watching: true) }
+                catch { session.draft = previous; throw error }
+                session.lastDraftVerdict = nil; session.reviewError = nil; nextRevision = session.draft?.revision ?? draft.revision
+                if active == nil, EditorWindowController.allOpen.first(where: { $0.model === model })?.window?.isKeyWindow == true {
+                    model.inspectorShowsAgent = true
+                }
+            }
         } else {
             result = try model.liveProject.applying(ops, context: context)
             if !dryRun, result.project != model.liveProject {
                 let summary = result.changes.first?.summary ?? "Edit"
                 model.edit("Claude: \(summary)\(result.changes.count > 1 ? " +\(result.changes.count - 1)" : "")") { $0 = result.project }
                 nextRevision = try revision(model.liveProject)
+                if session.shownLiveProjects.insert(model.liveProject.id).inserted,
+                   EditorWindowController.allOpen.first(where: { $0.model === model })?.window?.isKeyWindow == true {
+                    model.inspectorShowsAgent = true
+                }
             }
         }
         return ["revision": nextRevision, "mode": level.rawValue, "changes": try json(result.changes),
@@ -198,7 +217,7 @@ enum MCPTools {
         }
     }
     @MainActor private static func draft(_ action: String, _ args: [String: Any], model: EditorModel, session: MCPSession) async throws -> [String: Any] {
-        if action == "submit" { try requireEditable(model) }
+        if action == "submit" { try requireEditable(model, draftSession: session) }
         if action != "status", model.voiceover.isActive { throw MCPFailure(code: "PERMISSION_DENIED", message: "Recording a voiceover; stop it before reviewing") }
         if let draft = session.draft, draft.baseProject.id != model.liveProject.id, action != "discard" {
             throw MCPFailure(code: "NO_PROJECT", message: "Reopen the pending draft's project before checking or submitting it")
