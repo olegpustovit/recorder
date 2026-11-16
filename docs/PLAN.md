@@ -623,7 +623,7 @@ editing, read-only review guards, frozen autosave, stable replay IDs, privacy an
 | Status, activity and finite motion | T-814 | 1/1 |
 | Live preview + timeline motion | T-815 (includes T-816) | 1/1 |
 | Iteration, boundary snapping, anchors | T-817…T-819 | 3/3 |
-| Zoom documentation/grid + follow/ease | T-820…T-821 | 1/2 |
+| Zoom documentation/grid + follow/ease | T-820…T-821 | 2/2 |
 | Text styling, assets, draft playback | T-822…T-824 | 0/3 |
 
 - [x] **T-812 Grouped Changes and pinned Accept (includes T-813)** — Core pure row grouping, fixed
@@ -665,7 +665,7 @@ editing, read-only review guards, frozen autosave, stable replay IDs, privacy an
 - [x] **T-820 Zoom coordinates and debug grid** — Document normalized0–1 source-frame coordinates, top-left
   origin (schema description done in T-818); reject out-of-range values; optional debug grid in render.frames.
   Verify coordinate validation, grid geometry/render output and normal-frame parity/privacy.
-- [ ] **T-821 Cursor-follow zoom and easing** — Zoom op `follow:"cursor"` and existing Spring presets;
+- [x] **T-821 Cursor-follow zoom and easing** — Zoom op `follow:"cursor"` and existing Spring presets;
   reuse CursorPath and 240Hz camera paths. Verify Core mapping/follow/preset/persistence/replay and actual
   preview/export parity including cut/speed edges; MCP schema and native editing checks.
 - [ ] **T-822 Existing text styling fields** — Text op accepts inspector size/position/palette colour; no new
@@ -1627,3 +1627,5 @@ T-818 · 2026-11-16 · Added flat Codable snap options to clip-splitting cut/cut
 T-819 · 2026-11-16 · Time fields (from/to/at) on cut, cutPauses, speed, zoom, text, highlight, marker and update accept numeric seconds (documented base-revision semantics, unchanged) or `{marker:"id", offset}`; anchors resolve against the draft prefix after earlier ops in the batch, including markers created/updated/deleted earlier. Missing anchors, anchors in removed footage and out-of-range offsets are atomic errors; replay keeps stable ids and excluded anchors skip dependents with a reason. MCP schema `oneOf` number/anchor plus edit description updated. make test 203/203 passes; `mcp-edit --headless` passes anchor schema/decode/offset/exclusion/recovery with no windows. No GUI selftests, dependencies, format change, install, release or push. T-820…T-824 remain pending.
 
 T-820 · 2026-11-16 · Zoom center/text position validation (finite, 0–1, source frame, top-left) now has regression coverage for create and update and a clearer error. New optional `render.frames` `grid:true` overlays a labelled 0.1-step grid (pure Core `DebugGrid` geometry, magenta lines, 0/0.5/1 emphasised) after rendering; default path untouched so normal frames are byte-identical, key chips still hidden. Non-boolean grid or use outside render.frames is INVALID_OP. make test 205/205; `mcp-edit --headless` draws the grid on a synthetic PNG and asserts line pixels at normalized corners/centre. No GUI selftests, dependencies, format change or push. T-821…T-824 remain pending.
+
+T-821 · 2026-11-16 · Zoom ops (create and update) take `follow:"cursor"|"fixed"` and `ease:"focused|smooth|rapid|medium|slow"`. Cursor maps to the existing auto mode (CursorPath dead-zone tracking in the 240 Hz CameraPath table), fixed to manual; cursor with a center is an error, omitted follow keeps today's center-based default. Ease maps to the existing Spring presets via new optional `Zoom.ease` (saved only when set, absent/unknown decodes nil, so saved projects and format version are unchanged); CameraPath uses the zoom's preset for entry, tracking and its exit. Preview and export share the cached table through FrameState so they agree, including clip speed/cut edges via the existing timeScale. follow/ease on non-zoom updates are errors. make test 208/208 incl. entry/exit preset ordering, settle, legacy JSON, create/update/validation/JSON cases; `mcp-edit --headless` asserts schema enums and decode. No GUI selftests, dependencies, format version change or push. T-822…T-824 remain pending.

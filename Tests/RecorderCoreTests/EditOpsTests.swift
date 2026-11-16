@@ -15,6 +15,32 @@ import Testing
         }
     }
 
+    @Test func zoomFollowAndEaseCreateUpdateAndValidate() throws {
+        let base = project()
+        let cursor = try base.applying([.zoom(from: 1, to: 3, scale: 2, center: nil, follow: .cursor, ease: .rapid)], context: EditContext()).project
+        #expect(cursor.zooms[0].mode == .auto && cursor.zooms[0].ease == .rapid)
+        let fixed = try base.applying([.zoom(from: 1, to: 3, scale: 2, center: nil, follow: .fixed)], context: EditContext()).project
+        #expect(fixed.zooms[0].mode == .manual && fixed.zooms[0].center == NormPoint())
+        let implicit = try base.applying([.zoom(from: 1, to: 3, scale: 2, center: NormPoint(x: 0.2, y: 0.3))], context: EditContext()).project
+        #expect(implicit.zooms[0].mode == .manual && implicit.zooms[0].ease == nil)
+        #expect(throws: EditError.self) { try base.applying([.zoom(from: 1, to: 3, scale: 2, center: NormPoint(), follow: .cursor)], context: EditContext()) }
+        let id = cursor.zooms[0].id
+        let updated = try cursor.applying([.update(id: id, from: nil, to: nil, text: nil, position: nil, size: nil, scale: nil, center: nil, follow: .fixed, ease: .slow)], context: EditContext()).project
+        #expect(updated.zooms[0].mode == .manual && updated.zooms[0].ease == .slow)
+        let back = try updated.applying([.update(id: id, from: nil, to: nil, text: nil, position: nil, size: nil, scale: nil, center: nil, follow: .cursor)], context: EditContext()).project
+        #expect(back.zooms[0].mode == .auto && back.zooms[0].ease == .slow)
+        #expect(throws: EditError.self) { try cursor.applying([.update(id: id, from: nil, to: nil, text: nil, position: nil, size: nil, scale: nil, center: NormPoint(), follow: .cursor)], context: EditContext()) }
+        // follow/ease belong to zooms only.
+        let withText = try base.applying([.text(from: 1, to: 3, style: .label, text: "x", position: nil, size: nil)], context: EditContext()).project
+        #expect(throws: EditError.self) { try withText.applying([.update(id: withText.texts[0].id, from: nil, to: nil, text: nil, position: nil, size: nil, scale: nil, center: nil, ease: .rapid)], context: EditContext()) }
+        // JSON is flat and rejects unknown names.
+        let json = #"[{"op":"zoom","from":1,"to":3,"scale":2,"follow":"cursor","ease":"medium"},{"op":"update","id":"i","follow":"fixed","ease":"focused"}]"#
+        let ops = try JSONDecoder().decode([EditOp].self, from: Data(json.utf8))
+        #expect(try JSONDecoder().decode([EditOp].self, from: JSONEncoder().encode(ops)) == ops)
+        #expect(throws: DecodingError.self) { try JSONDecoder().decode(EditOp.self, from: Data(#"{"op":"zoom","from":1,"to":3,"scale":2,"ease":"bouncy"}"#.utf8)) }
+        #expect(throws: DecodingError.self) { try JSONDecoder().decode(EditOp.self, from: Data(#"{"op":"zoom","from":1,"to":3,"scale":2,"follow":"orbit"}"#.utf8)) }
+    }
+
     @Test func debugGridGeometryIsTenthsFromTopLeft() {
         let lines = DebugGrid.lines
         #expect(lines.count == 22)

@@ -22,6 +22,8 @@ enum MCPTools {
             ["type": "object", "properties": ["marker": ["type": "string", "minLength": 1], "offset": ["type": "number", "default": 0]], "required": ["marker"], "additionalProperties": false]]]
         let point: [String: Any] = ["type": "object", "properties": ["x": number, "y": number], "required": ["x", "y"], "additionalProperties": false]
         let center: [String: Any] = ["type": "object", "description": "Normalized 0–1 coordinates in the source frame; origin is the top-left corner.", "properties": ["x": ["type": "number", "minimum": 0, "maximum": 1], "y": ["type": "number", "minimum": 0, "maximum": 1]], "required": ["x", "y"], "additionalProperties": false]
+        let follow: [String: Any] = ["type": "string", "enum": ["cursor", "fixed"], "description": "cursor: the camera tracks the cursor (no center); fixed: hold center. Default: cursor when center is omitted, fixed otherwise."]
+        let ease: [String: Any] = ["type": "string", "enum": ZoomEase.allCases.map(\.rawValue), "description": "Camera easing preset for this zoom's entry, tracking and exit: focused, smooth, rapid, medium or slow. Default: the project's screen animation."]
         let rect: [String: Any] = ["type": "object", "properties": ["x": number, "y": number, "w": number, "h": number], "required": ["x", "y", "w", "h"], "additionalProperties": false]
         func op(_ name: String, _ properties: [String: Any], _ required: [String]) -> [String: Any] {
             var properties = properties
@@ -37,12 +39,12 @@ enum MCPTools {
             op("cutPauses", ["from": number, "to": number, "minDuration": number, "keepTail": number], []),
             op("cutWords", ["transcript": string, "words": ["type": "array", "items": string]], ["transcript", "words"]),
             op("speed", ["from": number, "to": number, "speed": number], ["from", "to", "speed"]),
-            op("zoom", ["from": number, "to": number, "scale": number, "center": center], ["from", "to", "scale"]),
+            op("zoom", ["from": number, "to": number, "scale": number, "center": center, "follow": follow, "ease": ease], ["from", "to", "scale"]),
             op("text", ["from": number, "to": number, "style": ["type": "string", "enum": TextBlock.Style.allCases.map(\.rawValue)], "text": string, "position": point, "size": number], ["from", "to", "style", "text"]),
             op("captions", ["maxWords": ["type": "integer", "minimum": 1, "maximum": 100]], []),
             op("highlight", ["from": number, "to": number, "rect": rect, "opacity": number], ["from", "to", "rect"]),
             op("marker", ["at": number, "label": string], ["at", "label"]),
-            op("update", ["id": string, "from": number, "to": number, "text": string, "position": point, "size": number, "scale": number, "center": center], ["id"]),
+            op("update", ["id": string, "from": number, "to": number, "text": string, "position": point, "size": number, "scale": number, "center": center, "follow": follow, "ease": ease], ["id"]),
             op("remove", ["id": string], ["id"]),
             op("style", ["patch": ["type": "object"]], ["patch"])
         ]

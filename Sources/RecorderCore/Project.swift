@@ -96,6 +96,20 @@ public struct Source: Codable, Equatable, Sendable {
     }
 }
 
+/// Per-zoom camera easing: the existing `Spring` presets, no new curves. `nil` on a zoom means the project's screen animation.
+public enum ZoomEase: String, Codable, CaseIterable, Sendable {
+    case focused, smooth, rapid, medium, slow
+    public var spring: Spring {
+        switch self {
+        case .focused: return .focused
+        case .smooth: return .smooth
+        case .rapid: return .cursorRapid
+        case .medium: return .cursorMedium
+        case .slow: return .cursorSmooth
+        }
+    }
+}
+
 public struct Zoom: Codable, Equatable, Sendable {
     public enum Mode: String, Codable, Sendable { case auto, manual }
     public var id: String
@@ -107,12 +121,13 @@ public struct Zoom: Codable, Equatable, Sendable {
     public var instant: Bool
     public var enabled: Bool
     public var color: BlockColor? = nil
+    public var ease: ZoomEase? = nil
     public init(id: String = makeProjectID().uuidString, start: Double = 0, end: Double = 3, scale: Double = 2,
-                mode: Mode = .manual, center: NormPoint = NormPoint(), instant: Bool = false, enabled: Bool = true) {
+                mode: Mode = .manual, center: NormPoint = NormPoint(), instant: Bool = false, enabled: Bool = true, ease: ZoomEase? = nil) {
         self.id = id; self.start = start; self.end = end; self.scale = scale
-        self.mode = mode; self.center = center; self.instant = instant; self.enabled = enabled
+        self.mode = mode; self.center = center; self.instant = instant; self.enabled = enabled; self.ease = ease
     }
-    enum CodingKeys: String, CodingKey { case id, start, end, scale, mode, center, instant, enabled, color }
+    enum CodingKeys: String, CodingKey { case id, start, end, scale, mode, center, instant, enabled, color, ease }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.value(.id, default: makeProjectID().uuidString)
@@ -124,6 +139,7 @@ public struct Zoom: Codable, Equatable, Sendable {
         instant = try c.value(.instant, default: false)
         enabled = try c.value(.enabled, default: true)
         color = try? c.decodeIfPresent(BlockColor.self, forKey: .color)
+        ease = try? c.decodeIfPresent(ZoomEase.self, forKey: .ease)
     }
 }
 

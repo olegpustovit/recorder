@@ -4805,6 +4805,18 @@ private final class MCPTestClient {
             throw MCPTestFailure(description: "Re-included marker anchor lost stable replay ids")
         }
         do {
+            let zoomSchema = MCPTools.operationSchemas.first { (($0["properties"] as? [String: Any])?["op"] as? [String: Any])?["enum"] as? [String] == ["zoom"] }
+            let zoomProperties = zoomSchema?["properties"] as? [String: Any]
+            guard (zoomProperties?["follow"] as? [String: Any])?["enum"] as? [String] == ["cursor", "fixed"],
+                  (zoomProperties?["ease"] as? [String: Any])?["enum"] as? [String] == ZoomEase.allCases.map(\.rawValue) else {
+                throw MCPTestFailure(description: "zoom schema lacks follow/ease enums")
+            }
+            let ops = try MCPTools.decodeOps([["op": "zoom", "from": 1, "to": 3, "scale": 2, "follow": "cursor", "ease": "rapid"]])
+            guard ops == [.zoom(from: 1, to: 3, scale: 2, center: nil, follow: .cursor, ease: .rapid)] else { throw MCPTestFailure(description: "zoom follow/ease decode") }
+            do { _ = try MCPTools.decodeOps([["op": "zoom", "from": 1, "to": 3, "scale": 2, "ease": "bouncy"]]); throw MCPTestFailure(description: "Unknown ease accepted") }
+            catch is MCPFailure { }
+        }
+        do {
             let w = 201, h = 101
             let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4, space: VideoColor.space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
             ctx.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 1)); ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
@@ -4818,7 +4830,7 @@ private final class MCPTestClient {
             let renderProperties = (tool?["inputSchema"] as? [String: Any])?["properties"] as? [String: Any]
             guard renderProperties?["grid"] != nil else { throw MCPTestFailure(description: "render schema lacks grid") }
         }
-        print("MCP edit headless: snap/anchor schemas and decoding, grid geometry/drawing, warnings, current-time offsets, frozen replay, exclusions/dependent reasons and stable recovery verified; no application windows created")
+        print("MCP edit headless: snap/anchor schemas and decoding, grid geometry/drawing, zoom follow/ease schema, warnings, current-time offsets, frozen replay, exclusions/dependent reasons and stable recovery verified; no application windows created")
         return
     }
     guard let path = args.first else { throw MCPTestFailure(description: "usage: mcp-edit <fixture.recorder>") }
