@@ -1233,11 +1233,24 @@ notifications when the client supplies a progress token. The shim exits if the a
 
 All tool times are **output seconds** at the supplied `ifRevision`; Core converts to source time before mutation.
 Reads and renders include the calling session's draft by default; final export renders the accepted live project.
-The twelve edit operations are `cut`, `cutPauses`, `cutWords`, `speed`, `zoom`, `text`, `captions`, `highlight`,
-`marker`, `update`, `remove` and `style`. IDs come from timeline/transcript reads. Revision conflicts return
+The thirteen edit operations are `cut`, `cutPauses`, `cutWords`, `speed`, `zoom`, `text`, `captions`, `highlight`,
+`marker`, `update`, `layer`, `remove` and `style`. IDs come from timeline/transcript reads. Revision conflicts return
 `STALE_REVISION`; transcript identity changes return `TRANSCRIPT_CHANGED`; invalid batches leave the project intact.
 Filler suggestions are lexical and depend on words retained by on-device recognition. Imported clips have no
 recorded transcript and are excluded from word/pause cuts.
+
+**Assets and layers.** `project.assets` lists the image/video media already used as layers (`asset` = its `media/…` file) and
+the other library recordings the agent may read (same per-recording access gate as `project.list`). A `layer` op places one
+on the timeline from exactly one source: `asset` (existing package media), `path` (an absolute image or video file) or
+`recording` (a library recording's `screen.mov`). Images need `from`/`to`; videos play their whole clip (omit `to`) and default to
+the editor's card placement; `rect` overrides it. Local paths must be regular image/video files, at most 4 GB, inside the home or
+temp folder, not hidden, not in `~/Library` (except the agent render cache) and not inside a `.recorder` package; symlinks are
+resolved first. The app probes the file with the editor's own import code, then copies it to an immutable `media/<uuid>.<ext>`
+in the package — the saved project is never written by a draft, so the copy is invisible to autosave and the saved project until
+Accept; files whose layer is discarded, excluded or replaced are removed, a failed call removes what it imported, and Core only
+ever sees imported `asset`s (carried in the draft call's frozen context so replay never touches the disk). Audio-only files,
+trimming a video layer and agent-chosen lanes are not offered. Orphans from a draft abandoned by quitting Recorder stay in the
+package's `media/` folder until removed by hand.
 
 Settings ▸ Agents offers **Connect** for Claude Code, **Copy JSON** for other clients, and live connection status.
 The complete schemas, error codes, operation examples and acceptance checks live in [MCP.md](MCP.md).

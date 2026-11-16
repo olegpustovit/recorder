@@ -4762,6 +4762,109 @@ private final class MCPTestClient {
     print("MCP review: native group/disclosure/seek/footer clicks, rapid reversal, \(reducedMotion ? "reduced" : "normal") motion samples, submitted iteration/exclusion/reason/identity retention, partial/group/zero-op acceptance, atomic group validation, seeded result, one undo, preview/disk/client isolation, edit/Escape guards, scrubbing, stale replay/discard, dependency recovery, disconnect and close verified; /tmp/recorder-mcp-review.png")
 }
 
+@MainActor private func checkMCPAssetsHeadless() async throws {
+    func fail(_ message: String) -> MCPTestFailure { MCPTestFailure(description: "layer assets: " + message) }
+    let fm = FileManager.default
+    let root = fm.temporaryDirectory.appendingPathComponent("recorder-assets-\(UUID().uuidString)", isDirectory: true).resolvingSymlinksInPath()
+    let outside = fm.temporaryDirectory.appendingPathComponent("recorder-outside-\(UUID().uuidString)", isDirectory: true).resolvingSymlinksInPath()
+    try fm.createDirectory(at: root, withIntermediateDirectories: true); try fm.createDirectory(at: outside, withIntermediateDirectories: true)
+    let savedRoots = MCPAssets.trustedRoots
+    MCPAssets.trustedRoots = [root]
+    defer { MCPAssets.trustedRoots = savedRoots; try? fm.removeItem(at: root); try? fm.removeItem(at: outside) }
+    let ctx = CGContext(data: nil, width: 64, height: 36, bitsPerComponent: 8, bytesPerRow: 256, space: VideoColor.space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    ctx.setFillColor(CGColor(red: 0.2, green: 0.4, blue: 0.9, alpha: 1)); ctx.fill(CGRect(x: 0, y: 0, width: 64, height: 36))
+    let png = NSBitmapImageRep(cgImage: ctx.makeImage()!).representation(using: .png, properties: [:])!
+    let card = root.appendingPathComponent("card.png"); try png.write(to: card)
+    try Data("hello".utf8).write(to: root.appendingPathComponent("notes.txt"))
+    try fm.createDirectory(at: root.appendingPathComponent(".hidden"), withIntermediateDirectories: true)
+    try png.write(to: root.appendingPathComponent(".hidden/a.png"))
+    try fm.createDirectory(at: root.appendingPathComponent("inner.recorder"), withIntermediateDirectories: true)
+    try png.write(to: root.appendingPathComponent("inner.recorder/a.png"))
+    try png.write(to: outside.appendingPathComponent("secret.png"))
+    try fm.createSymbolicLink(at: root.appendingPathComponent("link.png"), withDestinationURL: outside.appendingPathComponent("secret.png"))
+    guard try MCPAssets.trustedFile(card.path) == card else { throw fail("trusted png rejected") }
+    for bad in ["card.png", root.appendingPathComponent("notes.txt").path, root.appendingPathComponent(".hidden/a.png").path,
+                root.appendingPathComponent("inner.recorder/a.png").path, root.appendingPathComponent("link.png").path,
+                root.appendingPathComponent("missing.png").path, outside.appendingPathComponent("secret.png").path, "/etc/hosts", root.path] {
+        do { _ = try MCPAssets.trustedFile(bad); throw fail("accepted \(bad)") } catch is MCPFailure { }
+    }
+    let package = root.appendingPathComponent("pkg.recorder", isDirectory: true)
+    try fm.createDirectory(at: package, withIntermediateDirectories: true)
+    let project = Project(source: Source(duration: 20, hasMic: true), clips: [Clip(sourceStart: 0, sourceEnd: 20)])
+    func mediaFiles() -> [String] { ((try? fm.contentsOfDirectory(atPath: package.appendingPathComponent("media").path)) ?? []).sorted() }
+    // Two ops with the same path import one immutable copy; project.json is never written (draft isolation).
+    let ops: [EditOp] = [.layer(from: 1, to: 3, source: .path(card.path), rect: nil), .layer(from: 5, to: 7, source: .path(card.path), rect: nil)]
+    let resolution = try await MCPAssets.resolve(ops, package: package, project: project, library: [])
+    guard resolution.created.count == 1, mediaFiles().count == 1, !fm.fileExists(atPath: package.appendingPathComponent("project.json").path),
+          let asset = resolution.assets.values.first, asset.kind == .image, asset.width == 64, asset.height == 36,
+          resolution.ops.allSatisfy({ if case .layer(_, _, .asset(let file), _) = $0 { return file == asset.file }; return false }) else { throw fail("import/dedupe/isolation") }
+    guard try Data(contentsOf: resolution.created[0]) == png else { throw fail("copy is not byte-identical") }
+    // Applied through Core, replayed from a frozen context, and referenced media survives a purge while unreferenced media does not.
+    var draft = AgentDraft(base: try MCPTools.revision(project), baseProject: project)
+    let applied = try draft.append(resolution.ops, context: EditContext(assets: resolution.assets))
+    guard applied.project.layers.count == 2, draft.assets == resolution.assets,
+          try draft.refreshReview(context: EditContext()) == applied.project else { throw fail("draft replay lost the frozen media context") }
+    let session = MCPSession()
+    session.agentMedia = Set(resolution.assets.keys); session.agentMediaPackage = package
+    MCPAssets.purge(session, keeping: applied.project)
+    guard mediaFiles().count == 1, session.agentMedia.isEmpty else { throw fail("purge removed referenced media") }
+    session.agentMedia = Set(resolution.assets.keys); session.agentMediaPackage = package
+    MCPAssets.purge(session, keeping: project)
+    guard mediaFiles().isEmpty else { throw fail("purge kept unreferenced media") }
+    // Atomic failure: a later bad op removes everything imported earlier in the same call.
+    do {
+        _ = try await MCPAssets.resolve([ops[0], .layer(from: 4, to: 6, source: .path(root.appendingPathComponent("missing.png").path), rect: nil)], package: package, project: project, library: [])
+        throw fail("bad batch accepted")
+    } catch is MCPFailure { guard mediaFiles().isEmpty else { throw fail("failed call left media behind") } }
+    for source in [LayerSource.asset("media/nope.png"), .asset("../x.png"), .recording("nope")] {
+        do { _ = try await MCPAssets.resolve([.layer(from: 1, to: 3, source: source, rect: nil)], package: package, project: project, library: []); throw fail("accepted \(source)") }
+        catch is MCPFailure { }
+    }
+    // Existing layer media is listed and reusable by asset id; library lists others but never the current project.
+    let reuse = try await MCPAssets.resolve([.layer(from: 10, to: 12, source: .asset(asset.file), rect: nil)], package: package, project: applied.project, library: [], known: resolution.assets)
+    guard reuse.created.isEmpty, reuse.assets[asset.file] == asset else { throw fail("known asset not reused") }
+    let listing = MCPAssets.list(project: applied.project, library: [.init(id: project.id, title: "self", duration: 1, package: package), .init(id: "other", title: "Other", duration: 9, package: package)])
+    guard let layers = listing["layers"] as? [[String: Any]], layers.count == 1, layers[0]["asset"] as? String == asset.file, layers[0]["kind"] as? String == "image",
+          let library = listing["library"] as? [[String: Any]], library.count == 1, library[0]["recording"] as? String == "other" else { throw fail("assets listing") }
+    // Video: a generated 1 s movie imports as a video layer through a library recording's screen.mov, using the card placement rect.
+    let other = root.appendingPathComponent("other.recorder", isDirectory: true)
+    try fm.createDirectory(at: other, withIntermediateDirectories: true)
+    let movie = other.appendingPathComponent("screen.mov")
+    let writer = try AVAssetWriter(outputURL: movie, fileType: .mov)
+    let input = AVAssetWriterInput(mediaType: .video, outputSettings: [AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 64, AVVideoHeightKey: 36])
+    let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+        kCVPixelBufferWidthKey as String: 64, kCVPixelBufferHeightKey as String: 36])
+    writer.add(input); writer.startWriting(); writer.startSession(atSourceTime: .zero)
+    for frame in 0..<30 {
+        var buffer: CVPixelBuffer?
+        CVPixelBufferCreate(nil, 64, 36, kCVPixelFormatType_32BGRA, nil, &buffer)
+        guard let buffer else { throw fail("pixel buffer") }
+        CVPixelBufferLockBaseAddress(buffer, []); memset(CVPixelBufferGetBaseAddress(buffer), Int32(frame * 8), CVPixelBufferGetDataSize(buffer)); CVPixelBufferUnlockBaseAddress(buffer, [])
+        while !input.isReadyForMoreMediaData { try await Task.sleep(for: .milliseconds(5)) }
+        adaptor.append(buffer, withPresentationTime: CMTime(value: Int64(frame), timescale: 30))
+    }
+    input.markAsFinished(); await writer.finishWriting()
+    guard writer.status == .completed else { throw fail("could not write the test movie") }
+    let recording = MCPAssets.LibraryRecording(id: "other-id", title: "Other", duration: 1, package: other)
+    let video = try await MCPAssets.resolve([.layer(from: 2, to: nil, source: .recording("other-id"), rect: nil)], package: package, project: project, library: [recording])
+    guard video.created.count == 1, let clip = video.assets.values.first, clip.kind == .video, abs(clip.duration - 1) < 0.1, clip.width == 64, clip.height == 36, !clip.hasAudio,
+          case .layer(_, _, _, let placed?) = video.ops[0], placed == layerPlacementRect(.card, aspect: 64.0 / 36.0, canvas: outputSize(aspect: project.output.aspect,
+              croppedSource: CGSize(width: Double(project.source.pixelWidth) * project.crop.w, height: Double(project.source.pixelHeight) * project.crop.h), longEdge: 1000))
+    else { throw fail("recording import/probe/placement") }
+    let videoProject = try project.applying(video.ops, context: EditContext(assets: video.assets)).project
+    guard videoProject.layers.count == 1, videoProject.layers[0].kind == .video, abs(videoProject.layers[0].end - videoProject.layers[0].start - clip.duration) < 1e-9 else { throw fail("video layer apply") }
+    MCPAssets.removeFiles(video.created)
+    do { _ = try await MCPAssets.resolve([.layer(from: 1, to: nil, source: .recording(project.id), rect: nil)], package: package, project: project, library: [.init(id: project.id, title: "self", duration: 1, package: package)]); throw fail("self recording accepted") }
+    catch is MCPFailure { }
+    // Schema: layer op and project.assets action are advertised; sources decode through the MCP validator.
+    let schema = MCPTools.operationSchemas.first { (($0["properties"] as? [String: Any])?["op"] as? [String: Any])?["enum"] as? [String] == ["layer"] }
+    let projectTool = MCPTools.list.first { ($0["name"] as? String) == "project" }
+    let actions = (((projectTool?["inputSchema"] as? [String: Any])?["properties"] as? [String: Any])?["action"] as? [String: Any])?["enum"] as? [String]
+    guard schema != nil, actions?.contains("assets") == true,
+          try MCPTools.decodeOps([["op": "layer", "from": 1, "to": 3, "path": card.path]]).count == 1 else { throw fail("schema") }
+    do { _ = try MCPTools.decodeOps([["op": "layer", "from": 1, "to": 3]]); throw fail("sourceless layer decoded") } catch is MCPFailure { }
+}
+
 @MainActor private func checkMCPEdit(_ args: [String]) async throws {
     if args.contains("--headless") {
         let ops = try MCPTools.decodeOps([["op": "cut", "from": 0.01, "to": 1.0, "snap": true],
@@ -4836,7 +4939,8 @@ private final class MCPTestClient {
             let renderProperties = (tool?["inputSchema"] as? [String: Any])?["properties"] as? [String: Any]
             guard renderProperties?["grid"] != nil else { throw MCPTestFailure(description: "render schema lacks grid") }
         }
-        print("MCP edit headless: snap/anchor schemas and decoding, grid geometry/drawing, zoom follow/ease and text colour/size schema, warnings, current-time offsets, frozen replay, exclusions/dependent reasons and stable recovery verified; no application windows created")
+        try await checkMCPAssetsHeadless()
+        print("MCP edit headless: layer assets (trusted paths, immutable import, dedupe, isolation, atomic failure, purge, replay), snap/anchor schemas and decoding, grid geometry/drawing, zoom follow/ease and text colour/size schema, warnings, current-time offsets, frozen replay, exclusions/dependent reasons and stable recovery verified; no application windows created")
         return
     }
     guard let path = args.first else { throw MCPTestFailure(description: "usage: mcp-edit <fixture.recorder>") }

@@ -47,6 +47,10 @@ enum MCPTools {
             op("highlight", ["from": number, "to": number, "rect": rect, "opacity": number], ["from", "to", "rect"]),
             op("marker", ["at": number, "label": string], ["at", "label"]),
             op("update", ["id": string, "from": number, "to": number, "text": string, "position": point, "size": textSize, "scale": number, "center": center, "follow": follow, "ease": ease, "color": color], ["id"]),
+            op("layer", ["from": number, "to": number, "asset": ["type": "string", "description": "A media/ file listed by project.assets (reuse an existing layer's media)."],
+                "path": ["type": "string", "description": "Absolute path to an image or video in your home or temp folder; imported into the project when applied."],
+                "recording": ["type": "string", "description": "A library recording id from project.assets; its screen video becomes a video layer."],
+                "rect": rect], ["from"]),
             op("remove", ["id": string], ["id"]),
             op("style", ["patch": ["type": "object"]], ["patch"])
         ]
@@ -65,7 +69,7 @@ enum MCPTools {
                     "inputSchema": ["type": "object", "properties": properties, "required": ["action"], "additionalProperties": false]]
         }
         return [
-            tool("project", ["list", "open", "info"], "List recordings, open one by id or package path, or read its summary and revision.", ["id": string, "path": string], read: true),
+            tool("project", ["list", "open", "info", "assets"], "List recordings, open one by id or package path, read its summary and revision, or list the media a layer op can use (assets).", ["id": string, "path": string], read: true),
             tool("timeline", ["get"], "Read clips, effect blocks and markers in output seconds.", range, read: true),
             tool("transcript", ["get"], "Read up to 2000 spoken words with stable wN ids, or timestamped phrases. Key presses are never returned.", range.merging(["format": ["type": "string", "enum": ["words", "phrases"]]], uniquingKeysWith: { _, b in b }), read: true),
             tool("analyze", ["transcribe", "pauses", "fillers", "activity"], "Transcribe on-device, find mic pauses/fillers, or read activity ranges without key characters.", ["minDuration": number, "threshold": number], read: true),
@@ -109,7 +113,7 @@ enum MCPTools {
         try JSONSerialization.jsonObject(with: JSONEncoder().encode(value))
     }
     static func decodeOps(_ value: Any?) throws -> [EditOp] {
-        guard let values = value as? [[String: Any]] else { throw MCPFailure(code: "INVALID_OP", message: "edit.apply needs ops: [EditOp]; use tools/list for the twelve op schemas") }
+        guard let values = value as? [[String: Any]] else { throw MCPFailure(code: "INVALID_OP", message: "edit.apply needs ops: [EditOp]; use tools/list for the op schemas") }
         return try values.enumerated().map { index, value in
             guard let name = value["op"] as? String, let schema = operationSchemas.first(where: {
                 (($0["properties"] as? [String: Any])?["op"] as? [String: Any])?["enum"] as? [String] == [name]
@@ -172,9 +176,16 @@ enum MCPTools {
         guard sent == expected, active == nil || active?.base == liveRevision else {
             throw MCPFailure(code: "STALE_REVISION", message: "Editor is at \(liveRevision), draft is at \(expected); call timeline.get, then discard/review any stale draft and retry")
         }
-        let ops = try decodeOps(args["ops"])
+        let decoded = try decodeOps(args["ops"])
         let originalDraftID = session.draft?.id
-        let context = try await editContext(ops, model: model)
+        let dryRun = args["dryRun"] as? Bool ?? false
+        let resolution = try await MCPAssets.resolve(decoded, package: model.packageURL, project: model.liveProject, library: decoded.contains(where: { if case .layer(_, _, .recording, _) = $0 { return true }; return false }) ? await libraryRecordings() : [],
+                                                     known: session.draft?.assets ?? [:])
+        var keepImported = false
+        defer { if !keepImported || dryRun { MCPAssets.removeFiles(resolution.created) } }
+        let ops = resolution.ops
+        var context = try await editContext(ops, model: model)
+        context.assets = resolution.assets
         guard try MCPTools.model(for: session) === model else { throw MCPFailure(code: "NO_PROJECT", message: "Project changed during analysis; reopen it and retry") }
         try requireAccess(model.liveProject, tool: "edit"); try requireEditable(model, draftSession: session, allowInvisible: true)
         guard level == AgentAccess.level(for: model.liveProject.id) else { throw MCPFailure(code: "PERMISSION_DENIED", message: "Access changed during analysis; check access and retry") }
@@ -189,7 +200,6 @@ enum MCPTools {
         if ops.contains(where: { switch $0 { case .cutWords, .captions: return true; default: return false } }), context.words != model.transcript {
             throw MCPFailure(code: "TRANSCRIPT_CHANGED", message: "Transcript changed during analysis; call transcript.get and retry")
         }
-        let dryRun = args["dryRun"] as? Bool ?? false
         let before = try viewedProject(model, session: session)
         let result: (project: Project, changes: [EditChange])
         var nextRevision = expected
@@ -217,6 +227,11 @@ enum MCPTools {
                     model.inspectorShowsAgent = true
                 }
             }
+        }
+        if !dryRun, !resolution.created.isEmpty {
+            keepImported = true
+            session.agentMedia.formUnion(resolution.created.map { "media/" + $0.lastPathComponent })
+            session.agentMediaPackage = model.packageURL
         }
         return ["revision": nextRevision, "mode": level.rawValue, "changes": try json(result.changes),
                 "duration": ["before": before.exportDuration, "after": result.project.exportDuration], "warnings": warnings(result.project, changes: result.changes), "dryRun": dryRun]
@@ -333,6 +348,7 @@ enum MCPTools {
                 let viewed = try viewedProject(model, session: session)
                 switch (name, action) {
                 case ("project", "info"): payload = info(model, project: viewed)
+                case ("project", "assets"): payload = MCPAssets.list(project: viewed, library: await libraryRecordings())
                 case ("timeline", "get"):
                     let bounds = try bounds(args, duration: viewed.exportDuration)
                     payload = try object(agentTimeline(viewed, from: bounds.0, to: bounds.1))
@@ -446,6 +462,7 @@ enum MCPTools {
                 case .update: kind = "update"
                 case .remove: kind = "remove"
                 case .style: kind = "style"
+                case .layer: kind = "layer"
                 default: kind = AgentChangeKind(op).rawValue.lowercased()
                 }
                 if !kinds.contains(kind) { kinds.append(kind) }
@@ -458,6 +475,7 @@ enum MCPTools {
         case ("project", "list"): return "Reading recordings"
         case ("project", "open"): return "Opening recording"
         case ("project", "info"): return "Reading project"
+        case ("project", "assets"): return "Reading assets"
         case ("timeline", "get"): return "Reading timeline"
         case ("transcript", "get"): return "Reading transcript"
         case ("analyze", "pauses"): return "Finding pauses"
@@ -667,6 +685,10 @@ enum MCPTools {
         return (payload, content)
     }
 
+    @MainActor static func libraryRecordings() async -> [MCPAssets.LibraryRecording] {
+        await libraryItems().filter { AgentAccess.level(for: $0.projectID) != .off }
+            .map { MCPAssets.LibraryRecording(id: $0.projectID, title: $0.title, duration: $0.duration, package: $0.id.resolvingSymlinksInPath().standardizedFileURL) }
+    }
     @MainActor private static func libraryItems() async -> [ProjectStore.Item] {
         let store = ProjectStore(folder: RecordingSettings.shared.projectsFolder)
         await withCheckedContinuation { continuation in store.reload { continuation.resume() } }

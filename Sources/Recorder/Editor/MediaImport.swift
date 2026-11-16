@@ -93,50 +93,60 @@ extension EditorModel {
         return true
     }
 
-    @discardableResult
-    func importMedia(_ url: URL, atOutput time: Double, slot: TimeRange? = nil, track: Int = 0, replacing: UUID? = nil) async throws -> UUID {
+    struct ProbedMedia: Sendable {
+        var kind: LayerBlock.Kind?
+        var duration: Double
+        var width: Double
+        var height: Double
+        var audio: Bool
+    }
+    /// Read-only decodability probe; `kind == nil` means audio-only.
+    nonisolated static func probeMedia(_ url: URL) async throws -> ProbedMedia {
         @Sendable func fail(_ message: String) -> NSError { NSError(domain: "Recorder.MediaImport", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
-        guard !voiceover.isActive, !isReviewingDraft, mediaImportStatus == nil else { throw fail("Finish the current review, recording or import first.") }
-        guard !isEditingGesture else { throw fail("Finish or cancel the current drag before adding media.") }
-        guard url.isFileURL, time.isFinite, time >= 0 else { throw fail("Choose a local media file and a valid timeline position.") }
-        mediaImportStatus = "Importing \(url.lastPathComponent)…"
-        defer { mediaImportStatus = nil }
-        let package = packageURL
-        let copied = try await Task.detached(priority: .userInitiated) { () -> (file: String, url: URL, kind: LayerBlock.Kind?, duration: Double, width: Double, height: Double, audio: Bool) in
-            let scoped = url.startAccessingSecurityScopedResource()
-            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-            guard try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else { throw fail("The file is unreadable or is not a regular file.") }
-            var kind: LayerBlock.Kind?
-            var duration = 0.0, width = 0.0, height = 0.0
-            var audio = false
-            if let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-               let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceThumbnailMaxPixelSize: 2048] as CFDictionary) {
-                kind = .image; width = Double(image.width); height = Double(image.height)
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        guard try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else { throw fail("The file is unreadable or is not a regular file.") }
+        var kind: LayerBlock.Kind?
+        var duration = 0.0, width = 0.0, height = 0.0
+        var audio = false
+        if let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+           let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceThumbnailMaxPixelSize: 2048] as CFDictionary) {
+            kind = .image; width = Double(image.width); height = Double(image.height)
+        } else {
+            let asset = AVURLAsset(url: url)
+            let videos = try await asset.loadTracks(withMediaType: .video)
+            let audios = try await asset.loadTracks(withMediaType: .audio)
+            duration = try await asset.load(.duration).seconds
+            guard duration.isFinite, duration > 0, try await asset.load(.isReadable) else { throw fail("The media cannot be decoded.") }
+            audio = !audios.isEmpty
+            if let video = videos.first {
+                kind = .video
+                let size = try await video.load(.naturalSize), transform = try await video.load(.preferredTransform)
+                let oriented = CGRect(origin: .zero, size: size).applying(transform)
+                width = Double(abs(oriented.width)); height = Double(abs(oriented.height))
+                guard width > 0, height > 0 else { throw fail("The video has no readable frames.") }
+                let generator = AVAssetImageGenerator(asset: asset); generator.appliesPreferredTrackTransform = true
+                _ = try await generator.image(at: .zero)
             } else {
-                let asset = AVURLAsset(url: url)
-                let videos = try await asset.loadTracks(withMediaType: .video)
-                let audios = try await asset.loadTracks(withMediaType: .audio)
-                duration = try await asset.load(.duration).seconds
-                guard duration.isFinite, duration > 0, try await asset.load(.isReadable) else { throw fail("The media cannot be decoded.") }
-                audio = !audios.isEmpty
-                if let video = videos.first {
-                    kind = .video
-                    let size = try await video.load(.naturalSize), transform = try await video.load(.preferredTransform)
-                    let oriented = CGRect(origin: .zero, size: size).applying(transform)
-                    width = Double(abs(oriented.width)); height = Double(abs(oriented.height))
-                    guard width > 0, height > 0 else { throw fail("The video has no readable frames.") }
-                    let generator = AVAssetImageGenerator(asset: asset); generator.appliesPreferredTrackTransform = true
-                    _ = try await generator.image(at: .zero)
-                } else {
-                    guard let track = audios.first else { throw fail("No readable audio or video track was found.") }
-                    let reader = try AVAssetReader(asset: asset)
-                    let output = AVAssetReaderTrackOutput(track: track, outputSettings: [AVFormatIDKey: kAudioFormatLinearPCM])
-                    guard reader.canAdd(output) else { throw fail("The audio cannot be decoded.") }
-                    reader.add(output)
-                    guard reader.startReading(), output.copyNextSampleBuffer() != nil else { throw fail("The audio cannot be decoded.") }
-                    reader.cancelReading()
-                }
+                guard let track = audios.first else { throw fail("No readable audio or video track was found.") }
+                let reader = try AVAssetReader(asset: asset)
+                let output = AVAssetReaderTrackOutput(track: track, outputSettings: [AVFormatIDKey: kAudioFormatLinearPCM])
+                guard reader.canAdd(output) else { throw fail("The audio cannot be decoded.") }
+                reader.add(output)
+                guard reader.startReading(), output.copyNextSampleBuffer() != nil else { throw fail("The audio cannot be decoded.") }
+                reader.cancelReading()
             }
+        }
+        return ProbedMedia(kind: kind, duration: duration, width: width, height: height, audio: audio)
+    }
+    struct ImportedMedia: Sendable { var file: String, url: URL, kind: LayerBlock.Kind?, duration: Double, width: Double, height: Double, audio: Bool }
+    /// Probes a local media file and copies it into `package/media/<uuid>.<ext>`. Shared by the editor's Add Media and the agent's
+    /// `layer` op so both validate decodability the same way. Never modifies project.json; the copy is removed if anything fails.
+    nonisolated static func copyMedia(_ url: URL, into package: URL) async throws -> ImportedMedia {
+        @Sendable func fail(_ message: String) -> NSError { NSError(domain: "Recorder.MediaImport", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
+        return try await Task.detached(priority: .userInitiated) { () -> ImportedMedia in
+            let probe = try await probeMedia(url)
+            let (kind, duration, width, height, audio) = (probe.kind, probe.duration, probe.width, probe.height, probe.audio)
             let root = package.standardizedFileURL.resolvingSymlinksInPath()
             let directory = package.appendingPathComponent("media", isDirectory: true)
             guard directory.resolvingSymlinksInPath().deletingLastPathComponent() == root else { throw fail("The package media folder points outside the project.") }
@@ -146,8 +156,19 @@ extension EditorModel {
             let destination = package.appendingPathComponent(file)
             do { try FileManager.default.copyItem(at: url, to: destination) }
             catch { try? FileManager.default.removeItem(at: destination); throw error }
-            return (file, destination, kind, duration, width, height, audio)
+            return ImportedMedia(file: file, url: destination, kind: kind, duration: duration, width: width, height: height, audio: audio)
         }.value
+    }
+
+    @discardableResult
+    func importMedia(_ url: URL, atOutput time: Double, slot: TimeRange? = nil, track: Int = 0, replacing: UUID? = nil) async throws -> UUID {
+        @Sendable func fail(_ message: String) -> NSError { NSError(domain: "Recorder.MediaImport", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
+        guard !voiceover.isActive, !isReviewingDraft, mediaImportStatus == nil else { throw fail("Finish the current review, recording or import first.") }
+        guard !isEditingGesture else { throw fail("Finish or cancel the current drag before adding media.") }
+        guard url.isFileURL, time.isFinite, time >= 0 else { throw fail("Choose a local media file and a valid timeline position.") }
+        mediaImportStatus = "Importing \(url.lastPathComponent)…"
+        defer { mediaImportStatus = nil }
+        let copied = try await Self.copyMedia(url, into: packageURL)
         var committed = false
         defer { if !committed { try? FileManager.default.removeItem(at: copied.url) } }
         guard !voiceover.isActive, !isReviewingDraft else { throw fail("Finish recording or reviewing before adding media.") }

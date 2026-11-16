@@ -123,7 +123,7 @@ Nine tools, each with an `action` string (Resolve's MCP shows that grouping keep
 
 | Tool | Actions → result (all results include `project` id and `revision`) |
 |------|---------------------------------------------------------------------|
-| `project` | `list` → `[{id,title,path,duration,modified,hasMic}]` · `open {id\|path}` → opens the editor window, returns `info` · `info` → `{title,duration,size:{w,h},clips,lanes:{zoom,text,mask,…counts},hasMic,hasCamera,transcribed,access}` |
+| `project` | `list` → `[{id,title,path,duration,modified,hasMic}]` · `open {id\|path}` → opens the editor window, returns `info` · `info` → `{title,duration,size:{w,h},clips,lanes:{zoom,text,mask,…counts},hasMic,hasCamera,transcribed,access}` · `assets` → `{layers:[{asset,kind,id,from,to}], library:[{recording,title,duration}]}` (media a `layer` op can use) |
 | `timeline` | `get {from?,to?}` → `AgentTimeline` (§T-801) |
 | `transcript` | `get {from?,to?,format:"words"\|"phrases"}` → `AgentTranscript` (§T-801). `NOT_TRANSCRIBED` if `model.transcript == nil`. |
 | `analyze` | `transcribe` (async, progress) · `pauses {minDuration=0.6,threshold=0.02}` → `[{from,to}]` · `fillers` → `[{word,from,to,text}]` · `activity` → `{idle:[…],typing:[…],clicks:[t…]}` (ranges only, never characters) |

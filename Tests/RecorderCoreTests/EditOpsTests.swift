@@ -65,6 +65,62 @@ import Testing
         #expect(throws: DecodingError.self) { try JSONDecoder().decode(EditOp.self, from: Data(##"{"op":"text","from":1,"to":3,"style":"label","text":"a","color":"#ff0000"}"##.utf8)) }
     }
 
+    private func assetContext() -> EditContext {
+        EditContext(assets: [
+            "media/card.png": MediaAsset(file: "media/card.png", kind: .image, width: 1600, height: 900),
+            "media/clip.mov": MediaAsset(file: "media/clip.mov", kind: .video, duration: 4, width: 1920, height: 1080, hasAudio: true)])
+    }
+
+    @Test func layerOpAddsImagesAndVideosFromImportedAssets() throws {
+        let base = project()
+        let image = try base.applying([.layer(from: 2, to: 5, source: .asset("media/card.png"), rect: nil)], context: assetContext())
+        let layer = try #require(image.project.layers.first)
+        #expect(layer.kind == .image && layer.file == "media/card.png" && layer.start == 2 && layer.end == 5 && layer.rect == NormRect())
+        #expect(image.project.checkInvariants(mediaDurations: [:]) == nil && image.changes[0].summary.contains("image layer"))
+        let rect = NormRect(x: 0.2, y: 0.2, w: 0.5, h: 0.4)
+        let video = try base.applying([.layer(from: 6, to: nil, source: .asset("media/clip.mov"), rect: rect)], context: assetContext())
+        #expect(video.project.layers[0].kind == .video && video.project.layers[0].end - video.project.layers[0].start == 4 && video.project.layers[0].rect == rect)
+        let linked = video.project.audioClips.filter { $0.layer == video.project.layers[0].id }
+        #expect(linked.count == 1 && linked[0].file == "media/clip.mov" && linked[0].start == 6 && linked[0].end == 10)
+        // Same context + seeds replay to the same project.
+        let seeded = EditContext(operationSeeds: ["layer"], assets: assetContext().assets)
+        let ops: [EditOp] = [.layer(from: 1, to: 3, source: .asset("media/card.png"), rect: nil)]
+        #expect(try base.applying(ops, context: seeded).project == base.applying(ops, context: seeded).project)
+    }
+
+    @Test func layerOpValidatesSourcesRangesAndBatchOrder() throws {
+        let base = project()
+        // Not imported / still a raw path or recording: Core refuses.
+        for source in [LayerSource.asset("media/missing.png"), .path("/tmp/a.png"), .recording("r")] {
+            #expect(throws: EditError.self) { try base.applying([.layer(from: 1, to: 3, source: source, rect: nil)], context: assetContext()) }
+        }
+        #expect(throws: EditError.self) { try base.applying([.layer(from: 1, to: nil, source: .asset("media/card.png"), rect: nil)], context: assetContext()) }
+        #expect(throws: EditError.self) { try base.applying([.layer(from: 1, to: 3, source: .asset("media/clip.mov"), rect: nil)], context: assetContext()) }
+        #expect(throws: EditError.self) { try base.applying([.layer(from: 3, to: 3, source: .asset("media/card.png"), rect: nil)], context: assetContext()) }
+        #expect(throws: EditError.self) { try base.applying([.layer(from: 1, to: 1.2, source: .asset("media/card.png"), rect: nil)], context: assetContext()) }
+        #expect(throws: EditError.self) { try base.applying([.layer(from: 1, to: 3, source: .asset("media/card.png"), rect: NormRect(x: 0.8, y: 0, w: 0.5, h: 0.5))], context: assetContext()) }
+        // A later layer sees earlier cuts in the same batch: a marker anchor keeps pointing at the same footage.
+        let marked = try base.applying([.marker(at: 10, label: "Demo")], context: EditContext()).project
+        let markerID = try #require(marked.markers.first?.id)
+        let batch = try marked.applying([.cut(from: 2, to: 4),
+            .layer(from: .marker(markerID), to: .marker(markerID, offset: 2), source: .asset("media/card.png"), rect: nil)], context: assetContext()).project
+        let anchored = try #require(batch.markers.first)
+        #expect(batch.layers[0].start == anchored.time && batch.layers[0].end == anchored.time + 2)
+        // Overlapping layers use another lane, atomically.
+        let two = try base.applying([.layer(from: 1, to: 4, source: .asset("media/card.png"), rect: nil), .layer(from: 2, to: 5, source: .asset("media/card.png"), rect: nil)], context: assetContext())
+        #expect(Set(two.project.layers.map(\.track)).count == 2 && two.project.checkInvariants(mediaDurations: [:]) == nil)
+    }
+
+    @Test func layerOpJSONNeedsExactlyOneSource() throws {
+        let good = #"[{"op":"layer","from":1,"to":3,"asset":"media/a.png"},{"op":"layer","from":1,"path":"/Users/x/a.mov","rect":{"x":0,"y":0,"w":0.5,"h":0.5}},{"op":"layer","from":1,"recording":"r1"}]"#
+        let ops = try JSONDecoder().decode([EditOp].self, from: Data(good.utf8))
+        #expect(ops.count == 3 && ops[1] == .layer(from: 1, to: nil, source: .path("/Users/x/a.mov"), rect: NormRect(x: 0, y: 0, w: 0.5, h: 0.5)))
+        #expect(try JSONDecoder().decode([EditOp].self, from: JSONEncoder().encode(ops)) == ops)
+        for bad in [#"{"op":"layer","from":1,"to":3}"#, #"{"op":"layer","from":1,"to":3,"asset":"a","path":"/b"}"#] {
+            #expect(throws: DecodingError.self) { try JSONDecoder().decode(EditOp.self, from: Data(bad.utf8)) }
+        }
+    }
+
     @Test func debugGridGeometryIsTenthsFromTopLeft() {
         let lines = DebugGrid.lines
         #expect(lines.count == 22)

@@ -77,6 +77,26 @@ public enum EditTime: Codable, Equatable, Sendable, ExpressibleByIntegerLiteral,
 
 public enum ZoomFollow: String, Codable, Sendable { case cursor, fixed }
 
+/// Media already inside the package (`media/<uuid>.<ext>`), probed once by the app and carried in `EditContext`
+/// so a draft replays the same layer without touching the disk again.
+public struct MediaAsset: Codable, Equatable, Sendable {
+    public var file: String
+    public var kind: LayerBlock.Kind
+    public var duration: Double
+    public var width: Double
+    public var height: Double
+    public var hasAudio: Bool
+    public init(file: String, kind: LayerBlock.Kind, duration: Double = 0, width: Double, height: Double, hasAudio: Bool = false) {
+        self.file = file; self.kind = kind; self.duration = duration; self.width = width; self.height = height; self.hasAudio = hasAudio
+    }
+}
+
+/// Where a `layer` op gets its media. Only `.asset` reaches Core; the app turns `.path` (a trusted local file) and
+/// `.recording` (a library recording's screen video) into an imported `.asset` before the op is applied or stored.
+public enum LayerSource: Equatable, Sendable {
+    case asset(String), path(String), recording(String)
+}
+
 public enum EditOp: Codable, Equatable, Sendable {
     case cut(from: EditTime, to: EditTime, snap: Bool = false)
     case cutPauses(minDuration: Double, keepTail: Double, from: EditTime?, to: EditTime?, snap: Bool = true)
@@ -90,9 +110,10 @@ public enum EditOp: Codable, Equatable, Sendable {
     case update(id: String, from: EditTime?, to: EditTime?, text: String?, position: NormPoint?, size: Double?, scale: Double?, center: NormPoint?, follow: ZoomFollow? = nil, ease: ZoomEase? = nil, color: BlockColor? = nil)
     case remove(id: String)
     case style(patch: [String: JSONValue])
+    case layer(from: EditTime, to: EditTime?, source: LayerSource, rect: NormRect?)
 
     private enum CodingKeys: String, CodingKey {
-        case op, from, to, minDuration, keepTail, transcript, words, speed, scale, center, style, text, position, size, maxWords, rect, opacity, at, label, id, patch, snap, follow, ease, color
+        case op, from, to, minDuration, keepTail, transcript, words, speed, scale, center, style, text, position, size, maxWords, rect, opacity, at, label, id, patch, snap, follow, ease, color, asset, path, recording
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -111,6 +132,13 @@ public enum EditOp: Codable, Equatable, Sendable {
         case "update": self = try .update(id: get(.id), from: optional(.from), to: optional(.to), text: optional(.text), position: optional(.position), size: optional(.size), scale: optional(.scale), center: optional(.center), follow: optional(.follow), ease: optional(.ease), color: optional(.color))
         case "remove": self = try .remove(id: get(.id))
         case "style": self = try .style(patch: get(.patch))
+        case "layer":
+            let sources: [(CodingKeys, (String) -> LayerSource)] = [(.asset, { .asset($0) }), (.path, { .path($0) }), (.recording, { .recording($0) })]
+            let given = try sources.compactMap { key, make in try optional(key).map { (value: String) in make(value) } }
+            guard given.count == 1 else {
+                throw DecodingError.dataCorruptedError(forKey: .op, in: c, debugDescription: "layer needs exactly one of asset, path or recording")
+            }
+            self = try .layer(from: get(.from), to: optional(.to), source: given[0], rect: optional(.rect))
         default: throw DecodingError.dataCorruptedError(forKey: .op, in: c, debugDescription: "Unknown edit op; use an op from edit.apply's schema")
         }
     }
@@ -139,6 +167,13 @@ public enum EditOp: Codable, Equatable, Sendable {
             try optional(position, .position); try optional(size, .size); try optional(scale, .scale); try optional(center, .center); try optional(follow, .follow); try optional(ease, .ease); try optional(color, .color)
         case let .remove(id): try put("remove", .op); try put(id, .id)
         case let .style(patch): try put("style", .op); try put(patch, .patch)
+        case let .layer(from, to, source, rect):
+            try put("layer", .op); try put(from, .from); try optional(to, .to); try optional(rect, .rect)
+            switch source {
+            case .asset(let value): try put(value, .asset)
+            case .path(let value): try put(value, .path)
+            case .recording(let value): try put(value, .recording)
+            }
         }
     }
     var snapsClipBoundaries: Bool {
@@ -153,8 +188,10 @@ public struct EditContext: Sendable {
     public var words: [Word]
     public var silent: [TimeRange]
     public var operationSeeds: [String]
-    public init(words: [Word] = [], silent: [TimeRange] = [], operationSeeds: [String] = []) {
-        self.words = words; self.silent = silent; self.operationSeeds = operationSeeds
+    /// Probed media files keyed by package-relative path; `layer` ops may only name files listed here.
+    public var assets: [String: MediaAsset]
+    public init(words: [Word] = [], silent: [TimeRange] = [], operationSeeds: [String] = [], assets: [String: MediaAsset] = [:]) {
+        self.words = words; self.silent = silent; self.operationSeeds = operationSeeds; self.assets = assets
     }
 }
 public struct EditChange: Codable, Equatable, Sendable {
@@ -372,6 +409,22 @@ public extension Project {
             case .remove(let id):
                 guard let block = try block(id) else { throw EditError.invalidOp(index: index, reason: "unknown block \(id)") }
                 at = baseMap.outputTime(atSource: block.1) ?? 0
+            case let .layer(from, to, source, _):
+                guard case .asset(let file) = source, let asset = context.assets[file] else {
+                    throw EditError.invalidOp(index: index, reason: "layer media is not imported; pass asset from project.assets, or a path/recording through edit.apply")
+                }
+                let start = try coordinate(from)
+                at = start.output
+                if from.isAnchor { sourceAt = start.source }
+                if asset.kind == .video {
+                    guard to == nil else { throw EditError.invalidOp(index: index, reason: "video layers play their whole clip; omit to") }
+                    resolved = [TimeRange(start: start.source, end: start.source)]
+                } else {
+                    guard let to else { throw EditError.invalidOp(index: index, reason: "image layers need to") }
+                    let end = try coordinate(to)
+                    guard end.source > start.source else { throw EditError.outOfRange(index: index, reason: "layer range must have from < to") }
+                    resolved = [TimeRange(start: start.source, end: end.source)]
+                }
             case .captions, .style: break
             }
             prepared.append((op, mergedEditRanges(resolved), at, note, sourceAt))
@@ -464,6 +517,27 @@ public extension Project {
                         throw EditError.invalidOp(index: index, reason: "highlight needs a normalized rect, opacity 0–1 and a free range of at least 0.5 source seconds")
                     }
                     summary = "Highlight \(stamp(item.at))"
+                case let .layer(_, _, source, rect):
+                    guard case .asset(let file) = source, let asset = context.assets[file], let span = item.ranges.first,
+                          asset.kind != .recording, asset.width > 0, asset.height > 0, asset.width.isFinite, asset.height.isFinite else {
+                        throw EditError.invalidOp(index: index, reason: "layer media is not imported")
+                    }
+                    if let rect, ![rect.x, rect.y, rect.w, rect.h].allSatisfy(\.isFinite) || rect.x < 0 || rect.y < 0 || rect.w <= 0 || rect.h <= 0 || rect.x + rect.w > 1 + 1e-9 || rect.y + rect.h > 1 + 1e-9 {
+                        throw EditError.invalidOp(index: index, reason: "layer rect must be a normalized rectangle")
+                    }
+                    let map = TimeMap(result.clips)
+                    guard let output = map.outputTime(atSource: span.start) else { throw EditError.outOfRange(index: index, reason: "layer start is in removed footage") }
+                    let length: Double
+                    if asset.kind == .video { length = asset.duration }
+                    else if let end = map.outputTime(atSource: span.end) { length = end - output }
+                    else { throw EditError.outOfRange(index: index, reason: "layer end is in removed footage") }
+                    guard length >= 0.5, length.isFinite, asset.kind == .image || asset.duration >= 0.5 else {
+                        throw EditError.invalidOp(index: index, reason: "layer needs at least 0.5 seconds")
+                    }
+                    guard result.addLayer(kind: asset.kind, file: file, atOutput: output, duration: length, rect: rect ?? NormRect(), hasAudio: asset.hasAudio) != nil else {
+                        throw EditError.invalidOp(index: index, reason: "layer does not fit: it needs free layer lane time, at most four video lanes, and a video must end inside the timeline")
+                    }
+                    summary = "Add \(asset.kind.rawValue) layer \(stamp(item.at))"
                 case let .marker(_, label):
                     result.markers.append(Marker(time: span?.start ?? baseMap.sourceTime(atOutput: item.at), label: label))
                     result.markers.sort { $0.time < $1.time }

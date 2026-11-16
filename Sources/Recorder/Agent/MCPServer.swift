@@ -23,6 +23,8 @@ struct AgentDraft {
     init(base: String, baseProject: Project) {
         self.base = base; self.baseProject = baseProject; revision = base; duration = baseProject.exportDuration
     }
+    /// Media imported by earlier calls of this draft, so a later call can reuse it as `asset`.
+    var assets: [String: MediaAsset] { contexts.reduce(into: [:]) { $0.merge($1.assets) { first, _ in first } } }
     private func replayContext(_ context: EditContext, call: Int, indices: [Int]) -> EditContext {
         var context = context
         context.operationSeeds = indices.map { "\(id):\(call):\($0)" }
@@ -441,6 +443,7 @@ enum AgentAccess: String, CaseIterable {
         let draft = session.draft
         let note = (draft?.note?.replacingOccurrences(of: "\n", with: " ") ?? "Review edits").prefix(40)
         model?.endReview(commit: commit, name: "Claude: \(note)")
+        MCPAssets.purge(session, keeping: model?.liveProject)
         let count = draft?.selectedCount ?? 0, total = draft?.calls.flatMap { $0 }.count ?? 0
         let verdict = commit ? (count == total ? "accepted" : "accepted \(count) of \(total)") : "discarded"
         session.lastDraftVerdict = verdict
@@ -510,6 +513,9 @@ enum AgentAccess: String, CaseIterable {
     var lastDraftVerdict: String?
     var previewSuppressed = false
     var shownLiveProjects: Set<String> = []
+    /// `media/…` files this session imported for a layer op, kept until the draft that uses them is accepted or discarded (T-823).
+    var agentMedia: Set<String> = []
+    var agentMediaPackage: URL?
     @ObservationIgnored var renderTask: Task<[URL], Error>?
     var renderJobID: UUID?
     private let send: ([String: Any]) -> Void
