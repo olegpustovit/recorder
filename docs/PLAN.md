@@ -682,6 +682,48 @@ editing, read-only review guards, frozen autosave, stable replay IDs, privacy an
 
 ---
 
+## Agent perception, intent edits and verification (MCP) — 2026-11-17
+
+Source: https://artifacts.microapps.space/a/92t5aaqrr5ax (proposal 2026-11-16). The user requested **the full
+proposal, every task**. Audio/voiceover stay out of scope as the source states. Preserve draft isolation, one-step
+acceptance undo, privacy (renders hide key overlays) and existing op semantics; new ops lower to existing primitives.
+
+| Scope | Tasks | Done |
+|---|---|---|
+| Reliability | T-825…T-826 | 0/2 |
+| Perception + feedback core | T-827…T-829 | 0/3 |
+| Intent ops + reframe | T-830…T-831 | 0/2 |
+| Captions + eval harness | T-832…T-833 | 0/2 |
+
+- [ ] **T-825 Persistent drafts, listChanged, schema parity** — R1 `agent-draft.json` in the package (base revision,
+  calls, status); `project.open` returns `draft:{id,status,changes}` and re-adopts it (replaces D8). R2
+  `tools:{listChanged:true}`, `notifications/tools/list_changed` on upgrade, `schemaVersion` in `initialize`. R5 one
+  source of truth for limits (render.frames 24), server-side `minimum`/`maximum`/`maxItems`/`enum` validation, R6
+  annotations + `outputSchema`. Verify: Core draft persistence round-trip tests; schema/handler parity self-test.
+- [ ] **T-826 Addressable blocks, anchors, actionable errors** — R3 update/remove every lane `timeline.get` emits or
+  mark `editable:false` with reason; layer from/to maps both ends. R4 `{marker:"label"}` when unique,
+  `{shot:"s07",edge}` and same-batch `ref`. R7 errors carry `fix` and `current`. Verify: EditOps tests per lane,
+  label/ref anchors, snapped-range fix on clip-edge error.
+- [ ] **T-827 analyze.shots** — Core pure segmentation (stable states SSIM ≥ 0.985 for 0.3 s, boundary kinds
+  cut/scroll/animate/type, interest payoff/motion/cursorOnly/static/typing with reasons, focus box, source-keyed
+  stable IDs, summary); app decodes 10 fps 1/8-scale luma with vImage, cached per media content hash. Verify:
+  Core segmentation tests on synthetic signals; 100 s fixture analyses < 5 s.
+- [ ] **T-828 render.storyboard / strip / compare** — shot-anchored tiles (settled keyframe, id + duration label,
+  ≤ 48 per page), filmstrip 4–8 fps, base|draft side by side. Verify: tile count = shots, legible at 320 px.
+- [ ] **T-829 Edit report + render.lint** — `report` (duration/asl/hook/longestStatic/staticSec before/after, lint)
+  on every edit.apply/dryRun; `render.lint` profiles reel/tutorial/demo with rules hook, maxStatic, asl, duration,
+  tinyShot, orphanEffect, edgeContent, each naming a shot and a suggested op. Verify: Core report/lint tests.
+- [ ] **T-830 Intent ops** — keepShots, pace, fitDuration, speed `ramp`, autoZoom exposure; each lowers to
+  cut/speed/zoom in one undo step and returns lowered ops. Verify: Core lowering tests, one-step undo.
+- [ ] **T-831 reframe** — `output.aspect` plus per-shot stationary/pan crop aimed at focus and cursor
+  (time-varying crop on the camera lane); edgeContent lint clean. Verify: Core crop-path tests, focus kept in frame.
+- [ ] **T-832 Optional per-shot captions** — on-device (Vision OCR/classification) 6–10 word captions; `null`
+  when unavailable, everything works without them. Verify: caption present/absent paths.
+- [ ] **T-833 Agent eval harness** — script scoring lint pass rate, ops per task, images requested over a set of
+  recordings with the brief "30 s reel, fast cuts, no text"; run on MCP changes. Verify: harness runs on fixtures.
+
+---
+
 ## Requested Nudge fixes — 2026-09-22
 
 User-requested fixes are handled individually in this order, separately from the outstanding HUMAN milestone gates.
