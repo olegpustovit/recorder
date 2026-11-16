@@ -33,7 +33,7 @@ extension EditorModel {
     }
 
     func chooseMedia(in window: NSWindow?, atOutput time: Double? = nil, slot: TimeRange? = nil, track: Int = 0, replacing: UUID? = nil) {
-        guard !voiceover.isActive, mediaImportStatus == nil, let window, window.attachedSheet == nil else { return }
+        guard !voiceover.isActive, !isReviewingDraft, mediaImportStatus == nil, let window, window.attachedSheet == nil else { return }
         let panel = NSOpenPanel()
         panel.allowedContentTypes = replacing != nil ? [.image, .movie] : slot == nil ? [.image, .movie, .audio] : [.image]
         panel.allowsMultipleSelection = slot == nil && replacing == nil
@@ -72,7 +72,7 @@ extension EditorModel {
 
     @discardableResult
     func pasteMedia(_ pasteboard: NSPasteboard, window: NSWindow?) -> Bool {
-        guard !voiceover.isActive, mediaImportStatus == nil else { return false }
+        guard !voiceover.isActive, !isReviewingDraft, mediaImportStatus == nil else { return false }
         let files = Self.mediaFiles(on: pasteboard)
         if !files.isEmpty { addMediaFiles(files, atOutput: playhead, window: window); return true }
         guard let image = NSImage(pasteboard: pasteboard),
@@ -96,7 +96,7 @@ extension EditorModel {
     @discardableResult
     func importMedia(_ url: URL, atOutput time: Double, slot: TimeRange? = nil, track: Int = 0, replacing: UUID? = nil) async throws -> UUID {
         @Sendable func fail(_ message: String) -> NSError { NSError(domain: "Recorder.MediaImport", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
-        guard !voiceover.isActive, mediaImportStatus == nil else { throw fail("Finish the current recording or import first.") }
+        guard !voiceover.isActive, !isReviewingDraft, mediaImportStatus == nil else { throw fail("Finish the current review, recording or import first.") }
         guard !isEditingGesture else { throw fail("Finish or cancel the current drag before adding media.") }
         guard url.isFileURL, time.isFinite, time >= 0 else { throw fail("Choose a local media file and a valid timeline position.") }
         mediaImportStatus = "Importing \(url.lastPathComponent)…"
@@ -150,7 +150,7 @@ extension EditorModel {
         }.value
         var committed = false
         defer { if !committed { try? FileManager.default.removeItem(at: copied.url) } }
-        guard !voiceover.isActive else { throw fail("Stop recording before adding media.") }
+        guard !voiceover.isActive, !isReviewingDraft else { throw fail("Finish recording or reviewing before adding media.") }
         guard !isEditingGesture else { throw fail("Finish or cancel the current drag before adding media.") }
         var trial = project
         let id: UUID?

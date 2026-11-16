@@ -15,6 +15,8 @@ struct AgentDraft {
     var submitted = false
     var verdict: String?
     var excluded: Set<[Int]> = []
+    var skipped: [[Int]: String] = [:]
+    var cutRanges: [(start: Double, end: Double, duration: Double)] = []
     var revision: String
 
     init(base: String, baseProject: Project) { self.base = base; self.baseProject = baseProject; revision = base }
@@ -24,16 +26,95 @@ struct AgentDraft {
         return context
     }
     func project(from start: Project? = nil, context: EditContext) throws -> Project {
+        try replay(from: start, context: context, skipInvalid: false).project
+    }
+    private func replay(from start: Project?, context: EditContext, skipInvalid: Bool) throws -> (project: Project, skipped: [[Int]: String], changes: [[EditChange]], cuts: [(start: Double, end: Double, duration: Double)]) {
         // shortcut: replay every call on each change/read; cache prefixes if measured drafts exceed tens of ops.
         var project = start ?? baseProject
+        if let error = project.checkInvariants() { throw EditError.invariant(error) }
+        var skipped: [[Int]: String] = [:], changes: [[EditChange]] = []
+        var cuts: [(start: Double, end: Double, duration: Double)] = []
         for (callIndex, call) in calls.enumerated() {
-            let indices = call.indices.filter { !excluded.contains([callIndex, $0]) }
-            guard !indices.isEmpty else { continue }
+            var indices = call.indices.filter { !excluded.contains([callIndex, $0]) && (skipInvalid || self.skipped[[callIndex, $0]] == nil) }
             let frozen = contexts.indices.contains(callIndex) ? contexts[callIndex] : context
-            let result = try project.applying(indices.map { call[$0] }, context: replayContext(frozen, call: callIndex, indices: indices))
-            project = result.project
+            var resolved: [EditChange] = []
+            while !indices.isEmpty {
+                do {
+                    let result = try project.applying(indices.map { call[$0] }, context: replayContext(frozen, call: callIndex, indices: indices))
+                    resolved = result.changes.map { change in var change = change; change.op = indices[change.op]; return change }
+                    if skipInvalid, indices.contains(where: { isCut(call[$0]) }) {
+                        // Compare before/after cuts so free retiming's empty space is never labelled as a cut.
+                        let nonCuts = indices.filter { !isCut(call[$0]) }
+                        let beforeCuts = nonCuts.isEmpty ? project : try project.applying(nonCuts.map { call[$0] },
+                            context: replayContext(frozen, call: callIndex, indices: nonCuts)).project
+                        for clip in beforeCuts.clips {
+                            var pieces = [TimeRange(start: clip.sourceStart, end: clip.sourceEnd)]
+                            for retained in result.project.clips {
+                                pieces = pieces.flatMap { piece -> [TimeRange] in
+                                    guard retained.sourceStart < piece.end, retained.sourceEnd > piece.start else { return [piece] }
+                                    var remaining: [TimeRange] = []
+                                    if retained.sourceStart > piece.start { remaining.append(TimeRange(start: piece.start, end: retained.sourceStart)) }
+                                    if retained.sourceEnd < piece.end { remaining.append(TimeRange(start: retained.sourceEnd, end: piece.end)) }
+                                    return remaining
+                                }
+                            }
+                            cuts += pieces.map { ($0.start, $0.end, ($0.end - $0.start) / clip.timeScale) }
+                        }
+                    }
+                    project = result.project
+                    break
+                } catch {
+                    guard skipInvalid else { throw error }
+                    var failed = 0
+                    switch error {
+                    case EditError.invalidOp(let index, _), EditError.outOfRange(let index, _): failed = index
+                    default:
+                        // Find the first invalid prefix without shifting this call's base times.
+                        for count in 1...indices.count {
+                            let prefix = Array(indices.prefix(count))
+                            if (try? project.applying(prefix.map { call[$0] }, context: replayContext(frozen, call: callIndex, indices: prefix))) == nil { failed = count - 1; break }
+                        }
+                    }
+                    guard indices.indices.contains(failed) else { throw error }
+                    skipped[[callIndex, indices.remove(at: failed)]] = String(describing: error)
+                }
+            }
+            changes.append(resolved)
         }
-        return project
+        return (project, skipped, changes, cuts)
+    }
+    mutating func refreshReview(on base: Project? = nil, context: EditContext) throws -> Project {
+        if let base { baseProject = base; self.base = try MCPTools.revision(base) }
+        let result = try replay(from: nil, context: context, skipInvalid: true)
+        skipped = result.skipped; cutRanges = result.cuts
+        for (call, updated) in result.changes.enumerated() where changes.indices.contains(call) {
+            for change in updated {
+                if let index = changes[call].firstIndex(where: { $0.op == change.op }) { changes[call][index] = change }
+            }
+        }
+        revision = try MCPTools.revision(result.project)
+        return result.project
+    }
+    var selectedCount: Int {
+        calls.enumerated().reduce(0) { count, call in count + call.element.indices.filter { !excluded.contains([call.offset, $0]) && skipped[[call.offset, $0]] == nil }.count }
+    }
+    struct Row: Identifiable {
+        let call: Int
+        let index: Int
+        let op: EditOp
+        let change: EditChange
+        var id: [Int] { [call, index] }
+    }
+    var rows: [Row] {
+        calls.enumerated().flatMap { call, ops in
+            ops.enumerated().compactMap { index, op in
+                guard changes.indices.contains(call), let change = changes[call].first(where: { $0.op == index }) else { return nil }
+                return Row(call: call, index: index, op: op, change: change)
+            }
+        }
+    }
+    private func isCut(_ op: EditOp) -> Bool {
+        switch op { case .cut, .cutWords, .cutPauses: return true; default: return false }
     }
     mutating func append(_ ops: [EditOp], context: EditContext) throws -> (project: Project, changes: [EditChange]) {
         let current = try project(context: context)
@@ -193,12 +274,13 @@ enum AgentAccess: String, CaseIterable {
         let summary: String
         let ms: Int
         let isError: Bool
+        var projectID: String? = nil
     }
     private(set) var rows: [Row] = []
     func log(_ row: Row) { rows.append(row); if rows.count > 200 { rows.removeFirst(rows.count - 200) } }
 }
 
-@MainActor final class MCPServer {
+@MainActor @Observable final class MCPServer {
     static let shared = MCPServer()
     nonisolated static var defaultSocketPath: String {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Recorder/mcp.sock").path
@@ -262,10 +344,107 @@ enum AgentAccess: String, CaseIterable {
                     else { connection.pending.leave() }
                 }
             }
-            Task { @MainActor in self.sessions.removeAll { $0 === session } }
+            Task { @MainActor in
+                session.connected = false
+                self.removeFinishedSessions()
+            }
         }
     }
+    func register(_ session: MCPSession) {
+        if !sessions.contains(where: { $0 === session }) { sessions.append(session) }
+    }
+    func projectSessions(_ model: EditorModel) -> [MCPSession] {
+        let url = model.packageURL.resolvingSymlinksInPath().standardizedFileURL
+        return sessions.filter { $0.projectURL?.resolvingSymlinksInPath().standardizedFileURL == url || $0.draft?.baseProject.id == model.liveProject.id }
+    }
+    func phase(_ session: MCPSession, model: EditorModel) -> String {
+        if model.reviewSessionID == session.id { return "reviewing" }
+        if session.renderJobID != nil { return "rendering" }
+        if session.draft?.submitted == true, session.draft?.verdict == nil { return "reviewing" }
+        if session.draft?.verdict == nil, session.draft != nil { return "drafting" }
+        return "idle"
+    }
+    func removeFinishedSessions() {
+        sessions.removeAll { !$0.connected && ($0.draft == nil || $0.draft?.verdict != nil) }
+    }
+    func review(_ session: MCPSession, rebase: Bool = false) throws {
+        let model = try MCPTools.model(for: session)
+        guard var draft = session.draft, draft.verdict == nil, draft.baseProject.id == model.liveProject.id else {
+            throw MCPFailure(code: "NO_PROJECT", message: "Open the draft's project before reviewing it")
+        }
+        guard !model.voiceover.isActive, !model.isEditingGesture, model.mediaImportStatus == nil,
+              !model.isReviewingDraft || model.reviewSessionID == session.id else {
+            throw MCPFailure(code: "REVIEW_IN_PROGRESS", message: "Finish the current review, recording or gesture first")
+        }
+        register(session)
+        model.inspectorShowsAgent = true
+        session.reviewError = nil
+        if !rebase, draft.base != (try MCPTools.revision(model.liveProject)) { return }
+        let proposed = try draft.refreshReview(on: rebase ? model.liveProject : nil, context: EditContext(words: model.transcript ?? []))
+        if !model.isReviewingDraft {
+            EditorWindowController.allOpen.first { $0.model === model }?.coreTimelineView.cancelOperation(nil)
+            guard model.beginReview() else { throw MCPFailure(code: "REVIEW_IN_PROGRESS", message: "Finish the current gesture before reviewing") }
+        }
+        model.reviewSessionID = session.id
+        try model.updateReview { $0 = proposed }
+        draft.submitted = true; session.draft = draft
+        updateMarks(model, base: draft.baseProject)
+    }
+    func include(_ row: [Int], in session: MCPSession, included: Bool) throws {
+        let model = try MCPTools.model(for: session)
+        guard model.reviewSessionID == session.id, var draft = session.draft, row.count == 2,
+              draft.calls.indices.contains(row[0]), draft.calls[row[0]].indices.contains(row[1]) else {
+            throw MCPFailure(code: "REVIEW_IN_PROGRESS", message: "Start this draft's review before changing its checkboxes")
+        }
+        if included { draft.excluded.remove(row) } else { draft.excluded.insert(row) }
+        let proposed = try draft.refreshReview(context: EditContext(words: model.transcript ?? []))
+        try model.updateReview { $0 = proposed }
+        session.draft = draft; session.reviewError = nil
+        updateMarks(model, base: draft.baseProject)
+    }
+    func finishReview(_ session: MCPSession, commit: Bool) throws {
+        let model = EditorWindowController.allOpen.first { $0.model.reviewSessionID == session.id }?.model
+        if commit, model == nil { throw MCPFailure(code: "REVIEW_IN_PROGRESS", message: "Start reviewing the draft before accepting it") }
+        let draft = session.draft
+        let note = (draft?.note?.replacingOccurrences(of: "\n", with: " ") ?? "Review edits").prefix(40)
+        model?.endReview(commit: commit, name: "Claude: \(note)")
+        let count = draft?.selectedCount ?? 0, total = draft?.calls.flatMap { $0 }.count ?? 0
+        let verdict = commit ? (count == total ? "accepted" : "accepted \(count) of \(total)") : "discarded"
+        session.lastDraftVerdict = verdict
+        if commit { session.draft?.verdict = verdict } else { session.draft = nil }
+        session.reviewError = nil
+        removeFinishedSessions()
+    }
+    func editorClosing(_ model: EditorModel) {
+        guard let id = model.reviewSessionID else { return }
+        model.endReview(commit: false, name: "")
+        sessions.first { $0.id == id }?.draft?.submitted = false
+    }
+    private func updateMarks(_ model: EditorModel, base: Project) {
+        func ids(_ project: Project) -> Set<String> {
+            Set(project.zooms.map(\.id) + project.texts.map(\.id) + project.masks.map(\.id) + project.layouts.map(\.id)
+                + project.keystrokeClips.map(\.id) + project.cameraClips.map(\.id) + project.layers.map(\.id) + project.audioClips.map(\.id))
+        }
+        model.reviewAddedIDs = ids(model.project).subtracting(ids(base))
+        let draft = sessions.first { $0.id == model.reviewSessionID }?.draft
+        var cuts: [(Double, Double)] = []
+        for cut in draft?.cutRanges ?? [] {
+            var output = 0.0
+            for retained in model.project.clips {
+                if retained.sourceStart >= cut.end - 1e-9 { break }
+                output += retained.outputDuration
+            }
+            cuts.append((model.timeMap.outputTime(atSource: cut.start) ?? output, cut.duration))
+        }
+        var merged: [(Double, Double)] = []
+        for cut in cuts.sorted(by: { $0.0 < $1.0 }) {
+            if let last = merged.last, abs(last.0 - cut.0) < 1e-6 { merged[merged.count - 1].1 += cut.1 }
+            else { merged.append(cut) }
+        }
+        model.reviewCuts = merged.map { ($0.0, String(format: "−%.1f s", $0.1)) }
+    }
     func stop() {
+        for controller in EditorWindowController.allOpen { editorClosing(controller.model) }
         guard listener >= 0 else { return }
         shutdown(listener, SHUT_RDWR); close(listener); listener = -1
         for session in sessions { session.renderTask?.cancel(); session.disconnect() }
@@ -275,15 +454,17 @@ enum AgentAccess: String, CaseIterable {
     }
 }
 
-@MainActor final class MCPSession {
+@MainActor @Observable final class MCPSession {
     let id = UUID().uuidString
     let connectedSince = Date()
+    var connected = true
+    var reviewError: String?
     var agentName = "MCP client"
     var projectURL: URL?
     // shortcut: drafts are memory-only and disappear when Recorder quits; persist only if recovery is requested.
     var draft: AgentDraft?
     var lastDraftVerdict: String?
-    var renderTask: Task<[URL], Error>?
+    @ObservationIgnored var renderTask: Task<[URL], Error>?
     var renderJobID: UUID?
     private let send: ([String: Any]) -> Void
     let disconnect: () -> Void

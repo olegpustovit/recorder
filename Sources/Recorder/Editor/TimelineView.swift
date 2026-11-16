@@ -535,6 +535,7 @@ final class TimelineView: NSView {
     }
 
     @objc private func addTrackTapped(_ sender: NSButton) {
+        guard model?.isReviewingDraft != true else { return }
         addTrackMenu().popUp(positioning: nil, at: CGPoint(x: sender.frame.minX, y: sender.frame.maxY + 2), in: self)
     }
 
@@ -648,6 +649,9 @@ final class TimelineView: NSView {
             _ = model.transcript
             _ = model.transcriptStatus
             _ = model.isTranscribing
+            _ = model.reviewCuts
+            _ = model.reviewAddedIDs
+            _ = model.isReviewingDraft
         } onChange: { [weak self] in
             DispatchQueue.main.async {
                 guard let self, let model = self.model else { return }
@@ -817,6 +821,7 @@ final class TimelineView: NSView {
         drawAudioLanes(project)
         drawVoiceoverTake()
         drawLinkedPartners(project)
+        drawReviewMarks(model)
         drawPlayhead(model.playhead)
         // Drawn after the playhead/its timecode chip so a cut near the playhead is never hidden
         // behind them — the ✂ bubble is an actionable affordance, the chip is informational.
@@ -838,6 +843,32 @@ final class TimelineView: NSView {
         NSGraphicsContext.restoreGraphicsState()
         drawLaneLabels()
         drawFooter()
+    }
+
+    private func drawReviewMarks(_ model: EditorModel) {
+        guard model.isReviewingDraft else { return }
+        Theme.textPrimary.setStroke()
+        var rects = blockRects(model).map { ($0.id.uuidString, $0.rect) }
+        for audio in model.project.audioClips where model.reviewAddedIDs.contains(audio.id) {
+            rects += model.project.audioSegments(audio).map { (audio.id, audioRect(audio, output: $0.output)) }
+        }
+        for (id, rect) in rects where model.reviewAddedIDs.contains(id) {
+            let outline = NSBezierPath(rect: rect.insetBy(dx: 1, dy: 1))
+            outline.lineWidth = 1; outline.setLineDash([4, 3], count: 2, phase: 0); outline.stroke()
+        }
+        let attrs: [NSAttributedString.Key: Any] = [.font: Theme.captionFont, .foregroundColor: Theme.textPrimary]
+        for cut in model.reviewCuts {
+            let px = x(forOutput: cut.time)
+            let rule = NSBezierPath()
+            rule.move(to: CGPoint(x: px, y: Self.rulerHeight))
+            rule.line(to: CGPoint(x: px, y: contentHeight))
+            rule.lineWidth = 1; rule.stroke()
+            let label = cut.label as NSString, size = label.size(withAttributes: attrs)
+            let chip = CGRect(x: min(max(gutterWidth, px - size.width / 2 - 4), bounds.width - size.width - 8),
+                              y: 1, width: size.width + 8, height: Self.rulerHeight - 2)
+            Theme.bgControl.setFill(); NSBezierPath(roundedRect: chip, xRadius: 3, yRadius: 3).fill()
+            label.draw(at: CGPoint(x: chip.minX + 4, y: chip.midY - size.height / 2), withAttributes: attrs)
+        }
     }
 
     private func drawTrimChip() {
@@ -1895,7 +1926,7 @@ final class TimelineView: NSView {
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
-        guard let model, !model.voiceover.isActive else { return nil }
+        guard let model, !model.voiceover.isActive, !model.isReviewingDraft else { return nil }
         let p = convert(event.locationInWindow, from: nil)
         if p.x < gutterWidth, p.y < contentHeight {
             // Track headers: the "+" menu, plus "Hide Lane" on an empty revealed lane.
@@ -2303,7 +2334,7 @@ final class TimelineView: NSView {
     // MARK: - Keyboard (⌘=/⌘- anchored at the playhead, ⇧Z = fit, C/S = split — SPEC §7.3)
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        guard model?.voiceover.isActive != true, model?.mediaImportStatus == nil,
+        guard model?.voiceover.isActive != true, model?.isReviewingDraft != true, model?.mediaImportStatus == nil,
               !EditorModel.mediaFiles(on: sender.draggingPasteboard).isEmpty else { return [] }
         mediaDragActive = true
         enclosingScrollView?.superview?.needsLayout = true
@@ -2324,7 +2355,7 @@ final class TimelineView: NSView {
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         defer { endMediaDrag() }
-        guard let model, !model.voiceover.isActive, model.mediaImportStatus == nil else { return false }
+        guard let model, !model.voiceover.isActive, !model.isReviewingDraft, model.mediaImportStatus == nil else { return false }
         let files = EditorModel.mediaFiles(on: sender.draggingPasteboard)
         guard !files.isEmpty else { return false }
         let point = convert(sender.draggingLocation, from: nil)
@@ -2524,6 +2555,7 @@ final class TimelineView: NSView {
     }
 
     override func keyDown(with event: NSEvent) {
+        if model?.isReviewingDraft == true, ![49, 123, 124, 125, 126].contains(event.keyCode) { return }
         if let voiceover = model?.voiceover, voiceover.isActive {
             voiceover.handleRecordingKey(event)
             return
@@ -2650,6 +2682,10 @@ final class TimelineView: NSView {
                 panOverview(to: p.x, centered: true)
             }
             overviewDrag = (p.x, geometry.scrollX, original)
+            return
+        }
+        if model?.isReviewingDraft == true {
+            if p.x >= gutterWidth { dragKind = .scrub; scrub(toViewX: p.x) }
             return
         }
         guard p.x >= gutterWidth, p.y <= bounds.height - 26 else {
@@ -3470,7 +3506,7 @@ final class TimelineView: NSView {
 
     /// "Empty zoom/layout/mask lane: ghost block under pointer" (SPEC §7.1/§7.2).
     private func drawEmptyLaneGhost() {
-        guard dragKind == nil, !isSplitMode, let model, let hoverX, let hoverY, hoverX > gutterWidth else { return }
+        guard dragKind == nil, !isSplitMode, let model, !model.isReviewingDraft, let hoverX, let hoverY, hoverX > gutterWidth else { return }
         guard let lane = [Lane.camera, .zoom, .keys, .layout, .mask, .text, .window].first(where: { laneHeight($0) > 0 && hoverY >= laneRow($0).minY && hoverY <= laneRow($0).maxY }) else { return }
         let row = laneRow(lane)
         guard lane != .zoom || sceneZoomLayer == nil else { return } // no ghost for carried zooms
@@ -3610,7 +3646,7 @@ final class TimelineView: NSView {
         let p = convert(event.locationInWindow, from: nil)
         hoverX = p.x
         hoverY = p.y
-        (isSplitMode || eraserMode ? NSCursor.crosshair : cursor(for: hitTest(at: p))).set()
+        (model?.isReviewingDraft == true ? NSCursor.arrow : (isSplitMode || eraserMode ? NSCursor.crosshair : cursor(for: hitTest(at: p)))).set()
         updateHoverCallback()
         needsDisplay = true
     }
@@ -4731,6 +4767,7 @@ final class TimelineToolbar: NSView {
                                    (snapButton, timelineView.snappingEnabled),
                                    (linkButton, timelineView.linkedVideoEdits),
                                    (rippleButton, timelineView.rippleDeleteEnabled)] {
+            button.isEnabled = timelineView.model?.isReviewingDraft != true
             button.contentTintColor = selected ? Theme.textPrimary : Theme.textTertiary
             button.state = selected ? .on : .off
             button.setAccessibilityValue(selected ? "On" : "Off")

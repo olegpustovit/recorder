@@ -25,8 +25,10 @@ import RecorderCore
     var inspectorTab: InspectorView.Tab = .background
     var previewShowsResult = false
     var inspectorShowsProject = false
+    var inspectorShowsAgent = false
 
     func showProjectInspector(_ tab: InspectorView.Tab) {
+        inspectorShowsAgent = false
         inspectorTab = tab
         inspectorShowsProject = true
     }
@@ -196,6 +198,11 @@ import RecorderCore
     private var gestureSnapshot: Project?
     var isEditingGesture: Bool { gestureSnapshot != nil }
     var isReviewingDraft = false
+    private var reviewSnapshot: Project?
+    var liveProject: Project { reviewSnapshot ?? project }
+    var reviewSessionID: String?
+    var reviewCuts: [(time: Double, label: String)] = []
+    var reviewAddedIDs: Set<String> = []
     private var autosaveWork: DispatchWorkItem?
     private(set) var saveStatus = "Saved"
     private(set) var saveError: String?
@@ -352,7 +359,7 @@ import RecorderCore
         autosaveWork?.cancel()
         autosaveWork = nil
         do {
-            try project.save(to: packageURL.appendingPathComponent("project.json"))
+            try liveProject.save(to: packageURL.appendingPathComponent("project.json"))
             saveStatus = "Saved"
             saveError = nil
         } catch {
@@ -407,10 +414,43 @@ import RecorderCore
     }
 
     private func scheduleAutosave() {
+        guard !isReviewingDraft else { return }
         saveStatus = "Saving…"
         autosaveWork?.cancel()
         let work = DispatchWorkItem { [weak self] in self?.saveNow() }
         autosaveWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
+    }
+
+    @discardableResult func beginReview() -> Bool {
+        guard !voiceover.isActive, !isEditingGesture, !isReviewingDraft, mediaImportStatus == nil else { return false }
+        saveNow()
+        reviewSnapshot = project
+        isPlaying = false
+        isReviewingDraft = true
+        inspectorShowsAgent = true
+        return true
+    }
+    func updateReview(_ change: (inout Project) throws -> Void) throws {
+        guard isReviewingDraft else { return }
+        var next = project
+        try change(&next)
+        if let error = next.checkInvariants() { throw EditError.invariant(error) }
+        let before = project
+        project = next
+        rebuildPathsIfNeeded(from: before)
+        playhead = min(playhead, project.exportDuration)
+        keepExistingSelection()
+    }
+    func endReview(commit: Bool, name: String) {
+        guard let base = reviewSnapshot else { return }
+        let proposed = project
+        project = base
+        reviewSnapshot = nil; isReviewingDraft = false; reviewSessionID = nil
+        reviewCuts = []; reviewAddedIDs = []
+        if commit, proposed != base { edit(name) { $0 = proposed } }
+        else { rebuildPathsIfNeeded(from: proposed); scheduleAutosave() }
+        playhead = min(playhead, project.exportDuration)
+        keepExistingSelection()
     }
 }

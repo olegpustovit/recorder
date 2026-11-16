@@ -29,6 +29,7 @@ enum SelfTest {
         "mcp-roundtrip": { args in try await checkMCPRoundtrip(args) },
         "mcp-render": { args in try await checkMCPRender(args) },
         "mcp-edit": { args in try await checkMCPEdit(args) },
+        "mcp-review": { args in try await checkMCPReview(args) },
         "capture-exclusion": { _ in
             struct Fail: Error { let description: String }
             let first = await MainActor.run { () -> NSWindow in
@@ -1444,7 +1445,7 @@ enum SelfTest {
         "inspector-png": { args in
             struct Fail: Error, CustomStringConvertible { let description: String }
             guard let outPath = args.first else {
-                throw Fail(description: "usage: inspector-png <out.png> [background-kind|zoom|clip|layout|mask|cursor|camera|audio|animations|keys]")
+                throw Fail(description: "usage: inspector-png <out.png> [background-kind|zoom|clip|layout|mask|cursor|camera|audio|animations|keys|agent]")
             }
             try await MainActor.run {
                 let fm = FileManager.default
@@ -1486,8 +1487,32 @@ enum SelfTest {
                     if let kind = variant.flatMap(Background.Kind.init(rawValue:)) { project.background.kind = kind }
                 }
 
+                if variant?.hasPrefix("agent") == true { project.source.duration = 61.8 }
                 try project.save(to: tmp.appendingPathComponent("project.json"))
                 let model = EditorModel(packageURL: tmp, project: project, events: EventLog())
+                var agent: MCPSession?
+                if variant?.hasPrefix("agent") == true {
+                    let session = MCPSession(); session.agentName = "claude-code"; session.projectURL = tmp
+                    var draft = AgentDraft(base: try MCPTools.revision(project), baseProject: project)
+                    _ = try draft.append([.cut(from: 8.3, to: 10), .cut(from: 14, to: 14.6),
+                        .text(from: 20, to: 23, style: .title, text: "A clearer introduction", position: nil, size: nil)], context: EditContext())
+                    draft.note = variant == "agent-long" ? String(repeating: "Removed long pauses and tightened the introduction. ", count: 8) : "Removed long pauses and tightened the introduction."
+                    draft.submitted = true; draft.excluded = [[0, 1]]
+                    let proposed = try draft.refreshReview(context: EditContext())
+                    session.draft = draft; MCPServer.shared.register(session); agent = session
+                    if variant != "agent-stale" {
+                        model.beginReview(); model.reviewSessionID = session.id
+                        try model.updateReview { $0 = proposed }
+                    } else { model.edit("Human edit") { $0.frame.padding = 0.04 } }
+                    model.inspectorShowsAgent = true
+                    if variant == "agent-error" { session.reviewError = "The selected block no longer exists. Replay this draft on the current project." }
+                    AgentActivity.shared.log(.init(time: Date(timeIntervalSince1970: 0), agent: session.agentName, tool: "edit.apply", summary: "3 ops", ms: 12, isError: false, projectID: project.id))
+                    AgentActivity.shared.log(.init(time: Date(timeIntervalSince1970: 1), agent: session.agentName, tool: "draft.submit", summary: "Review", ms: 4, isError: variant == "agent-error", projectID: project.id))
+                }
+                defer {
+                    model.endReview(commit: false, name: "")
+                    if let agent { agent.draft = nil; agent.connected = false; MCPServer.shared.removeFinishedSessions() }
+                }
                 if variant == "zoom" { model.selection = [UUID(uuidString: zoom.id)!] }
                 if variant == "clip" { model.selectedClip = 1 }
                 if variant == "group" { model.selectedClips = [0, 1] }
@@ -1505,7 +1530,7 @@ enum SelfTest {
                 if variant == "layout" { model.selection = [UUID(uuidString: layout.id)!] }
                 if variant == "mask" { model.selection = [UUID(uuidString: mask.id)!] }
 
-                let height: CGFloat = 760
+                let height: CGFloat = variant == "agent-short" ? 420 : 760
                 let hosting = NSHostingView(rootView: InspectorView(model: model, initialTab: initialTab))
                 hosting.appearance = NSAppearance(named: .darkAqua)
                 hosting.frame = NSRect(x: 0, y: 0, width: InspectorView.width, height: height)
@@ -4318,6 +4343,136 @@ private final class MCPTestClient {
     }
 }
 
+@MainActor private func checkMCPReview(_ args: [String]) async throws {
+    guard let path = args.first else { throw MCPTestFailure(description: "usage: mcp-review <fixture.recorder>") }
+    let root = URL(fileURLWithPath: "/tmp/recorder-mcp-review-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let package = root.appendingPathComponent("Review.recorder"), server = MCPServer.shared
+    try FileManager.default.copyItem(at: URL(fileURLWithPath: path), to: package)
+    let file = package.appendingPathComponent("project.json")
+    var fixture = try Project.load(from: file); fixture.id = UUID().uuidString; fixture.texts = []
+    try fixture.save(to: file)
+    NSApplication.shared.setActivationPolicy(.accessory); NSApplication.shared.finishLaunching()
+    guard let controller = await EditorWindowController.open(package: package).value else { throw MCPTestFailure(description: "Could not open review fixture") }
+    let model = controller.model, session = MCPSession()
+    session.agentName = "claude-code"; session.projectURL = model.packageURL.standardizedFileURL
+    server.register(session)
+    defer {
+        controller.close(); session.draft = nil; session.connected = false; server.removeFinishedSessions()
+        UserDefaults.standard.removeObject(forKey: "agentAccess.\(fixture.id)")
+        try? FileManager.default.removeItem(at: root)
+    }
+    func tool(_ action: String) async throws -> [String: Any] {
+        let result = await MCPTools.call("draft", ["action": action, "note": "Tighten the introduction"], session: session)
+        guard result["isError"] as? Bool == false, let payload = result["structuredContent"] as? [String: Any] else {
+            throw MCPTestFailure(description: "Review draft.\(action) failed: \(result)")
+        }
+        return payload
+    }
+    func proposal(_ ops: [EditOp], base: Project) throws -> AgentDraft {
+        var draft = AgentDraft(base: try MCPTools.revision(base), baseProject: base)
+        _ = try draft.append(ops, context: EditContext()); return draft
+    }
+    let base = model.project, saved = try Data(contentsOf: file)
+    let ops: [EditOp] = [.cut(from: 0.5, to: 1), .style(patch: ["frame": .object(["padding": .number(0.04)])]),
+                         .text(from: 1.2, to: 2, style: .title, text: "Welcome", position: nil, size: nil)]
+    session.draft = try proposal(ops, base: base)
+    _ = try await tool("submit")
+    guard model.isReviewingDraft, model.inspectorShowsAgent, model.liveProject == base, model.project != base,
+          model.undoStepNames.isEmpty, !model.reviewAddedIDs.isEmpty, model.reviewCuts.count == 1,
+          abs(model.reviewCuts[0].time - 0.5) < 1e-6, model.reviewCuts[0].label == "−0.5 s" else {
+        throw MCPTestFailure(description: "Review preview, marks, live snapshot or undo isolation")
+    }
+    model.edit("Blocked") { $0.title = "Blocked" }; model.beginGesture(); model.update { $0.title = "Blocked" }
+    model.undo(); model.redo(); controller.cancelOperation(nil); controller.coreTimelineView.cancelOperation(nil)
+    controller.previewView.keyDown(with: NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+        windowNumber: controller.window!.windowNumber, context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53)!)
+    guard model.isReviewingDraft, model.undoStepNames.isEmpty, !model.isEditingGesture, model.project.title == base.title,
+          !controller.validateMenuItem(NSMenuItem(title: "Export", action: #selector(EditorWindowController.exportTapped(_:)), keyEquivalent: "")) else {
+        throw MCPTestFailure(description: "Review allowed editing or Escape discarded it")
+    }
+    let other = MCPSession(); other.projectURL = session.projectURL
+    guard try MCPTools.viewedProject(model, session: other) == base else { throw MCPTestFailure(description: "Another client saw the unaccepted preview") }
+    model.saveNow()
+    guard try Data(contentsOf: file) == saved else { throw MCPTestFailure(description: "Unaccepted preview reached disk") }
+    try server.include([0, 1], in: session, included: false)
+    guard let draft = session.draft else { throw MCPTestFailure(description: "Lost review draft") }
+    let expected = try base.applying([ops[0], ops[2]], context: EditContext(operationSeeds: ["\(draft.id):0:0", "\(draft.id):0:2"])).project
+    guard model.project == expected, draft.selectedCount == 2, model.liveProject == base else { throw MCPTestFailure(description: "Checkbox did not replay two operations") }
+    controller.previewView.stepFrame(0.1)
+    guard model.playhead > 0 else { throw MCPTestFailure(description: "Review blocked scrubbing") }
+    // Capture the integrated document bar, panel and timeline with the same rendered frame as the preview.
+    let frame = try await controller.previewView.captureRenderedFrame(atOutput: 0.8)
+    let overlay = NSImageView(frame: controller.previewView.bounds)
+    overlay.image = NSImage(cgImage: frame, size: controller.previewView.bounds.size); overlay.imageScaling = .scaleAxesIndependently
+    controller.previewView.addSubview(overlay, positioned: .above, relativeTo: nil)
+    if let window = controller.window, let content = window.contentView?.superview {
+        let originalSize = window.contentView!.bounds.size
+        for (name, size) in [("review", originalSize), ("review-min", NSSize(width: 1100, height: 700))] {
+            window.setContentSize(size)
+            content.layoutSubtreeIfNeeded(); overlay.frame = controller.previewView.bounds
+            try await Task.sleep(for: .milliseconds(400))
+            guard let rep = content.bitmapImageRepForCachingDisplay(in: content.bounds) else { throw MCPTestFailure(description: "Review screenshot bitmap") }
+            content.cacheDisplay(in: content.bounds, to: rep)
+            guard let png = rep.representation(using: .png, properties: [:]) else { throw MCPTestFailure(description: "Review screenshot PNG") }
+            try png.write(to: URL(fileURLWithPath: "/tmp/recorder-mcp-\(name).png"))
+        }
+        window.setContentSize(originalSize)
+    }
+    overlay.removeFromSuperview()
+    let playbackStart = model.playhead
+    controller.previewView.togglePlayPause()
+    let playbackDeadline = Date().addingTimeInterval(3)
+    while model.playhead <= playbackStart + 0.05, Date() < playbackDeadline {
+        try await Task.sleep(for: .milliseconds(30))
+    }
+    guard model.isPlaying, model.playhead > playbackStart + 0.05 else { throw MCPTestFailure(description: "Review blocked playback") }
+    controller.previewView.togglePlayPause()
+    try server.finishReview(session, commit: true)
+    let status = try await tool("status")
+    guard model.project == expected, !model.isReviewingDraft, model.undoStepNames == ["Claude: Tighten the introduction"],
+          status["verdict"] as? String == "accepted 2 of 3", model.reviewCuts.isEmpty, model.reviewAddedIDs.isEmpty else {
+        throw MCPTestFailure(description: "Partial accept/verdict/one named undo")
+    }
+    model.undo()
+    guard model.project == base else { throw MCPTestFailure(description: "Accepted review undo did not restore base") }
+    session.draft = try proposal(ops, base: base)
+    model.edit("Human") { $0.frame.shadow = 0.8 }
+    let human = model.project
+    guard try await tool("submit")["stale"] as? Bool == true, !model.isReviewingDraft else { throw MCPTestFailure(description: "Stale review overwrote human edits") }
+    try server.review(session, rebase: true)
+    guard model.liveProject == human, model.project.frame.shadow == human.frame.shadow else { throw MCPTestFailure(description: "Replay lost human edits") }
+    _ = try await tool("discard")
+    guard model.project == human, !model.isReviewingDraft else { throw MCPTestFailure(description: "Discard failed to restore human base") }
+    model.undo()
+    var dependent = try proposal([ops[2]], base: base)
+    let textID = try dependent.project(context: EditContext()).texts[0].id
+    _ = try dependent.append([.update(id: textID, from: nil, to: nil, text: "Updated", position: nil, size: nil, scale: nil, center: nil)], context: EditContext())
+    session.draft = dependent; _ = try await tool("submit")
+    try server.include([0, 0], in: session, included: false)
+    guard model.project == base, session.draft?.skipped[[1, 0]] != nil else { throw MCPTestFailure(description: "Dependent update was not skipped") }
+    try server.include([0, 0], in: session, included: true)
+    guard model.project.texts.first?.id == textID, model.project.texts.first?.text == "Updated", session.draft?.skipped.isEmpty == true else {
+        throw MCPTestFailure(description: "Dependent update did not recover with stable ids")
+    }
+    _ = try await tool("discard")
+    for linked in [false, true] {
+        var retimedBase = base; retimedBase.linkVideoEdits = linked
+        var retimed = try proposal([.speed(from: 0, to: 3, speed: 2), .cut(from: 0.5, to: 1)], base: retimedBase)
+        _ = try retimed.refreshReview(context: EditContext())
+        guard retimed.cutRanges.count == 1, abs(retimed.cutRanges[0].duration - (linked ? 0.25 : 0.5)) < 1e-9 else {
+            throw MCPTestFailure(description: "Retiming gaps were labelled as cuts or used the wrong duration")
+        }
+    }
+    session.draft = try proposal(ops, base: base); _ = try await tool("submit")
+    session.connected = false; server.removeFinishedSessions()
+    guard server.projectSessions(model).contains(where: { $0 === session }) else { throw MCPTestFailure(description: "Disconnected pending draft disappeared") }
+    controller.close()
+    guard model.project == base, !model.isReviewingDraft, session.draft?.submitted == false,
+          try Project.load(from: file) == base else { throw MCPTestFailure(description: "Closing review saved a proposal or lost its pending state") }
+    print("MCP review: partial acceptance/verdict, one undo, preview/disk/client isolation, edit/Escape guards, scrubbing, stale replay/discard, dependency recovery, disconnect and close verified; /tmp/recorder-mcp-review.png")
+}
+
 @MainActor private func checkMCPEdit(_ args: [String]) async throws {
     guard let path = args.first else { throw MCPTestFailure(description: "usage: mcp-edit <fixture.recorder>") }
     let root = URL(fileURLWithPath: "/tmp/recorder-mcp-edit-\(UUID().uuidString)")
@@ -4339,6 +4494,7 @@ private final class MCPTestClient {
     let session = MCPSession(); session.agentName = "edit-test"; session.projectURL = model.packageURL.standardizedFileURL
     defer {
         controller.close()
+        session.connected = false; MCPServer.shared.removeFinishedSessions()
         UserDefaults.standard.removeObject(forKey: "agentAccess.\(fixture.id)")
         try? FileManager.default.removeItem(at: AgentRender.cacheFolder(session: session.id))
         try? FileManager.default.removeItem(at: root)
@@ -4384,7 +4540,7 @@ private final class MCPTestClient {
     guard try await tool("draft", ["action": "status"])["stale"] as? Bool == true else { throw MCPTestFailure(description: "Stale draft status") }
     model.undo()
     let submitted = try await tool("draft", ["action": "submit", "note": "Review test"])
-    guard submitted["submitted"] as? Bool == true, model.project == base else { throw MCPTestFailure(description: "Submit changed the live project") }
+    guard submitted["submitted"] as? Bool == true, model.liveProject == base, model.isReviewingDraft else { throw MCPTestFailure(description: "Submit changed the live project") }
     _ = try await tool("edit", ["action": "apply", "ifRevision": draft.revision, "ops": style], error: "REVIEW_IN_PROGRESS")
     let discarded = try await tool("draft", ["action": "discard"])
     guard discarded["verdict"] as? String == "discarded", session.draft == nil else { throw MCPTestFailure(description: "Discard verdict") }

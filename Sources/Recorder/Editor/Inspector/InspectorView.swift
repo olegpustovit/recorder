@@ -25,6 +25,9 @@ struct InspectorView: View {
         case text(UUID)
     }
 
+    private var hasAgent: Bool { !MCPServer.shared.projectSessions(model).isEmpty }
+    private var showsAgent: Bool { hasAgent && model.inspectorShowsAgent }
+
     private var selectionCount: Int { model.selectedClips.count + model.selection.count }
 
     private var selection: Selection? {
@@ -48,6 +51,7 @@ struct InspectorView: View {
     }
 
     private var contentIdentity: String {
+        if showsAgent { return "agent" }
         switch selection {
         case .multiple(let count): return "multiple-\(count)"
         case .keys(let id): return "keys-\(id)"
@@ -94,37 +98,45 @@ struct InspectorView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 4) {
-                Button("Whole project") { model.inspectorShowsProject = true }
-                    .buttonStyle(TechButtonStyle(kind: selection == nil ? .primary : .quiet, compact: true))
-                Button(selectionCount == 0 ? "Selection" : "Selection · \(selectionCount)") {
+                Button("Whole project") { model.inspectorShowsAgent = false; model.inspectorShowsProject = true }
+                    .buttonStyle(TechButtonStyle(kind: !showsAgent && selection == nil ? .primary : .quiet, compact: true))
+                Button(hasAgent || selectionCount == 0 ? "Selection" : "Selection · \(selectionCount)") {
+                    model.inspectorShowsAgent = false
                     model.inspectorShowsProject = false
                 }
-                .buttonStyle(TechButtonStyle(kind: selection != nil ? .primary : .quiet, compact: true))
+                .buttonStyle(TechButtonStyle(kind: !showsAgent && selection != nil ? .primary : .quiet, compact: true))
                 .disabled(selectionCount == 0)
+                if hasAgent {
+                    Button("Claude") { model.inspectorShowsAgent = true }
+                        .buttonStyle(TechButtonStyle(kind: showsAgent ? .primary : .quiet, compact: true))
+                }
                 Spacer(minLength: 0)
             }.padding(12)
             Divider().overlay(Theme.strokeColor)
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    if selection == nil {
-                        HStack {
-                            Text(tab.title).font(Font(Theme.headingFont(28)))
-                            Spacer()
-                            PresetsMenu(model: model)
+                    if showsAgent { AgentPanel(model: model) }
+                    else {
+                        if selection == nil {
+                            HStack {
+                                Text(tab.title).font(Font(Theme.headingFont(28)))
+                                Spacer()
+                                PresetsMenu(model: model).disabled(model.isReviewingDraft)
+                            }
+                            Text(tab == .camera || tab == .keys ? "Project default · intervals can override" : "Applies throughout the recording")
+                                .font(Font(Theme.captionFont)).foregroundStyle(Theme.textSecondaryColor)
                         }
-                        Text(tab == .camera || tab == .keys ? "Project default · intervals can override" : "Applies throughout the recording")
-                            .font(Font(Theme.captionFont)).foregroundStyle(Theme.textSecondaryColor)
+                        content.disabled(model.isReviewingDraft)
+                            .modifier(InspectorReveal(identity: contentIdentity, order: 1, enabled: !hasSectionReveals))
                     }
-                    content
-                        .modifier(InspectorReveal(identity: contentIdentity, order: 1, enabled: !hasSectionReveals))
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(18)
             }
             .id(contentIdentity)
             .transition(.identity)
-            if selection == nil && tab == .camera && model.project.source.hasCamera {
+            if !showsAgent && selection == nil && tab == .camera && model.project.source.hasCamera {
                 Divider()
                 VStack(alignment: .leading, spacing: 6) {
                     if let layout = activeCameraLayout {
@@ -135,27 +147,28 @@ struct InspectorView: View {
                             model.selection = [UUID(uuidString: layout.id)!]
                             model.inspectorShowsProject = false
                         }.buttonStyle(TechButtonStyle(kind: .primary, compact: true))
-                    } else { CameraTimelineActions(model: model) }
+                    } else { CameraTimelineActions(model: model).disabled(model.isReviewingDraft) }
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(12)
             }
-            if selection == nil && tab == .animations {
+            if !showsAgent && selection == nil && tab == .animations {
                 Divider()
-                ZoomTimelineActions(model: model)
+                ZoomTimelineActions(model: model).disabled(model.isReviewingDraft)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(12)
             }
-            if selection == nil && tab == .audio {
+            if !showsAgent && selection == nil && tab == .audio {
                 Divider()
-                AddTextButton(model: model)
+                AddTextButton(model: model).disabled(model.isReviewingDraft)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(12)
             }
-            if selection == nil && tab == .keys {
+            if !showsAgent && selection == nil && tab == .keys {
                 Divider()
-                KeysTimelineActions(model: model)
+                KeysTimelineActions(model: model).disabled(model.isReviewingDraft)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(12)
             }
         }
         .onChange(of: model.cameraInspectorRequested) { _, requested in
             if requested {
+                model.inspectorShowsAgent = false
                 model.inspectorTab = .camera
                 // Preview manipulation selects an active layout, otherwise it edits the default.
                 model.inspectorShowsProject = selectionCount == 0

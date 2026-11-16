@@ -65,7 +65,7 @@ import SwiftUI
     }
 
     func start(replacing id: UUID? = nil) {
-        guard !isActive, let model, preview?.window != nil, preview?.window?.attachedSheet == nil, !model.project.clips.isEmpty else { return }
+        guard !isActive, let model, !model.isReviewingDraft, preview?.window != nil, preview?.window?.attachedSheet == nil, !model.project.clips.isEmpty else { return }
         model.cancelGesture()
         preview?.endVoiceoverPlayback()
         model.isPlaying = false

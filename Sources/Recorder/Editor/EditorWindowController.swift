@@ -31,6 +31,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
     private let rootView: EditorRootView
     private var titleField: NSTextField!
     private var saveStatusButton: NSButton!
+    private var agentStatusButton: NSButton!
     private var editableHeaderControls: [NSControl] = []
     // Typed handles onto the two swappable views above, kept alongside them so the menu actions
     // (T-311) below can reach real API (`InspectorView.init(initialTab:)`, `TimelineView.setZoom`)
@@ -211,6 +212,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
     func windowWillClose(_ notification: Notification) {
         model.voiceover.discard()
+        MCPServer.shared.editorClosing(model)
         model.saveNow()
         Self.openWindows.removeValue(forKey: model.packageURL)
         Self.liveControllers.removeAll { $0.value == nil || $0.value === self }
@@ -291,6 +293,11 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
                                        target: self, action: #selector(saveDocument(_:)))
         status.font = Theme.captionFont
         saveStatusButton = status
+        let agent = TechAppKit.button("Claude · idle", kind: .quiet, compact: true,
+                                      target: self, action: #selector(showAgent))
+        agent.font = Theme.labelFont
+        agent.contentTintColor = Theme.textSecondary
+        agentStatusButton = agent
         editableHeaderControls = [back, title, export]
         observeDocumentHeader()
         let spacer = NSView()
@@ -298,7 +305,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
         spacer.widthAnchor.constraint(greaterThanOrEqualToConstant: 8).isActive = true
         title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         title.lineBreakMode = .byTruncatingTail
-        let stack = NSStackView(views: [back, separator, title, spacer, status, export])
+        let stack = NSStackView(views: [back, separator, title, spacer, agent, status, export])
         stack.orientation = .horizontal
         stack.alignment = .centerY
         stack.spacing = 16
@@ -307,7 +314,11 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
     private func observeDocumentHeader() {
         withObservationTracking {
-            editableHeaderControls.forEach { $0.isEnabled = !model.voiceover.isActive }
+            editableHeaderControls.forEach { $0.isEnabled = !model.voiceover.isActive && !model.isReviewingDraft }
+            let sessions = MCPServer.shared.projectSessions(model)
+            let session = sessions.first { $0.id == model.reviewSessionID } ?? sessions.first { $0.draft?.verdict == nil && $0.draft != nil } ?? sessions.first
+            agentStatusButton.isHidden = session == nil
+            if let session { agentStatusButton.title = "Claude · \(MCPServer.shared.phase(session, model: model))" }
             let title = model.project.title
             if !titleField.isEditable { titleField.stringValue = title }
             window?.title = title
@@ -319,9 +330,11 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
         }
     }
 
+    @objc func showAgent() { model.inspectorShowsAgent = true }
+
     @objc private func titleCommitted(_ sender: NSTextField) {
         defer { sender.isEditable = false }
-        guard !model.voiceover.isActive else { sender.stringValue = model.project.title; return }
+        guard !model.voiceover.isActive && !model.isReviewingDraft else { sender.stringValue = model.project.title; return }
         let newTitle = sender.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !newTitle.isEmpty else { sender.stringValue = model.project.title; return }
         guard newTitle != model.project.title else { return }
@@ -330,7 +343,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
     }
 
     @objc func backTapped() {
-        guard !model.voiceover.isActive else { return }
+        guard !model.voiceover.isActive && !model.isReviewingDraft else { return }
         if model.isPlaying { previewView.togglePlayPause() }
         model.saveNow()
         window?.orderOut(nil)
@@ -339,7 +352,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
     // Not `private`: also the View ▸ Crop… menu item's action (`buildMainMenu`, `AppDelegate.swift`).
     @objc func cropTapped() {
-        guard !model.voiceover.isActive else { return }
+        guard !model.voiceover.isActive && !model.isReviewingDraft else { return }
         guard let window else { return }
         CropSheet.present(for: model, on: window)
     }
@@ -348,7 +361,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
     // Export… ⌘E menu item's action, reached through the responder chain (`target = nil`, so it
     // disables itself with no editor window key — same mechanism as the Edit/View items above).
     @objc func exportTapped(_ sender: Any?) {
-        guard !model.voiceover.isActive else { return }
+        guard !model.voiceover.isActive && !model.isReviewingDraft else { return }
         guard let window else { return }
         ExportSheet.present(for: model, on: window)
     }
@@ -604,6 +617,11 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
     /// normally since it carries a `⌘` modifier. Also: Undo/Redo's title/availability track the
     /// undo stack, and Remove/Hide Cursor need a selection; everything else just needs an editor.
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if model.isReviewingDraft {
+            return [#selector(saveDocument(_:)), #selector(copyFrameAsImage(_:)), #selector(showRawFiles(_:)),
+                    #selector(selectInspectorTab(_:)), #selector(showAgent), #selector(timelineZoomIn(_:)),
+                    #selector(timelineZoomOut(_:)), #selector(timelineFit(_:)), #selector(toggleCompactTrackHeaders(_:))].contains(item.action)
+        }
         if model.voiceover.isActive { return item.action == #selector(recordVoiceover(_:)) && model.voiceover.phase != .finishing }
         switch item.action {
         case #selector(performUndo):
@@ -663,6 +681,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
     }
 
     override func cancelOperation(_ sender: Any?) {
+        if model.isReviewingDraft { return }
         if model.voiceover.isActive { model.voiceover.discard() }
         else { super.cancelOperation(sender) }
     }

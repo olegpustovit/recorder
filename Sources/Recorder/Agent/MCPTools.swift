@@ -89,7 +89,7 @@ enum MCPTools {
         }
     }
     @MainActor static func viewedProject(_ model: EditorModel, session: MCPSession) throws -> Project {
-        guard let draft = session.draft, draft.verdict == nil, draft.baseProject.id == model.project.id else { return model.project }
+        guard let draft = session.draft, draft.verdict == nil, draft.baseProject.id == model.liveProject.id else { return model.liveProject }
         return try draft.project(context: EditContext(words: model.transcript ?? []))
     }
     private static func json<T: Encodable>(_ value: T) throws -> Any {
@@ -117,27 +117,27 @@ enum MCPTools {
     }
     @MainActor private static func requireEditable(_ model: EditorModel) throws {
         guard !model.voiceover.isActive else { throw MCPFailure(code: "PERMISSION_DENIED", message: "Recording a voiceover; stop it before editing or reviewing") }
-        guard !model.isReviewingDraft, !model.isEditingGesture else { throw MCPFailure(code: "REVIEW_IN_PROGRESS", message: "Finish the review or timeline gesture before editing") }
+        guard !model.isReviewingDraft, !model.isEditingGesture, model.mediaImportStatus == nil else { throw MCPFailure(code: "REVIEW_IN_PROGRESS", message: "Finish the review, import or timeline gesture before editing") }
     }
     @MainActor private static func editContext(_ ops: [EditOp], model: EditorModel) async throws -> EditContext {
         var needsWords = false, needsSilence = false
         for op in ops {
             switch op { case .cutWords, .captions: needsWords = true; case .cutPauses: needsSilence = true; default: break }
         }
-        if needsWords, !model.project.source.hasMic || model.transcript == nil { throw notTranscribed() }
+        if needsWords, !model.liveProject.source.hasMic || model.transcript == nil { throw notTranscribed() }
         var context = EditContext(words: model.transcript ?? [])
         if needsSilence {
-            guard model.project.source.hasMic, let audio = Waveform.audioURL(in: model.packageURL, file: "mic.m4a") else { throw notTranscribed() }
+            guard model.liveProject.source.hasMic, let audio = Waveform.audioURL(in: model.packageURL, file: "mic.m4a") else { throw notTranscribed() }
             context.silent = silentRanges(levels: try await Waveform.peaks(for: audio), perSecond: Double(Waveform.peaksPerSecond), minDuration: 0, pad: 0)
         }
         return context
     }
     @MainActor private static func edit(_ action: String, _ args: [String: Any], model: EditorModel, session: MCPSession) async throws -> [String: Any] {
         try requireEditable(model)
-        let level = AgentAccess.level(for: model.project.id)
+        let level = AgentAccess.level(for: model.liveProject.id)
         guard level == .draft || level == .live else { throw MCPFailure(code: "PERMISSION_DENIED", message: "Editing needs Draft or Live access in the Claude tab") }
         let active = session.draft.flatMap { $0.verdict == nil ? $0 : nil }
-        if let active, active.baseProject.id != model.project.id || active.submitted || level == .live {
+        if let active, active.baseProject.id != model.liveProject.id || active.submitted || level == .live {
             throw MCPFailure(code: "REVIEW_IN_PROGRESS", message: "Discard or finish the pending draft, or reopen its project, before editing")
         }
         if action == "undo" {
@@ -145,9 +145,9 @@ enum MCPTools {
                 throw MCPFailure(code: "PERMISSION_DENIED", message: "Undo needs Live access and a Claude edit at the top of the undo stack; use draft.discard for drafts")
             }
             model.undo()
-            return ["mode": "live", "undone": name, "revision": try revision(model.project)]
+            return ["mode": "live", "undone": name, "revision": try revision(model.liveProject)]
         }
-        let liveRevision = try revision(model.project)
+        let liveRevision = try revision(model.liveProject)
         let expected = active?.revision ?? liveRevision
         guard let sent = args["ifRevision"] as? String else { throw MCPFailure(code: "INVALID_OP", message: "Pass ifRevision from timeline.get or the previous edit.apply") }
         guard sent == expected, active == nil || active?.base == liveRevision else {
@@ -157,9 +157,9 @@ enum MCPTools {
         let originalDraftID = session.draft?.id
         let context = try await editContext(ops, model: model)
         guard try self.model(for: session) === model else { throw MCPFailure(code: "NO_PROJECT", message: "Project changed during analysis; reopen it and retry") }
-        try requireAccess(model.project, tool: "edit"); try requireEditable(model)
-        guard level == AgentAccess.level(for: model.project.id) else { throw MCPFailure(code: "PERMISSION_DENIED", message: "Access changed during analysis; check access and retry") }
-        guard liveRevision == (try revision(model.project)), originalDraftID == session.draft?.id,
+        try requireAccess(model.liveProject, tool: "edit"); try requireEditable(model)
+        guard level == AgentAccess.level(for: model.liveProject.id) else { throw MCPFailure(code: "PERMISSION_DENIED", message: "Access changed during analysis; check access and retry") }
+        guard liveRevision == (try revision(model.liveProject)), originalDraftID == session.draft?.id,
               active?.revision == session.draft.flatMap({ $0.verdict == nil ? $0.revision : nil }),
               active?.calls.count == session.draft.flatMap({ $0.verdict == nil ? $0.calls.count : nil }),
               session.draft.map({ $0.verdict != nil || !$0.submitted }) ?? true else {
@@ -173,15 +173,15 @@ enum MCPTools {
         let result: (project: Project, changes: [EditChange])
         var nextRevision = expected
         if level == .draft {
-            var draft = active ?? AgentDraft(base: liveRevision, baseProject: model.project)
+            var draft = active ?? AgentDraft(base: liveRevision, baseProject: model.liveProject)
             result = try draft.append(ops, context: context)
-            if !dryRun, !ops.isEmpty { session.draft = draft; session.lastDraftVerdict = nil; nextRevision = draft.revision }
+            if !dryRun, !ops.isEmpty { session.draft = draft; session.lastDraftVerdict = nil; session.reviewError = nil; nextRevision = draft.revision }
         } else {
-            result = try model.project.applying(ops, context: context)
-            if !dryRun, result.project != model.project {
+            result = try model.liveProject.applying(ops, context: context)
+            if !dryRun, result.project != model.liveProject {
                 let summary = result.changes.first?.summary ?? "Edit"
                 model.edit("Claude: \(summary)\(result.changes.count > 1 ? " +\(result.changes.count - 1)" : "")") { $0 = result.project }
-                nextRevision = try revision(model.project)
+                nextRevision = try revision(model.liveProject)
             }
         }
         return ["revision": nextRevision, "mode": level.rawValue, "changes": try json(result.changes),
@@ -198,22 +198,31 @@ enum MCPTools {
         }
     }
     @MainActor private static func draft(_ action: String, _ args: [String: Any], model: EditorModel, session: MCPSession) async throws -> [String: Any] {
-        if action != "status" { try requireEditable(model) }
-        if let draft = session.draft, draft.baseProject.id != model.project.id, action != "discard" {
+        if action == "submit" { try requireEditable(model) }
+        if action != "status", model.voiceover.isActive { throw MCPFailure(code: "PERMISSION_DENIED", message: "Recording a voiceover; stop it before reviewing") }
+        if let draft = session.draft, draft.baseProject.id != model.liveProject.id, action != "discard" {
             throw MCPFailure(code: "NO_PROJECT", message: "Reopen the pending draft's project before checking or submitting it")
         }
-        if action == "discard" { session.draft = nil; session.lastDraftVerdict = "discarded" }
+        if action == "discard" { try MCPServer.shared.finishReview(session, commit: false) }
         if action == "submit" {
             guard session.draft != nil, session.draft?.verdict == nil else { throw MCPFailure(code: "INVALID_OP", message: "Create a draft with edit.apply before submitting it") }
             session.draft?.submitted = true; session.draft?.note = args["note"] as? String
             _ = await EditorWindowController.open(package: model.packageURL).value
+            try MCPServer.shared.review(session)
         }
         let draft = session.draft
         var changes = draft?.changes.flatMap { $0 } ?? []
         for index in changes.indices { changes[index].op = index }
         var payload: [String: Any] = ["base": draft?.base as Any? ?? NSNull(), "ops": try json(draft?.calls.flatMap { $0 } ?? []),
                                      "changes": try json(changes), "submitted": draft?.submitted ?? false,
-                                     "stale": draft.map { $0.base != (try? revision(model.project)) } ?? false]
+                                     "stale": draft.map { $0.verdict == nil && $0.base != (try? revision(model.liveProject)) } ?? false,
+                                     "selected": draft?.selectedCount ?? 0]
+        if let draft {
+            payload["excluded"] = draft.rows.enumerated().filter { draft.excluded.contains($0.element.id) }.map(\.offset)
+            payload["skipped"] = draft.rows.enumerated().compactMap { index, row -> [String: Any]? in
+                draft.skipped[row.id].map { ["op": index, "reason": $0] }
+            }
+        }
         if let verdict = draft?.verdict ?? session.lastDraftVerdict { payload["verdict"] = verdict }
         if let draft, draft.verdict == nil { payload["revision"] = draft.revision }
         return payload
@@ -223,8 +232,9 @@ enum MCPTools {
         var action = "invalid", errorCode: String?
         defer {
             let loggedName = list.contains { $0["name"] as? String == name } ? name : "invalid"
+            let projectID = (try? model(for: session))?.liveProject.id ?? session.draft?.baseProject.id
             AgentActivity.shared.log(.init(time: began, agent: session.agentName, tool: "\(loggedName).\(action)",
-                summary: errorCode ?? "completed", ms: Int(Date().timeIntervalSince(began) * 1000), isError: errorCode != nil))
+                summary: errorCode ?? "completed", ms: Int(Date().timeIntervalSince(began) * 1000), isError: errorCode != nil, projectID: projectID))
         }
         do {
             guard let tool = list.first(where: { $0["name"] as? String == name }),
@@ -249,7 +259,7 @@ enum MCPTools {
                 guard valid else { throw MCPFailure(code: "INVALID_OP", message: "\(key) must be \(type ?? "a valid argument"); revise it using tools/list and retry") }
             }
             if session.projectURL != nil {
-                if let current = try? model(for: session) { try requireAccess(current.project, tool: name) }
+                if let current = try? model(for: session) { try requireAccess(current.liveProject, tool: name) }
                 else if name == "project", ["open", "list"].contains(action) { session.projectURL = nil }
                 else { _ = try model(for: session) }
             }
@@ -266,7 +276,7 @@ enum MCPTools {
                 if let path = args["path"] as? String, !path.isEmpty {
                     url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath).resolvingSymlinksInPath().standardizedFileURL
                 } else if let id = args["id"] as? String {
-                    if let existing = EditorWindowController.allOpen.first(where: { $0.model.project.id == id }) { url = existing.model.packageURL }
+                    if let existing = EditorWindowController.allOpen.first(where: { $0.model.liveProject.id == id }) { url = existing.model.packageURL }
                     else if let item = await libraryItems().first(where: { $0.projectID == id }) { url = item.id.resolvingSymlinksInPath().standardizedFileURL }
                     else { throw MCPFailure(code: "NO_PROJECT", message: "No project with this id; call project.list or supply its .recorder path") }
                 } else { throw MCPFailure(code: "INVALID_OP", message: "project.open needs id or path; call project.list first") }
@@ -305,7 +315,7 @@ enum MCPTools {
                     payload = try object(view); payload["truncated"] = next != nil
                     if let next { payload["from"] = next }
                 case ("analyze", "pauses"):
-                    guard model.project.source.hasMic, let audio = Waveform.audioURL(in: model.packageURL, file: "mic.m4a") else { throw notTranscribed() }
+                    guard model.liveProject.source.hasMic, let audio = Waveform.audioURL(in: model.packageURL, file: "mic.m4a") else { throw notTranscribed() }
                     let minimum = try number(args, "minDuration", default: 0.6), threshold = try number(args, "threshold", default: 0.02)
                     guard minimum >= 0, (0...1).contains(threshold) else { throw MCPFailure(code: "OUT_OF_RANGE", message: "Use nonnegative minDuration and threshold between 0 and 1") }
                     let peaks = try await Waveform.peaks(for: audio)
@@ -328,7 +338,7 @@ enum MCPTools {
                     payload = ["idle": outputRanges(idleRanges(events: events + [InputEvent(t: project.source.duration, k: .move)]), project: project),
                                "typing": outputRanges(typingRanges(events: events), project: project), "clicks": clicks]
                 case ("analyze", "transcribe"):
-                    guard model.project.source.hasMic, Waveform.audioURL(in: model.packageURL, file: "mic.m4a") != nil else { throw notTranscribed() }
+                    guard model.liveProject.source.hasMic, Waveform.audioURL(in: model.packageURL, file: "mic.m4a") != nil else { throw notTranscribed() }
                     guard !model.isTranscribing else { throw MCPFailure(code: "RENDER_BUSY", message: "Transcription is running; wait and call transcript.get") }
                     progress(0)
                     await model.transcribe()
@@ -347,8 +357,8 @@ enum MCPTools {
             }
             if session.projectURL != nil {
                 let current = try model(for: session)
-                try requireAccess(current.project, tool: name)
-                if payload["project"] == nil { payload["project"] = current.project.id }
+                try requireAccess(current.liveProject, tool: name)
+                if payload["project"] == nil { payload["project"] = current.liveProject.id }
                 if payload["revision"] == nil { payload["revision"] = try revision(viewedProject(current, session: session)) }
             } else { payload["project"] = NSNull(); payload["revision"] = NSNull() }
             var reply = result(payload)
@@ -375,7 +385,7 @@ enum MCPTools {
             return (["cancelled": task != nil], [])
         }
         guard session.renderTask == nil else { throw MCPFailure(code: "RENDER_BUSY", message: "A render is running; call render.cancel or wait for it to finish") }
-        let project = args["draft"] as? Bool == false ? model.project : try viewedProject(model, session: session)
+        let project = args["draft"] as? Bool == false ? model.liveProject : try viewedProject(model, session: session)
         let revision = try revision(project)
         let projectID = project.id
         let frozen = AgentRender.renderModel(for: model, project: project)
@@ -426,7 +436,7 @@ enum MCPTools {
             payload["bytes"] = (try FileManager.default.attributesOfItem(atPath: file.path)[.size] as? NSNumber)?.intValue ?? 0
         } else { payload["at"] = times }
         try requireAccess(frozen.project, tool: "render")
-        guard EditorWindowController.allOpen.contains(where: { $0.model.project.id == projectID }) else {
+        guard EditorWindowController.allOpen.contains(where: { $0.model.liveProject.id == projectID }) else {
             throw MCPFailure(code: "NO_PROJECT", message: "The editor closed during rendering; use project.open and retry")
         }
         return (payload, content)
@@ -438,7 +448,7 @@ enum MCPTools {
         return store.items
     }
     @MainActor private static func info(_ model: EditorModel, project: Project? = nil) -> [String: Any] {
-        let p = project ?? model.project
+        let p = project ?? model.liveProject
         return ["title": p.title, "duration": p.exportDuration, "size": ["w": p.source.pixelWidth, "h": p.source.pixelHeight],
                 "clips": p.clips.filter { !$0.isEmpty }.count,
                 "lanes": ["zoom": p.zooms.count, "text": p.texts.count, "mask": p.masks.count, "layout": p.layouts.count,

@@ -470,7 +470,9 @@ Read `docs/UI-KIT.md` (Signal UI direction), `Theme.swift`, `UIComponents.swift`
 `build/signal-ui-gallery.png` (`make gallery-png`), and the prototype. Use only `Theme` tokens and shared components. No new colours.
 
 **Files.** `Sources/Recorder/Editor/Inspector/AgentPanel.swift` (new) · `Inspector/InspectorView.swift` (third header
-tab) · `EditorWindowController.swift` (document bar status) · `TimelineView.swift` (review marks) · `EditorModel.swift`.
+tab) · `EditorWindowController.swift` (document bar status) · `TimelineView.swift` (review marks) · `EditorModel.swift` ·
+`MCPServer.swift`/`MCPTools.swift` (review replay, session observation, status) · `PreviewView.swift`, `MediaImport.swift`,
+`VoiceoverRecorder.swift` (review edit guards) · `SelfTest.swift`.
 
 Layout (inspector, 320 pt, same insets as the Canvas panel):
 
@@ -496,16 +498,33 @@ Layout (inspector, 320 pt, same insets as the Canvas panel):
   checkbox recomputes with that op excluded (Esc does **not** discard; only the buttons do). Accept →
   `endReview(commit: true, name: "Claude: <note, 40 chars>")` = one undo step. Discard → `endReview(commit: false, …)`.
   The session's `draft.status` reports the verdict.
+- Review previews replace `model.project`; `model.liveProject` retains the saved human base until acceptance.
+  Autosave/Save Now/close write only that base. Other sessions and explicit `render {draft:false}` read the live
+  base; the reviewing session's default reads/renders use its checked proposal. Closing the editor restores the
+  base and leaves the pending draft in memory; client disconnect also retains pending drafts until resolved.
+- Replay uses the original per-call analysis and deterministic operation ids. Unchecking an operation retries the
+  retained operations in each call; invalid dependents are shown as skipped with a reason, and are retried when
+  their prerequisite is checked again. `draft.status` includes flat `excluded` indices, `skipped` indices/reasons,
+  and the selected count. A stale draft stays out of preview until **Replay on current** explicitly rebases it;
+  discard then restores that current human base.
 - Timeline review marks while reviewing: at each cut's output position in the **draft**, a 1 pt `Theme.textPrimary`
   vertical rule across the lanes and a ruler chip `−1.7 s` (`captionFont`, `bgControl` fill); blocks added by the draft get
   a 1 pt dashed `textPrimary` outline. Pass `[(time: Double, label: String)]` and `Set<String>` (added ids) to `TimelineView`.
+- Review cut marks use each call's removed clock ranges after retiming, then map into the final draft's output
+  timeline. Free-retiming gaps are retained space, not cut marks; adjacent cuts at one output position share a chip.
 - While reviewing, timeline/inspector edits are inert (EditorModel guard) and playback/scrubbing still work.
+  Destructive menus, preview gestures, media imports, voiceover, crop and export entry points are also gated.
 - Accessibility: checkboxes are real `Toggle`s with labels (`"Cut pause at 0:08.3, minus 1.7 seconds"`); buttons have names.
 
 **Verify.** Selftest `mcp-review <package>`: submit a 3-op draft, untick one via the model API, accept → project equals
-`base.applying(2 ops)`, undo restores base, `draft.status` says `accepted 2 of 3`. `--selftest inspector-png` style render
-of the panel (add `agent` to the inspector PNG cases) for a look. **HUMAN:** compare the panel against the prototype and
-`build/signal-ui-gallery.png`; mark `[~]` until confirmed.
+`base.applying(2 ops)` with the same operation seeds, undo restores base, `draft.status` says `accepted 2 of 3`.
+Also checks disk/other-client isolation, edit/Escape guards, actual playback and scrubbing, stale rebase/discard,
+dependent-operation recovery, linked/free speed + cut durations, disconnect retention and safe editor close.
+It writes `/tmp/recorder-mcp-review.png` and `/tmp/recorder-mcp-review-min.png` from real review state.
+`--selftest inspector-png <out.png> agent` renders the panel; `agent-short`, `agent-long`, `agent-stale`, and
+`agent-error` cover overflow and feedback. **Visual review:** compare the panel against the prototype and
+`build/signal-ui-gallery.png`. The user's 2026-11-15 waiver of further HUMAN visual reviews permits agent inspection;
+do not describe it as a human-performed comparison or as evidence of physical recording/client integration.
 
 ### T-808 App: render `lowerThird` and `chapter`
 
