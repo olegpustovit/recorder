@@ -4532,6 +4532,11 @@ private final class MCPTestClient {
         var draft = AgentDraft(base: try MCPTools.revision(base), baseProject: base)
         _ = try draft.append(ops, context: EditContext()); return draft
     }
+    func apply(_ ops: [[String: Any]]) async throws {
+        guard let revision = session.draft?.revision else { throw MCPTestFailure(description: "Missing pending draft") }
+        let result = await MCPTools.call("edit", ["action": "apply", "ifRevision": revision, "ops": ops], session: session)
+        guard result["isError"] as? Bool == false else { throw MCPTestFailure(description: "Review iteration failed: \(result)") }
+    }
     let base = model.project, saved = try Data(contentsOf: file)
     let ops: [EditOp] = [.cut(from: 0.5, to: 1), .style(patch: ["frame": .object(["padding": .number(0.04)])]),
                          .text(from: 1.2, to: 2, style: .title, text: "Welcome", position: nil, size: nil)]
@@ -4646,12 +4651,36 @@ private final class MCPTestClient {
     }
     guard model.isPlaying, model.playhead > playbackStart + 0.05 else { throw MCPTestFailure(description: "Review blocked playback") }
     controller.previewView.togglePlayPause()
+    try await apply([["op": "zoom", "from": 0.1, "to": 0.9, "scale": 1.8]])
+    let iteratedExpected = try expected.applying([.zoom(from: 0.1, to: 0.9, scale: 1.8, center: nil)],
+        context: EditContext(operationSeeds: ["\(draft.id):1:0"])).project
+    let iterating = try await tool("status")
+    guard model.isWatchingDraft, model.project == iteratedExpected, model.liveProject == base,
+          session.draft?.id == draft.id, session.draft?.calls.count == 2,
+          session.draft?.excluded == Set([[0, 1]]), session.draft?.verdict == nil,
+          iterating["submitted"] as? Bool == false, iterating["excluded"] as? [Int] == [1],
+          iterating["selected"] as? Int == 3, iterating["verdict"] == nil,
+          model.project.texts.first?.id == expected.texts.first?.id,
+          model.undoStepNames.isEmpty, try Data(contentsOf: file) == saved else {
+        throw MCPTestFailure(description: "Iteration lost the draft identity, exclusions, pending verdict or frozen base")
+    }
+    try await Task.sleep(for: .milliseconds(150))
+    guard buttons(controller.inspectorView).first(where: { $0.accessibilityLabel() == "Include zoom" })?.isEnabled == false else {
+        throw MCPTestFailure(description: "Iteration did not disable native inclusion controls while watching")
+    }
+    try capturePanel("iteration-watching")
+    _ = try await tool("submit")
+    guard !model.isWatchingDraft, model.project == iteratedExpected, session.draft?.excluded == Set([[0, 1]]) else {
+        throw MCPTestFailure(description: "Resubmitting changed the iterated proposal or exclusions")
+    }
+    try await Task.sleep(for: .milliseconds(400))
+    try capturePanel("iteration-ready")
     let inspector = controller.inspectorView
     clickInspector(NSPoint(x: inspector.bounds.maxX - 50, y: inspector.isFlipped ? inspector.bounds.maxY - 24 : 24))
     try await Task.sleep(for: .milliseconds(80))
     let status = try await tool("status")
-    guard model.project == expected, !model.isReviewingDraft, model.undoStepNames == ["Claude: Tighten the introduction"],
-          status["verdict"] as? String == "accepted 2 of 3", model.reviewCuts.isEmpty, model.reviewAddedIDs.isEmpty else {
+    guard model.project == iteratedExpected, !model.isReviewingDraft, model.undoStepNames == ["Claude: Tighten the introduction"],
+          status["verdict"] as? String == "accepted 3 of 4", model.reviewCuts.isEmpty, model.reviewAddedIDs.isEmpty else {
         throw MCPTestFailure(description: "Partial accept/verdict/one named undo")
     }
     model.undo()
@@ -4701,6 +4730,16 @@ private final class MCPTestClient {
     session.draft = dependent; _ = try await tool("submit")
     try server.include([0, 0], in: session, included: false)
     guard model.project == base, session.draft?.skipped[[1, 0]] != nil else { throw MCPTestFailure(description: "Dependent update was not skipped") }
+    let skippedReason = session.draft?.skipped[[1, 0]]
+    try await apply([["op": "marker", "at": 0.2, "label": "Iteration with a skipped dependent"]])
+    let feedback = try await tool("status")
+    guard feedback["excluded"] as? [Int] == [0], feedback["selected"] as? Int == 1,
+          (feedback["skipped"] as? [[String: Any]])?.first?["op"] as? Int == 1,
+          (feedback["skipped"] as? [[String: Any]])?.first?["reason"] as? String == skippedReason,
+          session.draft?.id == dependent.id, session.draft?.verdict == nil, model.isWatchingDraft else {
+        throw MCPTestFailure(description: "Iteration status lost per-change exclusions or dependent skip reasons")
+    }
+    _ = try await tool("submit")
     try server.include([0, 0], in: session, included: true)
     guard model.project.texts.first?.id == textID, model.project.texts.first?.text == "Updated", session.draft?.skipped.isEmpty == true else {
         throw MCPTestFailure(description: "Dependent update did not recover with stable ids")
@@ -4720,7 +4759,7 @@ private final class MCPTestClient {
     controller.close()
     guard model.project == base, !model.isReviewingDraft, session.draft?.submitted == false,
           try Project.load(from: file) == base else { throw MCPTestFailure(description: "Closing review saved a proposal or lost its pending state") }
-    print("MCP review: native group/disclosure/seek/footer clicks, rapid reversal, \(reducedMotion ? "reduced" : "normal") motion samples, partial/group/zero-op acceptance, atomic group validation, seeded result, one undo, preview/disk/client isolation, edit/Escape guards, scrubbing, stale replay/discard, dependency recovery, disconnect and close verified; /tmp/recorder-mcp-review.png")
+    print("MCP review: native group/disclosure/seek/footer clicks, rapid reversal, \(reducedMotion ? "reduced" : "normal") motion samples, submitted iteration/exclusion/reason/identity retention, partial/group/zero-op acceptance, atomic group validation, seeded result, one undo, preview/disk/client isolation, edit/Escape guards, scrubbing, stale replay/discard, dependency recovery, disconnect and close verified; /tmp/recorder-mcp-review.png")
 }
 
 @MainActor private func checkMCPEdit(_ args: [String]) async throws {
@@ -4800,7 +4839,19 @@ private final class MCPTestClient {
     model.undo()
     let submitted = try await tool("draft", ["action": "submit", "note": "Review test"])
     guard submitted["submitted"] as? Bool == true, model.liveProject == base, model.isReviewingDraft else { throw MCPTestFailure(description: "Submit changed the live project") }
-    _ = try await tool("edit", ["action": "apply", "ifRevision": draft.revision, "ops": style], error: "REVIEW_IN_PROGRESS")
+    let dryIteration = try await tool("edit", ["action": "apply", "ifRevision": draft.revision, "ops": style, "dryRun": true])
+    _ = try await tool("edit", ["action": "apply", "ifRevision": draft.revision, "ops": []])
+    _ = try await tool("edit", ["action": "apply", "ifRevision": draft.revision, "ops": [["op": "zoom", "from": 0, "to": 1, "scale": 0]]], error: "INVALID_OP")
+    guard session.draft?.submitted == true, session.draft?.calls.count == 3, !model.isWatchingDraft,
+          dryIteration["revision"] as? String == draft.revision, model.project == replayed else {
+        throw MCPTestFailure(description: "Dry, empty or failed iteration changed a submitted review")
+    }
+    _ = try await tool("edit", ["action": "apply", "ifRevision": draft.revision, "ops": style])
+    guard model.isWatchingDraft, session.draft?.submitted == false, session.draft?.verdict == nil,
+          session.draft?.id == draft.id, session.draft?.calls.count == 4, model.liveProject == base,
+          model.undoStepNames.isEmpty, try Data(contentsOf: projectURL) == saved else {
+        throw MCPTestFailure(description: "Submitted apply did not return the same pending draft to watching")
+    }
     let discarded = try await tool("draft", ["action": "discard"])
     guard discarded["verdict"] as? String == "discarded", session.draft == nil else { throw MCPTestFailure(description: "Discard verdict") }
     _ = try await tool("edit", ["action": "apply", "ifRevision": baseRevision, "ops": [["op": "cutWords", "transcript": "stale", "words": ["w0"]]]], error: "TRANSCRIPT_CHANGED")

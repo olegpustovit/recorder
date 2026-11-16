@@ -1159,6 +1159,11 @@ inclusion/Accept are disabled and the panel/timeline say `Claude is editing, Esc
 the human base and pauses automatic preview for that session while retaining its draft. Later agent calls stay
 hidden; a human edit makes the old draft stale. `draft.submit` makes the visible draft ready for review, enables
 controls and focuses Claude. Review the preview/marks, untick individual operations or whole groups, then Accept.
+Claude may append another call to its submitted pending draft using the current checked proposal's revision.
+That returns the same draft to watching until resubmitted, retaining operation ids, human exclusions and a nil
+verdict. Status reports excluded op indices and skipped op indices/reasons so Claude can respond to rejections.
+Dry runs, empty batches and failed calls leave the submitted review ready. Acceptance after iteration still
+creates one undo step for the full checked proposal.
 First Draft/Live apply selects Claude automatically only in a key editor window. Other clients can retain
 invisible drafts but cannot replace/submit over the current preview; their panel shows that the draft is hidden.
 Changes are collapsed by kind (Cuts, Speed, Zoom, Text, Markers, Other), with a native tri-state checkbox,
@@ -1182,7 +1187,7 @@ replacement cancels old motion. These preview/animation fields never enter proje
 Accept creates one named `Claude: …` undo step; Live mode applies each call directly as one named undo step.
 A stale draft offers **Replay on current**; replay reports invalid/dependent operations as skipped.
 Only one review can be active per project. Quitting Recorder loses pending drafts; disconnecting a client does
-not automatically accept them. Human gestures, active review and voiceover recording guard conflicting edits.
+not automatically accept them. Human gestures, review ownership and voiceover recording guard conflicting edits.
 
 Agents never receive key characters. Activity analysis returns ranges/times only; agent frames, sheets and proxies
 force the Keys overlay off. The last 200 activity summaries are kept in memory (the panel shows the last 50 for

@@ -125,6 +125,7 @@ struct AgentDraft {
         let result = try current.applying(ops, context: replayContext(context, call: calls.count, indices: Array(ops.indices)))
         let nextRevision = try MCPTools.revision(result.project)
         calls.append(ops); changes.append(result.changes); contexts.append(context)
+        submitted = false
         revision = nextRevision
         duration = result.project.exportDuration
         return result

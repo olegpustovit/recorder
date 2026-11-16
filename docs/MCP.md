@@ -439,7 +439,7 @@ struct AgentDraft {
   2. Build `EditContext` (transcript words; silent ranges computed only if an op is `cutPauses`).
   3. **Draft mode**: `let next = try current.applying(ops, context:)` where `current` is the draft project (or
      `model.project` when starting a draft: then set `base`/`baseProject`). Append the call and its changes. Return the
-     new draft revision. Nothing in the editor changes.
+     new draft revision. The editor shows the watching preview; its saved human base stays unchanged.
   4. **Live mode**: `let result = try model.project.applying(ops, context:)`, then
      `model.edit("Claude: \(changes[0].summary)\(n > 1 ? " +\(n-1)" : "")") { $0 = result.project }`.
   5. `dryRun`: run `applying`, return changes, store nothing.
@@ -450,8 +450,12 @@ struct AgentDraft {
 - Timeline/transcript/activity reads and renders use the session's active draft and its revision. `render` with
   `draft: false` uses the live project. Reject an apply when the human has changed the draft's base, even if the client
   passes the draft's own latest revision. Live edits require discarding any pending draft first.
-- `draft.submit {note}`: mark submitted; bring the editor window front; start review (T-807). Further applies are
-  blocked while submitted. `draft.status` returns the verdict once the human decides (`accepted`, `accepted 7 of 9`,
+- `draft.submit {note}`: mark submitted; bring the editor window front; start review (T-807). Further successful
+  nonempty applies on that pending draft return it to watching until it is submitted again, retaining its id,
+  prior checkbox exclusions, stable operation ids and nil verdict. New calls use the current checked proposal's
+  revision and output clock. Dry runs, empty batches and failed calls leave submitted review unchanged.
+  Recheck submission, exclusions and skipped operations after awaited analysis, including checkbox changes that
+  leave the project revision unchanged. `draft.status` returns the verdict once the human decides (`accepted`, `accepted 7 of 9`,
   `discarded`) and a `stale` flag when the base differs. `draft.discard` clears the draft and remembers `discarded` for
   the next status query. A session keeps its pending draft when opening another project, but must reopen the original
   project or explicitly discard before editing another one.
@@ -518,7 +522,11 @@ Layout (inspector, 320 pt; updated by T-812 to the [panel redesign](https://arti
 - Replay uses the original per-call analysis and deterministic operation ids. Unchecking an operation retries the
   retained operations in each call; invalid dependents are shown as skipped with a reason, and are retried when
   their prerequisite is checked again. `draft.status` includes flat `excluded` indices, `skipped` indices/reasons,
-  and the selected count. A stale draft stays out of preview until **Replay on current** explicitly rebases it;
+  and the selected count. Exclusion indices refer to the complete call-ordered op list; skipped entries retain
+  their per-change `reason` text. Checkboxes do not collect free-text rejection notes. Iterating a submitted
+  pending draft preserves these exclusions/reasons, disables inclusion/Accept while watching, then enables
+  them on resubmit. Acceptance still creates one undo step for the complete checked result.
+  A stale draft stays out of preview until **Replay on current** explicitly rebases it;
   discard then restores that current human base.
 - Timeline review marks while reviewing: at each cut's output position in the **draft**, a 1 pt `Theme.textPrimary`
   vertical rule across the lanes and a ruler chip `−1.7 s` (`captionFont`, `bgControl` fill); blocks added by the draft get
@@ -565,6 +573,13 @@ The relay/config/prompt, client JSONL, observations, PNGs and movie stay in the 
 `inspector-panels`, `make test` and gallery checks. The recorded study selects the Claude panel explicitly;
 conditional automatic selection is checked by `mcp-live`. Native package opening canonicalizes symlink aliases
 and file/directory URL forms so a client cannot silently open a second editor for the same human project.
+
+**T-817 Verify.** `mcp-review <fixture> [--reduce-motion]` submits, unticks an operation, applies another call,
+checks the same draft/operation identities and exclusions, native disabled watching controls, status reasons,
+resubmission, the accepted3-of4 count and one undo to the base. A dependent-op case retains its excluded
+creation and skipped update/reason across iteration, then recovers the same id when re-included.
+`mcp-edit` checks successful iteration and that dry, empty or invalid calls leave submitted review unchanged.
+Run both, `mcp-live` normal/reduced, `mcp-panel-motion`, `make test` and inspect the iteration panel samples.
 
 **T-814 Verify.** `mcp-edit` asserts a3-op intent/result and absence of private recorded key/edit/marker text.
 `mcp-render` checks in-flight state during an actual cancellable proxy. `mcp-panel-motion <output-directory>`

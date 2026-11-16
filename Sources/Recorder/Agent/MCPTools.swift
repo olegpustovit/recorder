@@ -58,7 +58,7 @@ enum MCPTools {
             tool("transcript", ["get"], "Read up to 2000 spoken words with stable wN ids, or timestamped phrases. Key presses are never returned.", range.merging(["format": ["type": "string", "enum": ["words", "phrases"]]], uniquingKeysWith: { _, b in b }), read: true),
             tool("analyze", ["transcribe", "pauses", "fillers", "activity"], "Transcribe on-device, find mic pauses/fillers, or read activity ranges without key characters.", ["minDuration": number, "threshold": number], read: true),
             tool("edit", ["apply", "undo"], "Apply atomic edits using the latest ifRevision; edits land in a draft by default. All times in a call refer to that revision's output timeline.", ["ifRevision": string, "ops": ["type": "array", "items": ["oneOf": operationSchemas]], "dryRun": boolean]),
-            tool("draft", ["status", "submit", "discard"], "Read or submit your draft for review, or discard it.", ["note": string]),
+            tool("draft", ["status", "submit", "discard"], "Read your draft's exclusions, skipped reasons and verdict; submit for review or discard it. A pending submitted draft can receive more edit.apply calls, returning to watching until submitted again.", ["note": string]),
             tool("render", ["frames", "sheet", "clip", "cancel"], "Render frames, a contact sheet or a 540p proxy into the agent cache. Key chips are hidden.", ["at": ["type": "array", "items": number, "maxItems": 24], "from": number, "to": number, "count": ["type": "integer", "minimum": 1, "maximum": 24], "longEdge": ["type": "integer", "minimum": 1, "maximum": 640], "draft": boolean]),
             tool("export", ["final"], "Export an MP4 after the user's native approval, optionally with SRT subtitles.", ["destination": string, "shortEdge": ["type": "integer", "enum": [720, 1080, 2160]], "fps": ["type": "integer", "enum": [24, 30, 60]], "srt": boolean]),
             tool("ui", ["show"], "Move the editor playhead and select blocks by id.", ["at": ["type": "number"], "select": ["type": "array", "items": string]])
@@ -120,7 +120,7 @@ enum MCPTools {
         guard !model.isEditingGesture, model.mediaImportStatus == nil else { throw MCPFailure(code: "REVIEW_IN_PROGRESS", message: "Finish the import or timeline gesture before editing") }
         if model.isReviewingDraft {
             guard let session = draftSession, let owner = model.reviewSessionID, AgentAccess.level(for: model.liveProject.id) == .draft,
-                  (owner == session.id && model.isWatchingDraft) || (allowInvisible && owner != session.id) else {
+                  owner == session.id || allowInvisible else {
                 throw MCPFailure(code: "REVIEW_IN_PROGRESS", message: "Finish the current review before editing or submitting another draft")
             }
         }
@@ -143,7 +143,7 @@ enum MCPTools {
         let level = AgentAccess.level(for: model.liveProject.id)
         guard level == .draft || level == .live else { throw MCPFailure(code: "PERMISSION_DENIED", message: "Editing needs Draft or Live access in the Claude tab") }
         let active = session.draft.flatMap { $0.verdict == nil ? $0 : nil }
-        if let active, active.baseProject.id != model.liveProject.id || active.submitted || level == .live {
+        if let active, active.baseProject.id != model.liveProject.id || level == .live {
             throw MCPFailure(code: "REVIEW_IN_PROGRESS", message: "Discard or finish the pending draft, or reopen its project, before editing")
         }
         if action == "undo" {
@@ -168,7 +168,9 @@ enum MCPTools {
         guard liveRevision == (try revision(model.liveProject)), originalDraftID == session.draft?.id,
               active?.revision == session.draft.flatMap({ $0.verdict == nil ? $0.revision : nil }),
               active?.calls.count == session.draft.flatMap({ $0.verdict == nil ? $0.calls.count : nil }),
-              session.draft.map({ $0.verdict != nil || !$0.submitted }) ?? true else {
+              active?.submitted == session.draft.flatMap({ $0.verdict == nil ? $0.submitted : nil }),
+              active?.excluded == session.draft.flatMap({ $0.verdict == nil ? $0.excluded : nil }),
+              active?.skipped == session.draft.flatMap({ $0.verdict == nil ? $0.skipped : nil }) else {
             throw MCPFailure(code: "STALE_REVISION", message: "The editor or draft changed during analysis; call timeline.get and retry")
         }
         if ops.contains(where: { switch $0 { case .cutWords, .captions: return true; default: return false } }), context.words != model.transcript {
