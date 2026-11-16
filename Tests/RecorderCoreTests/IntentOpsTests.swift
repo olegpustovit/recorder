@@ -6,11 +6,12 @@ import Testing
     let board = EditReportTests.board()
     let base = EditReportTests.project()
 
-    func lower(_ json: String, clicks: [InputEvent] = []) throws -> (ops: [EditOp], lowered: [LoweredIntent]) {
+    func lower(_ json: String, clicks: [InputEvent] = [], project: Project? = nil, board custom: Storyboard? = nil) throws -> (ops: [EditOp], lowered: [LoweredIntent], origin: [Int]) {
         let raw = try JSONDecoder().decode([JSONValue].self, from: Data(json.utf8))
-        let r = try lowerIntents(raw, project: base, clicks: clicks) { board }
-        return (try JSONDecoder().decode([EditOp].self, from: JSONEncoder().encode(r.ops)), r.lowered)
+        let r = try lowerIntents(raw, project: project ?? base, clicks: clicks) { custom ?? board }
+        return (try JSONDecoder().decode([EditOp].self, from: JSONEncoder().encode(r.ops)), r.lowered, r.origin)
     }
+    func one(_ shots: [Shot]) -> Storyboard { Storyboard(duration: 20, fps: 10, shots: shots, summary: StoryboardSummary(shots: shots.count, aslSec: 0, staticSec: 0, longestStatic: nil)) }
     /// One `applying` call is the whole batch: the editor wraps it in a single `model.edit`, i.e. one undo step.
     func apply(_ ops: [EditOp]) throws -> Project {
         let r = try base.applying(ops, context: EditContext())
@@ -37,7 +38,7 @@ import Testing
         #expect(r.ops.contains(.speed(from: 12, to: 19.2, speed: 6, snap: true)) && r.ops.contains(.cut(from: 19.2, to: 20, snap: true)))
         #expect(!r.ops.contains { if case .cut(.seconds(let a), _, _) = $0 { return a >= 4.2 && a < 10 }; return false })   // tagged result stays
         let after = try apply(r.ops)
-        #expect(abs(after.exportDuration - 10.3) < 0.1)
+        #expect(abs(after.exportDuration - 10.73) < 0.05)
         #expect(!lint(after, storyboard: board).contains { $0.rule == "maxStatic" })
     }
 
@@ -79,5 +80,57 @@ import Testing
         let r = try lower(#"[{"op":"marker","at":1,"label":"a"},{"op":"keepShots","shots":["s01"]},{"op":"cut","from":0,"to":1}]"#)
         #expect(r.ops.first == .marker(at: 1, label: "a") && r.ops.last == .cut(from: 0, to: 1))
         #expect(r.lowered.map(\.op) == [1])
+    }
+
+    // Review fixes
+
+    @Test func speedsAreAbsoluteSoExistingSpeedIsMultiplied() throws {
+        let fast = EditReportTests.project([Clip(sourceStart: 0, sourceEnd: 12), Clip(sourceStart: 12, sourceEnd: 20, speed: 2)])   // s05 plays 4 s
+        let r = try lower(#"[{"op":"pace"}]"#, project: fast)
+        #expect(r.ops.contains(.speed(from: 12, to: 16, speed: 6.68, snap: true)))   // 2x * 3.34
+        let hold = try #require(lint(fast, storyboard: board).first { $0.rule == "maxStatic" && $0.shot == "s05" })
+        #expect(hold.suggest == opJSON("speed", ["from": .number(12), "to": .number(16), "speed": .number(6.68), "snap": .bool(true)]))
+        let ramp = try lower(#"[{"op":"speed","from":2,"to":6,"speed":8,"ramp":{"in":0.4,"out":0.4}}]"#, project: EditReportTests.project([Clip(sourceStart: 0, sourceEnd: 20, speed: 2)]))
+        let speeds = ramp.ops.compactMap { op -> Double? in if case .speed(_, _, let s, _) = op { return s }; return nil }
+        #expect(speeds.first! > 2 && speeds.last! > 2 && speeds.last! < 8)           // eases from 2x, not from 1x
+    }
+
+    @Test func oneLengthChangingIntentPerBatch() throws {
+        #expect(throws: EditError.invalidOp(index: 1, reason: "only one of keepShots/pace/fitDuration per batch; call edit.apply once per intent")) {
+            try lower(#"[{"op":"pace"},{"op":"fitDuration","target":10}]"#)
+        }
+        #expect(try lower(#"[{"op":"pace"},{"op":"autoZoom"},{"op":"cut","from":0,"to":1}]"#).ops.isEmpty == false)
+    }
+
+    @Test func loweredOpsKeepTheirOriginalBatchIndex() throws {
+        let r = try lower(#"[{"op":"marker","at":1,"label":"a"},{"op":"keepShots","shots":["s01"]},{"op":"cut","from":0,"to":1}]"#)
+        #expect(r.origin == [0, 1, 1, 2])
+        #expect(EditError.invalidOp(index: 2, reason: "x").remapped(r.origin) == .invalidOp(index: 1, reason: "x"))
+    }
+
+    @Test func paceRoundsUpAndAvoidsSliverCuts() throws {
+        let b = one([Shot(id: "s00", from: 0, to: 7.25, kind: .static, boundary: .start)])
+        let r = try lower(#"[{"op":"pace"}]"#, board: b)
+        #expect(r.ops == [.speed(from: 0, to: 7.25, speed: 6.05, snap: true)])      // 6.0417 rounded up, 0.05 s remainder not cut
+        _ = try apply(r.ops)   // lowered batch applies
+        let held = one([Shot(id: "s00", from: 0, to: 8, kind: .payoff, boundary: .start, clicks: [1])])
+        #expect(try lower(#"[{"op":"pace"}]"#, board: held).ops == [.cut(from: 2.3, to: 8, snap: true)])   // settle 1 s + payoff 1.3 s
+        let moving = one([Shot(id: "s00", from: 0, to: 4, kind: .motion, boundary: .start), Shot(id: "s01", from: 4, to: 8, kind: .typing, boundary: .type)])
+        #expect(try lower(#"[{"op":"pace"}]"#, board: moving).ops == [.speed(from: 0, to: 4, speed: 1.5, snap: true), .speed(from: 4, to: 8, speed: 1.5, snap: true)])
+    }
+
+    @Test func autoZoomSkipsExistingZoomsAndShortPieces() throws {
+        let clicks = [InputEvent(t: 5, k: .down, x: 0.5, y: 0.5, b: 0), InputEvent(t: 6, k: .down, x: 0.5, y: 0.5, b: 0)]
+        let withZoom = EditReportTests.project(zooms: [Zoom(start: 7, end: 9)])
+        #expect(try lower(#"[{"op":"autoZoom"}]"#, clicks: clicks, project: withZoom).ops.isEmpty)
+        let sped = EditReportTests.project([Clip(sourceStart: 0, sourceEnd: 20, speed: 8)])   // 2.9 source s = 0.36 s on screen
+        #expect(try lower(#"[{"op":"autoZoom"}]"#, clicks: clicks, project: sped).ops.count == 1)   // source length counts, not output
+    }
+
+    @Test func keepShotsNeverDeletesImportedClips() throws {
+        var imported = Clip(sourceStart: 0, sourceEnd: 3); imported.file = "media/x.mov"
+        let p = EditReportTests.project([Clip(sourceStart: 0, sourceEnd: 20), imported])
+        let r = try lower(#"[{"op":"keepShots","shots":["s01"]}]"#, project: p)
+        #expect(r.ops == [.cut(from: 0, to: 3, snap: true), .cut(from: 4, to: 20, snap: true)])   // 20…23 is the imported clip
     }
 }

@@ -171,7 +171,7 @@ Core: `EditReport.swift` (`editReport`, `lint`, `LintProfile`), `IntentOps.swift
 intent ops that need shots fail with `NOT_ANALYZED`.
 
 Intent ops are rewritten to `cut` / `speed` / `zoom` against the same base timeline before the batch is decoded, so the
-whole batch is one `applying` call and one undo step. `lowered:[{op,intent,ops,dropped?,note?}]` returns the primitives.
+whole batch is one `applying` call and one undo step. Every intent reads the batch-start timeline, so **at most one** of `keepShots`/`pace`/`fitDuration` is allowed per batch (`INVALID_OP`; call `edit.apply` again for the next); `autoZoom`, `speed ramp` and explicit ops may be mixed in because they use the same base times. `changes[].op` and errors use the agent's original batch index. Speeds in lowered ops are absolute (relative factor × the clip's current speed, rounded up). Intents never delete imported clips. `autoZoom` skips clusters that overlap an existing zoom. If no storyboard is available, `edit.apply` returns `reportNote` with the reason instead of `report`. `lowered:[{op,intent,ops,dropped?,note?}]` returns the primitives.
 
 ```jsonc
 {"op":"keepShots","shots":["s02","s05"],"trim":{"lead":0.1,"tail":0.2}}   // or "where":{"kind":["payoff"],"minEnergy":0.3}; trim = source seconds per kept shot; others cut (snap)
@@ -182,8 +182,7 @@ whole batch is one `applying` call and one undo step. `lowered:[{op,intent,ops,d
 ```
 
 `pace`: static/cursorOnly shots longer than `maxStatic` (and not tagged `result`) are sped up by `d/maxStatic` when that is
-within `speedFill`, with any remainder cut; shorter overshoot is simply cut. Payoff shots keep `beat.payoff` (at least until
-0.3 s after the last click) and the tail is cut. Motion/typing shots longer than their beat are sped up to it (≤ `speedFill.max`).
+within `speedFill`, with any remainder cut; shorter overshoot is simply cut. Payoff shots are held `beat.payoff` after their last click and the tail is cut. Motion/typing shots longer than their beat are sped up to it, capped at `speedFill.min`. Pieces of one shot that abut after a cut count as one hold.
 
 `fitDuration`: drops whole segments in ascending interest (static < cursorOnly < typing < motion < payoff, energy breaks ties)
 until the length is within `tolerance` of `target`; the last one is compressed (speed ≤ 6x) or tail-trimmed to land on target.

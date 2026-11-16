@@ -43,26 +43,46 @@ public struct EditReport: Codable, Equatable, Sendable {
     public var lint: [LintItem]
 }
 
+/// One kept piece of recorded footage on the output timeline; `speed` is the clip's absolute speed (what a `speed` op sets).
+struct Piece { var range: TimeRange; var speed: Double; var scale: Double }
 extension TimeMap {
-    /// Output ranges where source `[from, to]` is kept (several when the footage was copied); recorded clips only.
-    func outputRanges(source from: Double, to: Double) -> [TimeRange] {
-        var start = 0.0, result: [TimeRange] = []
+    /// Output pieces where source `[from, to]` is kept (several when the footage was copied or split); recorded clips only.
+    func pieces(source from: Double, to: Double) -> [Piece] {
+        var start = 0.0, result: [Piece] = []
         for c in clips {
             defer { start += c.outputDuration }
             let lo = max(from, c.sourceStart), hi = min(to, c.sourceEnd)
             guard hi - lo > 1e-9, !c.isEmpty, c.file == nil else { continue }
-            result.append(TimeRange(start: start + (lo - c.sourceStart) / c.timeScale, end: start + (hi - c.sourceStart) / c.timeScale))
+            result.append(Piece(range: TimeRange(start: start + (lo - c.sourceStart) / c.timeScale, end: start + (hi - c.sourceStart) / c.timeScale), speed: c.speed, scale: c.timeScale))
         }
         return result
     }
+    func outputRanges(source from: Double, to: Double) -> [TimeRange] { pieces(source: from, to: to).map(\.range) }
+    /// Absolute speed of the clip playing at output time `t`.
+    func speed(atOutput t: Double) -> Double {
+        var start = 0.0
+        for c in clips { if t < start + c.outputDuration { return c.speed }; start += c.outputDuration }
+        return clips.last?.speed ?? 1
+    }
 }
 
-struct ShotSegment { var shot: Shot; var range: TimeRange; var duration: Double { range.end - range.start } }
+/// A shot's kept footage; pieces of one shot that abut on the output (a clip split by an edit) count as one hold.
+struct ShotSegment {
+    var shot: Shot; var pieces: [Piece]
+    var range: TimeRange { TimeRange(start: pieces.first!.range.start, end: pieces.last!.range.end) }
+    var duration: Double { range.end - range.start }
+}
 extension Storyboard {
     /// Every kept occurrence of every shot in output time, sorted. Dropped shots have none; partly cut shots are shortened.
     func segments(_ map: TimeMap) -> [ShotSegment] {
-        shots.flatMap { shot in map.outputRanges(source: shot.from, to: shot.to).map { ShotSegment(shot: shot, range: $0) } }
-            .sorted { $0.range.start < $1.range.start }
+        shots.flatMap { shot -> [ShotSegment] in
+            var result: [ShotSegment] = []
+            for piece in map.pieces(source: shot.from, to: shot.to).sorted(by: { $0.range.start < $1.range.start }) {
+                if let last = result.last, abs(last.pieces.last!.range.end - piece.range.start) < 1e-6 { result[result.count - 1].pieces.append(piece) }
+                else { result.append(ShotSegment(shot: shot, pieces: [piece])) }
+            }
+            return result
+        }.sorted { $0.range.start < $1.range.start }
     }
 }
 extension Shot { var isStatic: Bool { kind == .static || kind == .cursorOnly } }
@@ -118,11 +138,12 @@ private func lint(_ project: Project, _ m: Metrics, _ sb: Storyboard, _ p: LintP
     }
     for s in m.segs {
         if s.shot.isStatic, s.shot.tag != "result", s.duration > p.maxStatic + 1e-6 {
-            let factor = (s.duration / p.maxStatic * 10).rounded(.up) / 10
+            let factor = (s.duration / p.maxStatic * 100).rounded(.up) / 100
+            let single = s.pieces.count == 1 ? s.pieces[0].speed * factor : .infinity   // speed ops set absolute speed
             items.append(LintItem(rule: "maxStatic", sev: "warn", at: r2(s.range.start), shot: s.shot.id,
                 msg: String(format: "%.1fs hold with %@ only: speed up or cut %@", s.duration, s.shot.kind == .cursorOnly ? "cursor" : "no change", s.shot.id),
-                suggest: factor <= 6 ? opJSON("speed", ["from": .number(r2(s.range.start)), "to": .number(r2(s.range.end)), "speed": .number(factor), "snap": .bool(true)])
-                                     : cutJSON(s.range.start + p.maxStatic, s.range.end)))
+                suggest: factor <= 6 && single <= 16 ? opJSON("speed", ["from": .number(r2(s.range.start)), "to": .number(r2(s.range.end)), "speed": .number((single * 100).rounded(.up) / 100), "snap": .bool(true)])
+                                                      : cutJSON(s.range.start + p.maxStatic, s.range.end)))
         }
         if s.duration < p.tinyShot - 1e-6 {
             items.append(LintItem(rule: "tinyShot", sev: "warn", at: r2(s.range.start), shot: s.shot.id,
@@ -130,18 +151,18 @@ private func lint(_ project: Project, _ m: Metrics, _ sb: Storyboard, _ p: LintP
                 suggest: cutJSON(s.range.start, s.range.end)))
         }
         let f = s.shot.focus, c = project.crop, tol = 0.005
-        if c != NormRect(), f.x < c.x - tol || f.y < c.y - tol || f.x + f.w > c.x + c.w + tol || f.y + f.h > c.y + c.h + tol {
-            // T-831's reframe op aims the crop at each shot's focus.
+        // Only a focus box that would fit the crop but pokes out of it is a framing problem; a wider one can't be fixed by moving.
+        if c != NormRect(), f.w <= c.w, f.h <= c.h, f.x < c.x - tol || f.y < c.y - tol || f.x + f.w > c.x + c.w + tol || f.y + f.h > c.y + c.h + tol {
+            // ponytail: no suggestion until T-831's `reframe` op exists; then suggest {op:"reframe",mode:"perShot",shots:[id]}.
             items.append(LintItem(rule: "edgeContent", sev: "warn", at: r2(s.range.start), shot: s.shot.id,
-                msg: "\(s.shot.id) focus box is clipped by the output crop",
-                suggest: opJSON("reframe", ["mode": .string("perShot"), "shots": .array([.string(s.shot.id)])])))
+                msg: "\(s.shot.id) focus box is clipped by the output crop", suggest: nil))
         }
     }
     if !m.segs.isEmpty, !p.asl.contains(m.asl) {
         let high = m.asl > p.asl.upperBound
         items.append(LintItem(rule: "asl", sev: "info", at: 0, shot: nil,
-            msg: String(format: "average shot %.2fs, want %.1f-%.1fs: %@", m.asl, p.asl.lowerBound, p.asl.upperBound, high ? "pace it" : "keep fewer, livelier shots"),
-            suggest: high ? opJSON("pace", ["maxStatic": .number(p.maxStatic)]) : opJSON("keepShots", ["where": .object(["minEnergy": .number(0.2)])])))
+            msg: String(format: "average shot %.2fs, want %.1f-%.1fs: %@", m.asl, p.asl.lowerBound, p.asl.upperBound, high ? "pace it" : "hold shots longer or keep fewer"),
+            suggest: opJSON("pace", ["maxStatic": .number(p.maxStatic)])))
     }
     if !p.duration.contains(m.duration) {
         let long = m.duration > p.duration.upperBound

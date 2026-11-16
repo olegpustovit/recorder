@@ -18,21 +18,46 @@ private extension JSONValue {
 }
 
 /// `storyboard` is only called when an op needs shots (so autoZoom/ramp work without analysis).
+/// `origin[i]` is the index in the agent's batch that produced `ops[i]`; use it to report errors and changes.
 public func lowerIntents(_ ops: [JSONValue], project: Project, clicks: [InputEvent] = [],
-                         storyboard: () throws -> Storyboard) throws -> (ops: [JSONValue], lowered: [LoweredIntent]) {
+                         storyboard: () throws -> Storyboard) throws -> (ops: [JSONValue], origin: [Int], lowered: [LoweredIntent]) {
     let map = TimeMap(project.clips), total = map.outputDuration
-    var out: [JSONValue] = [], lowered: [LoweredIntent] = []
+    var out: [JSONValue] = [], origin: [Int] = [], lowered: [LoweredIntent] = []
+    // Each intent reads the batch-start timeline, so two that change the length would aim at stale times.
+    let lengthChanging = ops.enumerated().filter { if case .string(let n)? = $1["op"] { return ["keepShots", "pace", "fitDuration"].contains(n) }; return false }
+    if lengthChanging.count > 1 {
+        throw EditError.invalidOp(index: lengthChanging[1].offset, reason: "only one of keepShots/pace/fitDuration per batch; call edit.apply once per intent")
+    }
+    let imported = { () -> [TimeRange] in var t = 0.0; return project.clips.compactMap { c in defer { t += c.outputDuration }; return c.file != nil ? TimeRange(start: t, end: t + c.outputDuration) : nil } }()
     var board: Storyboard?
     func sb() throws -> Storyboard { if let board { return board }; let b = try storyboard(); board = b; return b }
+    func cutsAvoidingImported(_ a: Double, _ b: Double) -> [JSONValue] {   // imported clips are never deleted by an intent
+        var pieces = [TimeRange(start: a, end: b)]
+        for hole in imported {
+            pieces = pieces.flatMap { p -> [TimeRange] in
+                guard hole.end > p.start, hole.start < p.end else { return [p] }
+                return [TimeRange(start: p.start, end: hole.start), TimeRange(start: hole.end, end: p.end)].filter { $0.end - $0.start > 0.05 }
+            }
+        }
+        return pieces.map { cutJSON($0.start, $0.end) }
+    }
     for (index, raw) in ops.enumerated() {
         func bad(_ reason: String) -> EditError { .invalidOp(index: index, reason: reason) }
-        guard case .string(let name)? = raw["op"] else { out.append(raw); continue }
+        guard case .string(let name)? = raw["op"] else { out.append(raw); origin.append(index); continue }
         func number(_ key: String, _ fallback: Double, in v: JSONValue? = nil) throws -> Double {
             guard let field = (v ?? raw)[key] else { return fallback }
             guard let n = field.num, n.isFinite else { throw bad("\(key) must be a number") }
             return n
         }
         var result: [JSONValue] = [], dropped: [String]?, note: String?
+        func up(_ v: Double) -> Double { (v * 100).rounded(.up) / 100 }
+        /// `factor` is relative; the speed op sets absolute speed, so scale each piece by its clip's current speed.
+        func speedUp(_ s: ShotSegment, _ from: Double, _ to: Double, _ factor: Double) {
+            for piece in s.pieces {
+                let lo = max(from, piece.range.start), hi = min(to, piece.range.end)
+                if hi - lo > 1e-6 { result.append(opJSON("speed", ["from": .number(r2(lo)), "to": .number(r2(hi)), "speed": .number(min(16, up(piece.speed * factor))), "snap": .bool(true)])) }
+            }
+        }
         switch name {
         case "keepShots":
             let board = try sb()
@@ -54,10 +79,10 @@ public func lowerIntents(_ ops: [JSONValue], project: Project, clicks: [InputEve
             guard !keep.isEmpty else { throw bad("no shots to keep; check the ids or filters against analyze.shots") }
             var at = 0.0
             for k in keep.sorted(by: { $0.start < $1.start }) {   // gaps between kept ranges (including overlaps from copies) are cut
-                if k.start - at > 0.05 { result.append(cutJSON(at, k.start)) }
+                if k.start - at > 0.05 { result += cutsAvoidingImported(at, k.start) }
                 at = max(at, k.end)
             }
-            if total - at > 0.05 { result.append(cutJSON(at, total)) }
+            if total - at > 0.05 { result += cutsAvoidingImported(at, total) }
         case "pace":
             let beat = raw["beat"], fill = raw["speedFill"]
             let dflt = try number("default", 0.9, in: beat), payoff = try number("payoff", 1.3, in: beat), motion = try number("motion", 0.8, in: beat)
@@ -66,25 +91,22 @@ public func lowerIntents(_ ops: [JSONValue], project: Project, clicks: [InputEve
             guard dflt > 0, payoff > 0, motion > 0, maxStatic > 0, lo >= 1, hi >= lo else { throw bad("pace beats and maxStatic must be > 0 and speedFill 1 <= min <= max") }
             for s in try sb().segments(map) {
                 let a = s.range.start, b = s.range.end, d = s.duration
-                func speed(_ from: Double, _ to: Double, _ v: Double) {
-                    result.append(opJSON("speed", ["from": .number(r2(from)), "to": .number(r2(to)), "speed": .number(r2(v)), "snap": .bool(true)]))
-                }
                 switch s.shot.kind {
                 case .static, .cursorOnly:
                     guard s.shot.tag != "result", d > maxStatic + 1e-6 else { continue }
-                    let ratio = d / maxStatic
+                    let ratio = up(d / maxStatic)
                     if ratio >= lo {   // speed the head so it plays in maxStatic, cut what the speed cap can't absorb
                         let v = min(ratio, hi), x = min(d, maxStatic * v)
-                        speed(a, a + x, v)
-                        if x < d - 0.05 { result.append(cutJSON(a + x, b)) }
+                        if d - x < 0.1 { speedUp(s, a, b, ratio) }   // a sliver is not worth a cut
+                        else { speedUp(s, a, a + x, v); result.append(cutJSON(a + x, b)) }
                     } else { result.append(cutJSON(a + maxStatic, b)) }
-                case .payoff:   // hold the change for `payoff` after it lands, never before its last click settles
-                    let settle = (s.shot.clicks.compactMap { map.outputTime(atSource: $0) }.max() ?? a) - a + 0.3
-                    let hold = max(payoff, settle)
+                case .payoff:   // hold the change for `payoff` after it settles (last click), cut the rest
+                    let settle = (s.shot.clicks.compactMap { map.outputTime(atSource: $0) }.max() ?? a) - a
+                    let hold = settle + payoff
                     if d > hold + 0.05 { result.append(cutJSON(a + hold, b)) }
-                case .motion, .typing:
+                case .motion, .typing:   // content moves: ease it with at most speedFill.min, never the static-hold squeeze
                     let target = s.shot.kind == .motion ? motion : dflt
-                    if d / target >= 1.1 { speed(a, b, min(d / target, hi)) }
+                    if d / target >= 1.1 { speedUp(s, a, b, min(up(d / target), lo)) }
                 }
             }
         case "fitDuration":
@@ -103,9 +125,8 @@ public func lowerIntents(_ ops: [JSONValue], project: Project, clicks: [InputEve
                     result.append(cutJSON(s.range.start, s.range.end)); length -= s.duration
                     if !ids.contains(s.shot.id) { ids.append(s.shot.id) }
                 } else {   // last one: compress to absorb the remaining excess, or trim its tail when that would need > 6x
-                    let ratio = s.duration / (s.duration - excess)
-                    result.append(ratio <= 6 ? opJSON("speed", ["from": .number(r2(s.range.start)), "to": .number(r2(s.range.end)), "speed": .number(r2(ratio)), "snap": .bool(true)])
-                                             : cutJSON(s.range.end - excess, s.range.end))
+                    let ratio = up(s.duration / (s.duration - excess))
+                    if ratio <= 6 { speedUp(s, s.range.start, s.range.end, ratio) } else { result.append(cutJSON(s.range.end - excess, s.range.end)) }
                     length = target; break
                 }
             }
@@ -115,9 +136,11 @@ public func lowerIntents(_ ops: [JSONValue], project: Project, clicks: [InputEve
             let lead = try number("lead", 0.4), tail = try number("tail", 1.5), scale = try number("scale", 2)
             let from = try number("from", 0), to = try number("to", total)
             guard lead >= 0, tail >= 0, scale >= 1 else { throw bad("autoZoom needs lead/tail >= 0 and scale >= 1") }
-            for z in generateAutoZooms(clicks: clicks, duration: project.source.duration, lead: lead, tail: tail) {
-                for r in map.outputRanges(source: z.start, to: z.end) where min(r.end, to) - max(r.start, from) >= 0.5 {
-                    result.append(opJSON("zoom", ["from": .number(r2(max(r.start, from))), "to": .number(r2(min(r.end, to))), "scale": .number(scale)]))
+            // Non-destructive: a generated zoom that overlaps an existing zoom is skipped (Regenerate would replace them; an agent batch must not).
+            for z in generateAutoZooms(clicks: clicks, duration: project.source.duration, lead: lead, tail: tail)
+            where !project.zooms.contains(where: { $0.start < z.end && $0.end > z.start }) {
+                for p in map.pieces(source: z.start, to: z.end) where (p.range.end - p.range.start) * p.scale >= 0.5 && min(p.range.end, to) - max(p.range.start, from) >= 0.1 {
+                    result.append(opJSON("zoom", ["from": .number(r2(max(p.range.start, from))), "to": .number(r2(min(p.range.end, to))), "scale": .number(scale)]))
                 }
             }
         case "speed" where raw["ramp"] != nil:
@@ -130,15 +153,29 @@ public func lowerIntents(_ ops: [JSONValue], project: Project, clicks: [InputEve
             func step(_ a: Double, _ b: Double, _ v: Double) {
                 result.append(opJSON("speed", ["from": .number(r2(a)), "to": .number(r2(b)), "speed": .number(r2(v)), "snap": snap]))
             }
+            // Ramp from the speed already playing at `from` to `speed`, and back to what plays at `to`.
+            let s0 = map.speed(atOutput: from), s1 = map.speed(atOutput: to - 1e-6)
             let nIn = min(4, Int(rin / 0.15)), nOut = min(4, Int(rout / 0.15))
-            for i in 0..<nIn { step(from + rin / Double(nIn) * Double(i), from + rin / Double(nIn) * Double(i + 1), 1 + (speed - 1) * (Double(i) + 0.5) / Double(nIn)) }
+            for i in 0..<nIn { step(from + rin / Double(nIn) * Double(i), from + rin / Double(nIn) * Double(i + 1), s0 + (speed - s0) * (Double(i) + 0.5) / Double(nIn)) }
             let midStart = from + (nIn > 0 ? rin : 0), midEnd = to - (nOut > 0 ? rout : 0)
             step(midStart, midEnd, speed)
-            for i in 0..<nOut { step(midEnd + rout / Double(nOut) * Double(i), midEnd + rout / Double(nOut) * Double(i + 1), speed + (1 - speed) * (Double(i) + 0.5) / Double(nOut)) }
-        default: out.append(raw); continue
+            for i in 0..<nOut { step(midEnd + rout / Double(nOut) * Double(i), midEnd + rout / Double(nOut) * Double(i + 1), speed + (s1 - speed) * (Double(i) + 0.5) / Double(nOut)) }
+        default: out.append(raw); origin.append(index); continue
         }
-        out += result
+        out += result; origin += result.map { _ in index }
         lowered.append(LoweredIntent(op: index, intent: name, ops: result, dropped: dropped, note: note))
     }
-    return (out, lowered)
+    return (out, origin, lowered)
+}
+
+public extension EditError {
+    /// Re-point an error at the agent's original op index after intents were lowered.
+    func remapped(_ origin: [Int]) -> EditError {
+        func m(_ i: Int) -> Int { origin.indices.contains(i) ? origin[i] : i }
+        switch self {
+        case let .invalidOp(i, r): return .invalidOp(index: m(i), reason: r)
+        case let .outOfRange(i, r): return .outOfRange(index: m(i), reason: r)
+        default: return self
+        }
+    }
 }

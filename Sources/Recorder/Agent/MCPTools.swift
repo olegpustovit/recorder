@@ -173,8 +173,8 @@ enum MCPTools {
         return profile
     }
     /// keepShots, pace, fitDuration, autoZoom and ramped speed become cut/speed/zoom ops against the viewed timeline.
-    private static func lowerIntentOps(_ value: Any?, project: Project, clicks: [InputEvent], storyboard: Storyboard?) throws -> (Any?, [LoweredIntent]) {
-        guard let values = value as? [[String: Any]], values.contains(where: { ["keepShots", "pace", "fitDuration", "autoZoom"].contains($0["op"] as? String) || $0["ramp"] != nil }) else { return (value, []) }
+    private static func lowerIntentOps(_ value: Any?, project: Project, clicks: [InputEvent], storyboard: Storyboard?) throws -> (Any?, [Int], [LoweredIntent]) {
+        guard let values = value as? [[String: Any]], values.contains(where: { ["keepShots", "pace", "fitDuration", "autoZoom"].contains($0["op"] as? String) || $0["ramp"] != nil }) else { return (value, (value as? [Any] ?? []).indices.map { $0 }, []) }
         guard let raw = try? JSONDecoder().decode([JSONValue].self, from: JSONSerialization.data(withJSONObject: values)) else {
             throw MCPFailure(code: "INVALID_OP", message: "edit.apply ops must be JSON objects; use tools/list for the op schemas")
         }
@@ -182,7 +182,7 @@ enum MCPTools {
             guard let storyboard else { throw MCPFailure(code: "NOT_ANALYZED", message: "Run analyze.shots first") }
             return storyboard
         }
-        return (try JSONSerialization.jsonObject(with: JSONEncoder().encode(result.ops)), result.lowered)
+        return (try JSONSerialization.jsonObject(with: JSONEncoder().encode(result.ops)), result.origin, result.lowered)
     }
     @MainActor private static func edit(_ action: String, _ args: [String: Any], model: EditorModel, session: MCPSession) async throws -> [String: Any] {
         try requireEditable(model, draftSession: action == "apply" ? session : nil, allowInvisible: true)
@@ -205,9 +205,11 @@ enum MCPTools {
         guard sent == expected, active == nil || active?.base == liveRevision else {
             throw MCPFailure(code: "STALE_REVISION", message: "Editor is at \(liveRevision), draft is at \(expected); call timeline.get, then discard/review any stale draft and retry")
         }
-        let board = try? await loadStoryboard(model: model, session: session)
+        var board: Storyboard?, reportNote: String?
+        do { board = try await loadStoryboard(model: model, session: session) }
+        catch { reportNote = (error as? MCPFailure)?.message ?? "\(error)" }
         let profile = try lintProfile(args["lint"])
-        let (loweredOps, lowered) = try lowerIntentOps(args["ops"], project: try viewedProject(model, session: session), clicks: model.events.clicks(), storyboard: board)
+        let (loweredOps, origin, lowered) = try lowerIntentOps(args["ops"], project: try viewedProject(model, session: session), clicks: model.events.clicks(), storyboard: board)
         let decoded = try decodeOps(loweredOps)
         let originalDraftID = session.draft?.id
         let dryRun = args["dryRun"] as? Bool ?? false
@@ -233,8 +235,9 @@ enum MCPTools {
             throw MCPFailure(code: "TRANSCRIPT_CHANGED", message: "Transcript changed during analysis; call transcript.get and retry")
         }
         let before = try viewedProject(model, session: session)
-        let result: (project: Project, changes: [EditChange])
+        var result: (project: Project, changes: [EditChange])
         var nextRevision = expected
+        do {
         if level == .draft {
             var draft = active ?? AgentDraft(base: liveRevision, baseProject: model.liveProject)
             result = try draft.append(ops, context: context)
@@ -261,6 +264,9 @@ enum MCPTools {
                 }
             }
         }
+        } catch let error as EditError { throw error.remapped(origin) }
+        // Draft replay keeps lowered indices; the payload speaks the agent's original batch indices.
+        result.changes = result.changes.map { var c = $0; c.op = origin.indices.contains(c.op) ? origin[c.op] : c.op; return c }
         if !dryRun, !resolution.created.isEmpty {
             keepImported = true
             session.agentMedia.formUnion(resolution.created.map { "media/" + $0.lastPathComponent })
@@ -268,6 +274,7 @@ enum MCPTools {
         }
         var payload: [String: Any] = ["revision": nextRevision, "mode": level.rawValue, "changes": try json(result.changes),
                 "duration": ["before": before.exportDuration, "after": result.project.exportDuration], "warnings": warnings(result.project, changes: result.changes), "dryRun": dryRun]
+        if let reportNote { payload["reportNote"] = reportNote }
         if let board { payload["report"] = try json(editReport(before: before, after: result.project, storyboard: board, profile: profile)) }
         if !lowered.isEmpty { payload["lowered"] = try json(lowered) }
         return payload

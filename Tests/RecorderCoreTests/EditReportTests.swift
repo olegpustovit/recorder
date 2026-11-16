@@ -67,11 +67,25 @@ import Testing
         let found = lint(Self.project(zooms: [short, fine]), storyboard: Self.board())
         #expect(found.filter { $0.rule == "orphanEffect" }.count == 1)
         #expect(found.first { $0.rule == "orphanEffect" }?.suggest == opJSON("remove", ["id": .string(short.id)]))
-        let cropped = lint(Self.project(crop: NormRect(x: 0.5, y: 0, w: 0.5, h: 1)), storyboard: Self.board())
-        #expect(cropped.contains { $0.rule == "edgeContent" })
-        let inside = Storyboard(duration: 20, fps: 10, shots: [Shot(id: "s00", from: 0, to: 20, kind: .motion, boundary: .start, focus: NormRect(x: 0.6, y: 0.1, w: 0.3, h: 0.5))],
+        let crop = NormRect(x: 0.5, y: 0, w: 0.5, h: 1)
+        func edge(_ focus: NormRect) -> Bool {
+            let sb = Storyboard(duration: 20, fps: 10, shots: [Shot(id: "s00", from: 0, to: 20, kind: .motion, boundary: .start, focus: focus)],
                                 summary: StoryboardSummary(shots: 1, aslSec: 0, staticSec: 0, longestStatic: nil))
-        #expect(!lint(Self.project(crop: NormRect(x: 0.5, y: 0, w: 0.5, h: 1)), storyboard: inside).contains { $0.rule == "edgeContent" })
+            return lint(Self.project(crop: crop), storyboard: sb).contains { $0.rule == "edgeContent" }
+        }
+        #expect(edge(NormRect(x: 0.4, y: 0.1, w: 0.3, h: 0.5)))      // fits the crop but pokes out of its left edge
+        #expect(!edge(NormRect(x: 0.6, y: 0.1, w: 0.3, h: 0.5)))     // inside
+        #expect(!edge(NormRect()))                                    // wider than the crop: moving it can't help
+    }
+
+    @Test func splitShotPiecesCountAsOneHold() throws {
+        let base = Self.project()
+        let cutMiddle = try base.applying([.cut(from: 1, to: 2)], context: EditContext()).project   // s00: 3 s -> two abutting 1 s pieces
+        let found = lint(cutMiddle, storyboard: Self.board())
+        let hold = try #require(found.first { $0.rule == "maxStatic" && $0.shot == "s00" })
+        #expect(hold.msg.hasPrefix("2.0s"))
+        #expect(!found.contains { $0.rule == "tinyShot" && $0.shot == "s00" })
+        #expect(editReport(before: base, after: cutMiddle, storyboard: Self.board()).longestStatic?.sec == 8)
     }
 
     @Test func suggestionsApplyAndFixTheirFinding() throws {
