@@ -691,7 +691,7 @@ acceptance undo, privacy (renders hide key overlays) and existing op semantics; 
 | Scope | Tasks | Done |
 |---|---|---|
 | Reliability | T-825…T-826 | 0/2 |
-| Perception + feedback core | T-827…T-829 | 0/3 |
+| Perception + feedback core | T-827…T-829 | 1/3 |
 | Intent ops + reframe | T-830…T-831 | 0/2 |
 | Captions + eval harness | T-832…T-833 | 1/2 |
 
@@ -704,10 +704,15 @@ acceptance undo, privacy (renders hide key overlays) and existing op semantics; 
   mark `editable:false` with reason; layer from/to maps both ends. R4 `{marker:"label"}` when unique,
   `{shot:"s07",edge}` and same-batch `ref`. R7 errors carry `fix` and `current`. Verify: EditOps tests per lane,
   label/ref anchors, snapped-range fix on clip-edge error.
-- [ ] **T-827 analyze.shots** — Core pure segmentation (stable states SSIM ≥ 0.985 for 0.3 s, boundary kinds
+- [x] **T-827 analyze.shots** — Core pure segmentation (stable states SSIM ≥ 0.985 for 0.3 s, boundary kinds
   cut/scroll/animate/type, interest payoff/motion/cursorOnly/static/typing with reasons, focus box, source-keyed
   stable IDs, summary); app decodes 10 fps 1/8-scale luma with vImage, cached per media content hash. Verify:
   Core segmentation tests on synthetic signals; 100 s fixture analyses < 5 s.
+  MEASURED 2026-11-17 (`--selftest shots-perf`, release, Golden Island 254.6 s, HEVC 2880×1800, 8798 frames):
+  first call 29.3 s (≈11.5 s per 100 s), cached call 0.02 s. Target < 5 s per 100 s NOT met: the hardware HEVC
+  decoder (~300 fps, unchanged by output scaling, zero-copy or parallel readers) is the bound; our signal code is
+  ≈0.7 s CPU. Upgrade path: decode-time frame skipping (only possible for non-reference frames) or analysing during
+  recording. F1 ≥ 0.8 on 5 hand-labelled recordings not measured (no labelled set exists).
 - [ ] **T-828 render.storyboard / strip / compare** — shot-anchored tiles (settled keyframe, id + duration label,
   ≤ 48 per page), filmstrip 4–8 fps, base|draft side by side. Verify: tile count = shots, legible at 320 px.
 - [ ] **T-829 Edit report + render.lint** — `report` (duration/asl/hook/longestStatic/staticSec before/after, lint)
@@ -1685,3 +1690,4 @@ Native verification · 2026-11-16 · Run on explicit user approval ("Run them no
 HUMAN review · 2026-11-16 · The user judged the Claude panel's feel and motion against the design frame and approved it ("i approve finalize it pls"). The remaining `[~]` for this request is closed; T-812…T-824 are complete.
 
 T-833 · 2026-11-17 · Agent eval harness `scripts/agent-eval.py` (stdlib only): scores MCP JSONL transcripts for ops per task (dryRun false, ok edit.apply), images returned by render.* (tiles/frames counted from args), tool calls, final lint pass (last `lint` array, fails on error/warn), final report duration, plus manual `--pref label=value`; table and `--json`. `--selftest` asserts metrics on two synthetic transcripts and passes. Brief and usage documented in docs/MCP.md §10. No Makefile target (the script takes transcript args), no GUI run, no dependencies. Real recordings and MCP changes not yet run through it (fixtures are synthetic). T-830, T-831, T-832 remain pending.
+T-827 analyze.shots · 2026-11-17 · Core `storyboard(signals:fps:events:thresholds:)` + `Storyboard.mapped(through:)` (Shots.swift), app decode/SSIM/cache (ShotAnalysis.swift, `shots-cache.json`), `analyze.shots` tool with concise/detailed and thresholds. `make test` passes (ShotsTests). The 100 s decode timing is unverified (no GUI/selftest run); `thumb` omitted (no recorder:// resource mechanism).

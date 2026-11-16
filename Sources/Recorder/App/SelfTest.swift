@@ -30,6 +30,7 @@ enum SelfTest {
         "mcp-roundtrip": { args in try await checkMCPRoundtrip(args) },
         "mcp-render": { args in try await checkMCPRender(args) },
         "mcp-edit": { args in try await checkMCPEdit(args) },
+        "shots-perf": { args in try await ShotAnalysis.selfTestPerf(args) },
         "mcp-review": { args in try await checkMCPReview(args) },
         "mcp-live": { args in try await checkMCPLive(args) },
         "zoom-ease-parity": { args in try await checkZoomEaseParity(args) },
