@@ -26,6 +26,7 @@ enum SelfTest {
         .merging(recordingCases, uniquingKeysWith: { _, latest in latest })
         .merging(timelineCases, uniquingKeysWith: { _, latest in latest })
     private static let captureCases: [String: Case] = [
+        "mcp-roundtrip": { args in try await checkMCPRoundtrip(args) },
         "capture-exclusion": { _ in
             struct Fail: Error { let description: String }
             let first = await MainActor.run { () -> NSWindow in
@@ -4261,6 +4262,151 @@ private extension Array {
 }
 
 // MARK: - T-416: a synthetic `mic.m4a` fixture (used by "timeline-png") so the waveform draws.
+
+private struct MCPTestFailure: Error, CustomStringConvertible { let description: String }
+
+/// A blocking client on a worker thread, independent of the server's newline reader and session handler.
+private final class MCPTestClient {
+    let fd: Int32
+    var id = 0
+    var replies: [String] = []
+    init(path: String) throws {
+        fd = try MCPSocket.connect(path)
+        var timeout = timeval(tv_sec: 20, tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout.size(ofValue: timeout)))
+    }
+    deinit { close(fd) }
+    func read() throws -> [String: Any] {
+        var data = Data(), byte: UInt8 = 0
+        while true {
+            guard Darwin.read(fd, &byte, 1) == 1 else { throw MCPTestFailure(description: "MCP reply timed out or disconnected") }
+            if byte == 10 { break }
+            data.append(byte)
+        }
+        replies.append(String(decoding: data, as: UTF8.self))
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw MCPTestFailure(description: "MCP reply is not an object") }
+        return object
+    }
+    func request(_ method: String, _ params: [String: Any] = [:]) throws -> [String: Any] {
+        id += 1
+        let data = try JSONSerialization.data(withJSONObject: ["jsonrpc": "2.0", "id": id, "method": method, "params": params]) + Data([10])
+        let half = data.count / 2
+        guard MCPSocket.write(Data(data.prefix(half)), to: fd), MCPSocket.write(Data(data.dropFirst(half)), to: fd) else {
+            throw MCPTestFailure(description: "MCP request write failed")
+        }
+        let reply = try read()
+        guard reply["id"] as? Int == id else { throw MCPTestFailure(description: "MCP response id did not match") }
+        return reply
+    }
+    func tool(_ name: String, _ args: [String: Any], error: String? = nil) throws -> [String: Any] {
+        let reply = try request("tools/call", ["name": name, "arguments": args])
+        guard let result = reply["result"] as? [String: Any], let structured = result["structuredContent"] as? [String: Any],
+              let first = (result["content"] as? [[String: Any]])?.first, let text = first["text"] as? String,
+              let textObject = try JSONSerialization.jsonObject(with: Data(text.utf8)) as? NSDictionary,
+              textObject == structured as NSDictionary else { throw MCPTestFailure(description: "MCP structured/text content mismatch") }
+        if let error {
+            guard result["isError"] as? Bool == true, structured["error"] as? String == error else { throw MCPTestFailure(description: "MCP expected \(error) from \(name), received \(structured["error"] ?? "success")") }
+        } else if result["isError"] as? Bool != false {
+            throw MCPTestFailure(description: "MCP \(name) failed: \(structured["error"] ?? "unknown")")
+        }
+        return structured
+    }
+}
+
+@MainActor private func checkMCPRoundtrip(_ args: [String]) async throws {
+    guard let path = args.first else { throw MCPTestFailure(description: "usage: mcp-roundtrip <fixture.recorder>") }
+    let root = URL(fileURLWithPath: "/tmp/recorder-mcp-\(UUID().uuidString)").resolvingSymlinksInPath()
+    let empty = root.appendingPathComponent("NoTranscript.recorder"), full = root.appendingPathComponent("Transcript.recorder")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let oldFolder = RecordingSettings.shared.projectsFolder
+    var projectIDs: [String] = []
+    defer {
+        for controller in EditorWindowController.allOpen where controller.model.packageURL.resolvingSymlinksInPath().path.hasPrefix(root.resolvingSymlinksInPath().path + "/") { controller.close() }
+        MCPServer.shared.stop()
+        RecordingSettings.shared.projectsFolder = oldFolder
+        for id in projectIDs { UserDefaults.standard.removeObject(forKey: "agentAccess.\(id)") }
+        try? FileManager.default.removeItem(at: root)
+    }
+    for destination in [empty, full] {
+        try FileManager.default.copyItem(at: URL(fileURLWithPath: path), to: destination)
+        var project = try Project.load(from: destination.appendingPathComponent("project.json"))
+        project.id = UUID().uuidString; projectIDs.append(project.id)
+        project.source.hasMic = true
+        try project.save(to: destination.appendingPathComponent("project.json"))
+        try? FileManager.default.removeItem(at: destination.appendingPathComponent("transcript.json"))
+        try synthesizeSineM4A(at: destination.appendingPathComponent("mic.m4a"), duration: min(3, project.source.duration), silence: 0.5...2.5)
+        let events = EventLog(events: [InputEvent(t: 0.2, k: .key, keyCode: 1, ch: "MCP_PRIVATE_KEYS_SENTINEL"), InputEvent(t: 0.8, k: .down, b: 0)])
+        try JSONEncoder().encode(events).write(to: destination.appendingPathComponent("events.json"), options: .atomic)
+    }
+    let words = (0..<2101).map { Word(text: $0 == 0 ? "Um," : "spoken", start: Double($0) / 1000, end: Double($0) / 1000 + 0.0009) }
+    try JSONEncoder().encode(words).write(to: full.appendingPathComponent("transcript.json"), options: .atomic)
+    RecordingSettings.shared.projectsFolder = root
+    NSApplication.shared.setActivationPolicy(.accessory)
+    NSApplication.shared.finishLaunching()
+    let socket = root.appendingPathComponent("mcp.sock").path
+    try MCPServer.shared.start(socketPath: socket)
+    let attributes = try FileManager.default.attributesOfItem(atPath: socket)
+    guard (attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600 else { throw MCPTestFailure(description: "MCP socket must be owner-only") }
+    try await Task.detached {
+        let client = try MCPTestClient(path: socket)
+        let initialized = try client.request("initialize", ["protocolVersion": "2025-06-18", "clientInfo": ["name": "selftest"], "capabilities": [:]])
+        guard (initialized["result"] as? [String: Any])?["protocolVersion"] as? String == "2025-06-18" else { throw MCPTestFailure(description: "MCP initialize") }
+        _ = MCPSocket.write(Data("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n".utf8), to: client.fd)
+        _ = try client.request("ping")
+        let tools = try client.request("tools/list")
+        guard ((tools["result"] as? [String: Any])?["tools"] as? [Any])?.count == 9 else { throw MCPTestFailure(description: "MCP needs nine tools") }
+        let unknown = try client.request("not-a-method")
+        guard (unknown["error"] as? [String: Any])?["code"] as? Int == -32601 else { throw MCPTestFailure(description: "MCP unknown method") }
+        _ = MCPSocket.write(Data("{broken}\n".utf8), to: client.fd)
+        let malformed = try client.read()
+        guard (malformed["error"] as? [String: Any])?["code"] as? Int == -32700 else { throw MCPTestFailure(description: "MCP parse error") }
+        _ = try client.tool("project", ["action": "info"], error: "NO_PROJECT")
+        let listed = try client.tool("project", ["action": "list"])
+        guard (listed["projects"] as? [Any])?.count == 2 else { throw MCPTestFailure(description: "MCP library scan") }
+        _ = try client.tool("project", ["action": "open", "path": empty.path])
+        _ = try client.tool("transcript", ["action": "get"], error: "NOT_TRANSCRIBED")
+        let opened = try client.tool("project", ["action": "open", "path": full.path])
+        guard let id = opened["project"] as? String, (opened["revision"] as? String)?.count == 12 else { throw MCPTestFailure(description: "MCP project revision") }
+        let timeline = try client.tool("timeline", ["action": "get"])
+        guard timeline["clips"] is [Any], timeline["blocks"] is [Any] else { throw MCPTestFailure(description: "MCP timeline shape") }
+        let transcript = try client.tool("transcript", ["action": "get", "format": "phrases"])
+        guard (transcript["words"] as? [Any])?.count == 2000, transcript["truncated"] as? Bool == true, transcript["from"] is NSNumber, transcript["phrases"] is [String] else {
+            throw MCPTestFailure(description: "MCP transcript cap/phrases/pagination")
+        }
+        let pauses = try client.tool("analyze", ["action": "pauses", "minDuration": 1])
+        guard let ranges = pauses["pauses"] as? [[String: Double]], ranges.contains(where: { ($0["to"] ?? 0) - ($0["from"] ?? 0) > 1 }) else { throw MCPTestFailure(description: "MCP real waveform pause analysis") }
+        let fillers = try client.tool("analyze", ["action": "fillers"])
+        guard (fillers["fillers"] as? [[String: Any]])?.first?["word"] as? String == "w0" else { throw MCPTestFailure(description: "MCP filler IDs") }
+        let activity = try client.tool("analyze", ["action": "activity"])
+        guard activity["clicks"] as? [Double] == [0.8] else { throw MCPTestFailure(description: "MCP clicks") }
+        _ = try client.tool("timeline", ["action": "get", "from": -1], error: "OUT_OF_RANGE")
+        _ = try client.tool("timeline", ["action": "get", "from": "1"], error: "INVALID_OP")
+        _ = try client.tool("analyze", ["action": "pauses", "minDuration": true], error: "INVALID_OP")
+        AgentAccess.set(.read, for: id)
+        _ = try client.tool("edit", ["action": "apply", "ops": []], error: "PERMISSION_DENIED")
+        AgentAccess.set(.off, for: id)
+        _ = try client.tool("project", ["action": "info"], error: "PERMISSION_DENIED")
+        let other = try MCPTestClient(path: socket)
+        _ = try other.request("initialize", ["clientInfo": ["name": "second-client"]])
+        let visible = try other.tool("project", ["action": "list"])
+        guard (visible["projects"] as? [Any])?.count == 1 else { throw MCPTestFailure(description: "Off projects leaked into library") }
+        _ = try other.tool("project", ["action": "open", "path": full.path], error: "PERMISSION_DENIED")
+        AgentAccess.set(.draft, for: id)
+        let didClose = await MainActor.run { () -> Bool in
+            guard let controller = EditorWindowController.allOpen.first(where: { $0.model.project.id == id }) else { return false }
+            controller.close()
+            return !EditorWindowController.allOpen.contains { $0.model.project.id == id }
+        }
+        guard didClose else { throw MCPTestFailure(description: "MCP fixture editor did not close") }
+        _ = try client.tool("timeline", ["action": "get"], error: "NO_PROJECT")
+        _ = try client.tool("project", ["action": "open", "path": full.path])
+        _ = try client.tool("project", ["action": "info"])
+        guard !client.replies.joined().contains("MCP_PRIVATE_KEYS_SENTINEL") else { throw MCPTestFailure(description: "MCP exposed captured key characters") }
+    }.value
+    guard AgentActivity.shared.rows.contains(where: { $0.tool == "analyze.pauses" && !$0.isError }),
+          AgentActivity.shared.rows.contains(where: { $0.isError }), AgentActivity.shared.rows.count <= 200 else { throw MCPTestFailure(description: "MCP activity feed") }
+    print("MCP: socket permissions, JSON-RPC, nine tools, library/open/close, revisions, transcript cap, pauses, fillers, activity, access and key privacy verified")
+}
 
 private func synthesizeSineM4A(at url: URL, duration: Double, sampleRate: Double = 44_100, silence: ClosedRange<Double>? = nil) throws {
     struct Fail: Error, CustomStringConvertible { let description: String }

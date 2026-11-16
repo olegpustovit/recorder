@@ -49,10 +49,10 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
     // T-610: every constructed controller, including ones from `makeOffscreen` (never added to
     // `openWindows` — that dict is only the URL-keyed "focus the existing window instead of
     // duplicating it" dedup for `open(package:)`). `allOpen` below is what the state snapshot dump
-    // walks; `weak` so a closed/deallocated controller just drops out, no manual bookkeeping needed.
+    // walks; weak references never keep controllers alive, and windowWillClose removes closed editors.
     private static var liveControllers: [WeakEditorWindowController] = []
 
-    /// T-610: every constructed, still-alive editor window controller — for the state snapshot dump.
+    /// T-610: every constructed, still-open editor window controller — for snapshots and agent sessions.
     static var allOpen: [EditorWindowController] { liveControllers.compactMap(\.value) }
 
     private init(packageURL: URL, project: Project, events: EventLog, orderFront: Bool = true,
@@ -213,6 +213,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
         model.voiceover.discard()
         model.saveNow()
         Self.openWindows.removeValue(forKey: model.packageURL)
+        Self.liveControllers.removeAll { $0.value == nil || $0.value === self }
     }
 
     // MARK: - Document bar (Projects, title, save status, Export)

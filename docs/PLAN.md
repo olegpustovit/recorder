@@ -572,7 +572,7 @@ Core tasks (T-801…T-803) are pure and unit-tested; app tasks use `--selftest` 
 | Scope | Tasks | Done |
 |---|---|---|
 | Core: views, edit ops, markers/styles | T-801…T-803 | 3/3 |
-| App: server, render, edit/draft | T-804…T-806 | 0/3 |
+| App: server, render, edit/draft | T-804…T-806 | 1/3 |
 | App: review UI, graphics, export/settings | T-807…T-809 | 0/3 |
 | Docs + smoke | T-810 | 0/1 |
 
@@ -583,7 +583,7 @@ Core tasks (T-801…T-803) are pure and unit-tested; app tasks use `--selftest` 
   `make test FILTER=EditOps`; `make test`.
 - [x] **T-803 Core: markers, `lowerThird`/`chapter`, SRT** · MCP.md §T-803 — additive `markers`; version 5 only when the
   new styles are used; `srt(_:)`. Verify: `make test FILTER=ProjectTests`; `make test FILTER=EditOps`; `make test`.
-- [ ] **T-804 App: MCP server, `--mcp` shim, read tools** · MCP.md §2, §4, §T-804 — Unix socket, hand-rolled JSON-RPC,
+- [x] **T-804 App: MCP server, `--mcp` shim, read tools** · MCP.md §2, §4, §T-804 — Unix socket, hand-rolled JSON-RPC,
   sessions, access levels, activity; `project`/`timeline`/`transcript`/`analyze`. Verify: `--selftest mcp-roundtrip <fixture>`;
   shim initialize smoke; `make test`.
 - [ ] **T-805 App: render tools** · MCP.md §T-805 — `renderFramesPNG` (multi-time, parity with Copy Frame), contact sheet,
@@ -1517,3 +1517,5 @@ T-801 · 2026-11-16 · Added pure Codable output-time timeline/transcript views,
 T-802 · 2026-11-16 · Added flat-JSON EditOp/JSONValue, atomic Project.applying with base-output range resolution, indexed validation/errors and change summaries/deltas. Reuses split/delete/setSpeed/block/caption/Preset paths; unions overlapping cuts, preserves source-time effects and ripple settings, follows linked audio, maps pause/word/caption media through copies/rates and excludes imports from transcript-driven cuts. Plain cuts support imported clips; public removeSourceRanges remains recording-only. Shared removeBlock now accepts persisted string IDs while its existing UUID callers retain the same implementation. Exact cuts that cannot satisfy existing minimum clip/split constraints fail atomically rather than silently truncating. Marker ops intentionally reject until T-803. make test FILTER=EditOps passes 10/10; full make test passes 184/184 with documented Xcode native/platform Testing flags; diff check passes. No native MCP runtime/UI acceptance claimed; T-803…T-810 remain pending.
 
 T-803 · 2026-11-16 · Added additive source-time Marker persistence/defaults and output-time agent views (removed footage/gaps omitted), marker add/update/remove ops, lowerThird/chapter style values and conditional version-5 saves while retaining the version-3/4 rule otherwise. Added caption-only SRT with cut/rate mapping, cue merging and millisecond timestamps. Updated future-header/version assertions; existing recording-layer version-4 saves still pass. Exhaustive compositor switches temporarily route the two new styles through title rendering (documented shortcut); dedicated plates/fades and inspector choices remain T-808. make test FILTER=ProjectTests passes 14/14, FILTER=EditOps passes 11/11, full make test passes 188/188 with documented Xcode native/platform Testing flags; diff check passes. No MCP runtime/UI acceptance claimed; T-804…T-810 remain pending.
+
+T-804 · 2026-11-16 · Added owner-only Unix socket listener with same-uid peer checks, bounded newline framing, JSON-RPC sessions/progress, stdio shim/autolaunch, per-project access, 200-row privacy-safe activity, SHA-256 revisions and project/timeline/transcript/analyze read handlers. Nine schemas are advertised; later-task write/render/export/UI handlers remain unavailable. ProjectStore now supplies scan completion plus project ids/mic flags; closed controllers are removed from allOpen so closed-session reads fail and project.open can recover. Native build + assembled debug app mcp-roundtrip on disposable M6 copies pass: framing/parse errors/notifications, library/open/close/reopen, revisions, 2000-word pagination, real waveform pauses, fillers/clicks, invalid arguments, off/read access and key-character privacy. Initial fixture close check used an aliased /tmp URL; corrected it to use project identity. Real app stdio initialize smoke returns one valid result, normal NSRunningApplication termination removes the default socket, existing library selftest passes, full make test 188/188 and diff check pass. Used documented Xcode native/platform Testing flags and make -o build app CONFIG=debug assembly workaround. No TCC reset, real microphone/Speech run, real-client connection or review/export acceptance claimed; T-805…T-810 remain pending.

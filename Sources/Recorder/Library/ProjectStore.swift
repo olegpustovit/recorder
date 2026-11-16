@@ -14,6 +14,8 @@ import RecorderCore
         var duration: Double
         var modified: Date
         var thumbnail: NSImage?
+        var projectID: String
+        var hasMic: Bool
     }
 
     private(set) var items: [Item] = []
@@ -46,7 +48,7 @@ import RecorderCore
         reload()
     }
 
-    func reload() {
+    func reload(completion: (() -> Void)? = nil) {
         let folder = folder
         DispatchQueue.global(qos: .userInitiated).async {
             let fm = FileManager.default
@@ -57,9 +59,9 @@ import RecorderCore
                 let thumbURL = url.appendingPathComponent("thumbnail.jpg")
                 let thumbnail = fm.fileExists(atPath: thumbURL.path) ? NSImage(contentsOf: thumbURL) : nil
                 return Item(id: url, title: project.title, duration: TimeMap(project.clips).outputDuration,
-                            modified: modified, thumbnail: thumbnail)
+                            modified: modified, thumbnail: thumbnail, projectID: project.id, hasMic: project.source.hasMic)
             }.sorted { $0.modified > $1.modified }
-            DispatchQueue.main.async { self.items = scanned }
+            DispatchQueue.main.async { self.items = scanned; completion?() }
         }
     }
 

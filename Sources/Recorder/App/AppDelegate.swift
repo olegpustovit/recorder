@@ -14,6 +14,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @MainActor func applicationDidFinishLaunching(_ n: Notification) {
         NSApp.appearance = NSAppearance(named: .darkAqua)
+        do { try MCPServer.shared.start() }
+        catch { NSLog("Recorder MCP listener unavailable: %@", error.localizedDescription) }
         NSApp.mainMenu = Self.buildMainMenu()
         statusItem = buildStatusItem()
         wireNewRecording()
@@ -55,6 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// SPEC §5 "Autosave": "also on window close and applicationWillTerminate" (T-303) — window
     /// close is handled by `EditorWindowController.windowWillClose`; this covers quit.
     func applicationWillTerminate(_ n: Notification) {
+        MCPServer.shared.stop()
         EditorWindowController.saveAllNow()
     }
 
