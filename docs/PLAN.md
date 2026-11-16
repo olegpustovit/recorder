@@ -563,6 +563,44 @@ older builds ignore those points and cannot preserve their phase. Recording laye
 - [~] **T-734 Insert preview when dropping onto Video** · SPEC §7.2 — dragging a lifted recording over the Video lane
   draws the trial insert (landing clip faded + outlined) and ripples neighbours apart/back. Verify: `--selftest timeline-lift`.
 
+## Requested agent editing (MCP) — 2026-11-16
+
+Source: [MCP.md](MCP.md) (normative: decisions §1, protocol §4, tools §5, per-task Do/Files/Signatures/Verify §6) ·
+prototype https://artifacts.microapps.space/a/0shbfprqwqz2. Read MCP.md §0–§3 before the first of these tasks.
+Core tasks (T-801…T-803) are pure and unit-tested; app tasks use `--selftest` cases named in MCP.md.
+
+| Scope | Tasks | Done |
+|---|---|---|
+| Core: views, edit ops, markers/styles | T-801…T-803 | 0/3 |
+| App: server, render, edit/draft | T-804…T-806 | 0/3 |
+| App: review UI, graphics, export/settings | T-807…T-809 | 0/3 |
+| Docs + smoke | T-810 | 0/1 |
+
+- [ ] **T-801 Core: agent views** · MCP.md §T-801 — `AgentViews.swift`: `agentTimeline`, `agentTranscript` (stable
+  `wN` ids, output time, fillers), `isFiller`, `transcriptID`. Verify: `make test FILTER=AgentViews`; `make test`.
+- [ ] **T-802 Core: `EditOp` + `Project.applying`** · MCP.md §T-802 — ops in base output time, converted to source
+  before mutating; `removeSourceRanges` via `split`/`deleteClips`; atomic with `checkInvariants`. Verify:
+  `make test FILTER=EditOps`; `make test`.
+- [ ] **T-803 Core: markers, `lowerThird`/`chapter`, SRT** · MCP.md §T-803 — additive `markers`; version 5 only when the
+  new styles are used; `srt(_:)`. Verify: `make test FILTER=ProjectTests`; `make test FILTER=EditOps`; `make test`.
+- [ ] **T-804 App: MCP server, `--mcp` shim, read tools** · MCP.md §2, §4, §T-804 — Unix socket, hand-rolled JSON-RPC,
+  sessions, access levels, activity; `project`/`timeline`/`transcript`/`analyze`. Verify: `--selftest mcp-roundtrip <fixture>`;
+  shim initialize smoke; `make test`.
+- [ ] **T-805 App: render tools** · MCP.md §T-805 — `renderFramesPNG` (multi-time, parity with Copy Frame), contact sheet,
+  540p proxy clip with progress, agent cache + purge. Verify: `--selftest mcp-render <fixture>`; `--selftest parity`;
+  `--selftest menu-actions`.
+- [ ] **T-806 App: `edit` + `draft` tools** · MCP.md §T-806 — draft = replayed calls on a base; live = one named undo
+  step; `STALE_REVISION`; `EditorModel.isReviewingDraft` guard. Verify: `--selftest mcp-edit <fixture>`; `make test`.
+- [ ] **T-807 App: review UI** · MCP.md §T-807 — inspector `Claude` tab (`AgentPanel.swift`), document-bar status,
+  timeline review marks, accept = one undo step. Verify: `--selftest mcp-review <fixture>`. HUMAN: panel vs prototype.
+- [ ] **T-808 App: render `lowerThird` + `chapter`** · MCP.md §T-808 — in `Compositor.drawText`; TextPanel styles.
+  Verify: `--selftest parity` (fixture with both styles) maxDelta 0. HUMAN: both styles at 16:9 and 9:16.
+- [ ] **T-809 App: `export.final`, SRT, `ui.show`, Settings ▸ Agents** · MCP.md §T-809 — native approval sheet,
+  `claude mcp add` connect row, Copy JSON. Verify: `--selftest mcp-export <fixture>`. HUMAN: connect real Claude Code,
+  run the MCP.md §8 session.
+- [ ] **T-810 Docs + `make mcp-smoke`** · MCP.md §T-810 — SPEC §10 Agents, §5 version 5 rule, README, CLAUDE.md commands.
+  Verify: `make mcp-smoke`; `make test`; `--selftest menu-actions`.
+
 ---
 
 ## Requested Nudge fixes — 2026-09-22

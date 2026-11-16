@@ -1,4 +1,4 @@
-lockfile_version = 2
+lockfile_version = 3
 
 [meta]
 name = 'recorder'
@@ -13,6 +13,7 @@ owner = 'dietrichgebert'
 repo = 'ponytail'
 commit = 'f329330e6104f7ab771fb0ba9612011f401d73cc'
 cache_key = 'd625145cdd7b1925469ed0f015158ff914274dfa9bb0bee32489c68919ce3c45'
+content_hash = 'sha256-tree-v1:1d41cdcb70d8cf916b86c3e53f79b6f72ca75ece855d94623034e037e850c196'
 
 [[packages]]
 module = 'github.com/olegpustovit/agent-configs/mcps/1password'
@@ -24,6 +25,7 @@ repo = 'agent-configs'
 path = 'mcps/1password'
 commit = 'ee2fc545a1003ae08a5c022d32409f07454ebe69'
 cache_key = '2d6fa024efa82afffc7e9a635b317915caee83147f82d0468e7c640a3b1111ed'
+content_hash = 'sha256-tree-v1:47965cd52600014f16f1809649c33323b290658d0689266e836e1bc9694cffe7'
 
 [[packages]]
 module = 'github.com/olegpustovit/agent-configs/skills/nudge-cli'
@@ -35,3 +37,4 @@ repo = 'agent-configs'
 path = 'skills/nudge-cli'
 commit = 'ee2fc545a1003ae08a5c022d32409f07454ebe69'
 cache_key = 'c2e1e469742b2716d20e9a5e59ffab8467308a9e80d3c554aa48f23f43021980'
+content_hash = 'sha256-tree-v1:54c814c3b19eecac106041d33bb49a13725fe26b65918c16f46cec218240eeb8'

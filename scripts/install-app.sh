@@ -5,9 +5,10 @@ set -eu
 source_app=build/Recorder.app
 destination=/Applications/Recorder.app
 requirement='identifier "space.microapps.recorder" and (certificate leaf[subject.CN] = "Recorder Dev" or (anchor apple generic and certificate leaf[subject.OU] = "7ZH3FYV964"))'
-# Developer ID (team 7ZH3FYV964) is the released app's signer: its privacy grants still match, so never reset them.
-developer_id=0
-codesign -dvv "$source_app" 2>&1 | grep -q '^Authority=Developer ID Application:' && developer_id=1
+# Grants are bound to the signer: reset them only when it changes (they would silently stop matching).
+signer() { codesign -dvv "$1" 2>&1 | grep -m1 '^Authority=' || true; }
+new_signer=$(signer "$source_app")
+old_signer=$(signer "$destination")
 codesign --verify --deep --strict -R="$requirement" "$source_app"
 [ ! -L "$destination" ] || { echo "Refusing to replace a symlink: $destination" >&2; exit 1; }
 
@@ -44,19 +45,9 @@ if ! mv "$stage/Recorder.app" "$destination"; then
 fi
 echo "Installed $destination. Existing recordings and settings are untouched."
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$destination"
-if [ "$developer_id" -eq 1 ]; then echo 'Signed with Developer ID: existing permissions kept. Run: open /Applications/Recorder.app'; exit 0; fi
+if [ "$new_signer" = "$old_signer" ]; then echo "Same signer (${new_signer#Authority=}): permissions kept. Run: open /Applications/Recorder.app"; exit 0; fi
 
-failed=0
 for service in ScreenCapture Accessibility Camera Microphone; do
-    if ! tccutil reset "$service" space.microapps.recorder; then failed=1; fi
-    # The legacy identity may no longer be registered on a fresh installation.
-    if ! tccutil reset "$service" sh.nexo.recorder; then
-        echo "Warning: could not reset legacy $service access for sh.nexo.recorder; it may no longer be registered." >&2
-    fi
+    tccutil reset "$service" space.microapps.recorder >/dev/null || { echo "App installed, but $service could not be reset." >&2; exit 1; }
 done
-if [ "$failed" -ne 0 ]; then
-    echo "App installed, but some current Recorder grants could not be reset. Review the errors above." >&2
-    exit 1
-fi
-echo 'Recorder permissions reset. Run: open /Applications/Recorder.app'
-echo 'Approve fresh macOS access, then quit and reopen if needed. Self-signing is not Apple notarization or a guarantee of permission detection.'
+echo "Signer changed to ${new_signer#Authority=}: permissions reset. Run: open /Applications/Recorder.app and approve once."

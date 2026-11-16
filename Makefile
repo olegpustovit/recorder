@@ -11,13 +11,15 @@ TESTFLAGS := -Xswiftc -F -Xswiftc $(CLT)/Frameworks -Xlinker -F -Xlinker $(CLT)/
 # recorder-signing.keychain (empty password, so it unlocks over SSH; the key is already in plain text in .apple).
 SIGN_KC  := $(HOME)/Library/Keychains/recorder-signing.keychain-db
 DEV_ID   := $(shell security find-identity -v -p codesigning | grep -o '"Developer ID Application: [^"]*"' | head -1 | tr -d '"')
-SIGN_ID  ?= $(or $(DEV_ID),$(shell security find-identity -p codesigning | grep -q "Recorder Dev" && echo "Recorder Dev" || echo -))
+# Apple Development (same team) is the next best: Apple-anchored, stable across rebuilds, no extra cert to create.
+APPLE_DEV := $(shell security find-identity -v -p codesigning | grep -o '"Apple Development: [^"]*"' | head -1 | tr -d '"')
+SIGN_ID  ?= $(or $(DEV_ID),$(APPLE_DEV),$(shell security find-identity -p codesigning | grep -q "Recorder Dev" && echo "Recorder Dev" || echo -))
 # Over SSH the login keychain is locked ("User interaction is not allowed"); unlock it in the terminal first.
 UNLOCK   := kc="$$HOME/Library/Keychains/login.keychain-db"; security show-keychain-info "$$kc" >/dev/null 2>&1 || security unlock-keychain "$$kc"
 CONFIG   ?= release
 GALLERY_PNG ?= build/signal-ui-gallery.png
 
-.PHONY: build test app run gallery gallery-advanced gallery-png install uninstall clean cert
+.PHONY: build test app run dev gallery gallery-advanced gallery-png install uninstall clean cert
 build:
 	@# The Command Line Tools build system can fail with "Unknown error parsing property list"; prefer full Xcode when installed.
 	@d=/Applications/Xcode.app/Contents/Developer; if [ -z "$$DEVELOPER_DIR" ] && [ -d "$$d" ]; then export DEVELOPER_DIR="$$d"; fi; swift build -c $(CONFIG)
@@ -34,6 +36,12 @@ app: build
 run: app
 	open $(APP)
 
+# Fast edit loop: incremental debug build, quit the old instance, run in the foreground (logs here, ^C quits).
+dev:
+	$(MAKE) app CONFIG=debug
+	-pkill -f "$(APP)/Contents/MacOS/Recorder"
+	$(APP)/Contents/MacOS/Recorder
+
 # Component gallery: interactive AppKit window, or a deterministic PNG for visual review.
 gallery: app
 	open -n $(APP) --args --ui-gallery
@@ -45,9 +53,9 @@ gallery-png: app
 	$(APP)/Contents/MacOS/Recorder --selftest ui-kit-png $(GALLERY_PNG)
 	open $(GALLERY_PNG)
 
-# Signing identity: Developer ID (imported from .apple on first run), else the self-signed Recorder Dev.
+# Signing identity: Developer ID, else Apple Development, else the self-signed Recorder Dev (created only if neither exists).
 install:
-	$(if $(DEV_ID),,$(if $(wildcard .apple),sh scripts/import-signing.sh,$(MAKE) cert))
+	$(if $(DEV_ID)$(APPLE_DEV),,$(MAKE) cert)
 	$(MAKE) app APP=build/Recorder.app
 	sh scripts/install-app.sh
 

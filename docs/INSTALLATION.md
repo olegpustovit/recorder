@@ -114,12 +114,13 @@ make install
 open /Applications/Recorder.app
 ```
 
-Run as your normal logged-in user, **not with sudo**. `make install` creates or reuses
-the local **Recorder Dev** certificate (Keychain may ask for access), builds with that
-identity, verifies the signature, quits running Recorder copies normally, and replaces
-`/Applications/Recorder.app`. It resets only Recorder's Screen Recording, Accessibility,
-Camera and Microphone grants for both `space.microapps.recorder` and legacy
-`sh.nexo.recorder`. Every `make install` intentionally resets these grants.
+Run as your normal logged-in user, **not with sudo**. `make install` signs with the first
+identity in your keychain out of **Developer ID Application**, **Apple Development** and the
+local **Recorder Dev** certificate. It creates Recorder Dev only when neither Apple identity
+exists, and Keychain may ask for access. It verifies the signature, quits running Recorder copies normally, and replaces
+`/Applications/Recorder.app`. Only when the signer differs from the installed copy's, it resets Recorder's Screen
+Recording, Accessibility, Camera and Microphone grants (`space.microapps.recorder`), since
+grants made under the old signer stop matching. Same signer: grants are kept.
 
 Recordings, presets and preferences are not removed. Approve fresh macOS permissions
 after launching the installed copy; quit and reopen if macOS requires it. If Recorder

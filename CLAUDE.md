@@ -55,6 +55,7 @@ make test                  # all tests
 make test FILTER=timeMap   # a single test or suite (passed to --filter)
 make app                   # assemble + codesign build/Recorder.app
 make run                   # app + open it
+make dev                   # incremental debug build, quit old instance, run in foreground (logs in terminal)
 make install               # signed local install, normal quit and targeted permission resets
 make cert                  # one-time: create the self-signed "Recorder Dev" signing identity
 make clean
