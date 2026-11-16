@@ -40,7 +40,8 @@ enum MCPTools {
             op("cut", ["from": number, "to": number], ["from", "to"]),
             op("cutPauses", ["from": number, "to": number, "minDuration": number, "keepTail": number], []),
             op("cutWords", ["transcript": string, "words": ["type": "array", "items": string]], ["transcript", "words"]),
-            op("speed", ["from": number, "to": number, "speed": number], ["from", "to", "speed"]),
+            op("speed", ["from": number, "to": number, "speed": number,
+                "ramp": ["type": "object", "description": "Ease the speed change: output seconds of stepped ramp before and after the span (numeric from/to only).", "properties": ["in": number, "out": number], "additionalProperties": false]], ["from", "to", "speed"]),
             op("zoom", ["from": number, "to": number, "scale": number, "center": center, "follow": follow, "ease": ease], ["from", "to", "scale"]),
             op("text", ["from": number, "to": number, "style": ["type": "string", "enum": TextBlock.Style.allCases.map(\.rawValue)], "text": string, "position": point, "size": textSize, "color": color], ["from", "to", "style", "text"]),
             op("captions", ["maxWords": ["type": "integer", "minimum": 1, "maximum": 100]], []),
@@ -52,7 +53,14 @@ enum MCPTools {
                 "recording": ["type": "string", "description": "A library recording id from project.assets; its screen video becomes a video layer."],
                 "rect": rect], ["from"]),
             op("remove", ["id": string], ["id"]),
-            op("style", ["patch": ["type": "object"]], ["patch"])
+            op("style", ["patch": ["type": "object"]], ["patch"]),
+            op("keepShots", ["shots": ["type": "array", "items": string, "description": "Shot ids from analyze.shots to keep; everything else is cut."],
+                "where": ["type": "object", "description": "Keep shots by kind and energy instead of ids.", "properties": ["kind": ["type": "array", "items": ["type": "string", "enum": ShotKind.allCases.map(\.rawValue)]], "minEnergy": number], "additionalProperties": false],
+                "trim": ["type": "object", "description": "Source seconds trimmed from the start/end of each kept shot.", "properties": ["lead": number, "tail": number], "additionalProperties": false]], []),
+            op("pace", ["beat": ["type": "object", "description": "Seconds a shot is held: default 0.9, payoff 1.3, motion 0.8.", "properties": ["default": number, "payoff": number, "motion": number], "additionalProperties": false],
+                "maxStatic": number, "speedFill": ["type": "object", "description": "Speed range used to squeeze holds and slow shots (default 1.5-6).", "properties": ["min": number, "max": number], "additionalProperties": false]], []),
+            op("fitDuration", ["target": number, "tolerance": number, "protect": ["type": "array", "items": string]], ["target"]),
+            op("autoZoom", ["lead": number, "tail": number, "scale": number, "from": number, "to": number], [])
         ]
     }()
     static let list: [[String: Any]] = {
@@ -73,9 +81,9 @@ enum MCPTools {
             tool("timeline", ["get"], "Read clips, effect blocks and markers in output seconds.", range, read: true),
             tool("transcript", ["get"], "Read up to 2000 spoken words with stable wN ids, or timestamped phrases. Key presses are never returned.", range.merging(["format": ["type": "string", "enum": ["words", "phrases"]]], uniquingKeysWith: { _, b in b }), read: true),
             tool("analyze", ["transcribe", "pauses", "fillers", "activity"], "Transcribe on-device, find mic pauses/fillers, or read activity ranges without key characters.", ["minDuration": number, "threshold": number], read: true),
-            tool("edit", ["apply", "undo"], "Apply atomic edits using the latest ifRevision; edits land in a draft by default. Numeric times use that revision's output timeline; {marker:id, offset:seconds} anchors resolve after earlier ops in the batch.", ["ifRevision": string, "ops": ["type": "array", "items": ["oneOf": operationSchemas]], "dryRun": boolean]),
+            tool("edit", ["apply", "undo"], "Apply atomic edits using the latest ifRevision; edits land in a draft by default. Numeric times use that revision's output timeline; {marker:id, offset:seconds} anchors resolve after earlier ops in the batch.", ["ifRevision": string, "ops": ["type": "array", "items": ["oneOf": operationSchemas]], "dryRun": boolean, "lint": ["type": "string", "enum": ["reel", "tutorial", "demo"], "description": "Profile for report.lint (default reel)."]]),
             tool("draft", ["status", "submit", "discard"], "Read your draft's exclusions, skipped reasons and verdict; submit for review or discard it. A pending submitted draft can receive more edit.apply calls, returning to watching until submitted again.", ["note": string]),
-            tool("render", ["frames", "sheet", "clip", "cancel"], "Render frames, a contact sheet or a 540p proxy into the agent cache. Key chips are hidden.", ["at": ["type": "array", "items": number, "maxItems": 24], "from": number, "to": number, "count": ["type": "integer", "minimum": 1, "maximum": 24], "longEdge": ["type": "integer", "minimum": 1, "maximum": 640], "draft": boolean,
+            tool("render", ["frames", "sheet", "clip", "cancel", "lint"], "Render frames, a contact sheet or a 540p proxy into the agent cache (key chips hidden), or lint the draft against a profile (reel, tutorial, demo; needs analyze.shots).", ["at": ["type": "array", "items": number, "maxItems": 24], "from": number, "to": number, "count": ["type": "integer", "minimum": 1, "maximum": 24], "longEdge": ["type": "integer", "minimum": 1, "maximum": 640], "draft": boolean, "profile": ["type": "string", "enum": ["reel", "tutorial", "demo"]],
                 "grid": ["type": "boolean", "description": "render.frames only: overlay a 0.1-step grid labelled 0–1, origin top-left, matching zoom center and text position coordinates (exact at 1× zoom with no layout padding)."]]),
             tool("export", ["final"], "Export an MP4 after the user's native approval, optionally with SRT subtitles.", ["destination": string, "shortEdge": ["type": "integer", "enum": [720, 1080, 2160]], "fps": ["type": "integer", "enum": [24, 30, 60]], "srt": boolean]),
             tool("ui", ["show"], "Move the editor playhead and select blocks by id.", ["at": ["type": "number"], "select": ["type": "array", "items": string]])
@@ -155,6 +163,27 @@ enum MCPTools {
         }
         return context
     }
+    // ponytail: stub until T-827 merge; the integrator wires analyze.shots' cached storyboard here.
+    @MainActor static func loadStoryboard(model: EditorModel, session: MCPSession) async throws -> Storyboard {
+        throw MCPFailure(code: "NOT_ANALYZED", message: "Run analyze.shots first")
+    }
+    private static func lintProfile(_ value: Any?) throws -> LintProfile {
+        guard let value else { return .reel }
+        guard let name = value as? String, let profile = LintProfile(name: name) else { throw MCPFailure(code: "INVALID_OP", message: "lint/profile must be reel, tutorial or demo") }
+        return profile
+    }
+    /// keepShots, pace, fitDuration, autoZoom and ramped speed become cut/speed/zoom ops against the viewed timeline.
+    private static func lowerIntentOps(_ value: Any?, project: Project, clicks: [InputEvent], storyboard: Storyboard?) throws -> (Any?, [LoweredIntent]) {
+        guard let values = value as? [[String: Any]], values.contains(where: { ["keepShots", "pace", "fitDuration", "autoZoom"].contains($0["op"] as? String) || $0["ramp"] != nil }) else { return (value, []) }
+        guard let raw = try? JSONDecoder().decode([JSONValue].self, from: JSONSerialization.data(withJSONObject: values)) else {
+            throw MCPFailure(code: "INVALID_OP", message: "edit.apply ops must be JSON objects; use tools/list for the op schemas")
+        }
+        let result = try lowerIntents(raw, project: project, clicks: clicks) {
+            guard let storyboard else { throw MCPFailure(code: "NOT_ANALYZED", message: "Run analyze.shots first") }
+            return storyboard
+        }
+        return (try JSONSerialization.jsonObject(with: JSONEncoder().encode(result.ops)), result.lowered)
+    }
     @MainActor private static func edit(_ action: String, _ args: [String: Any], model: EditorModel, session: MCPSession) async throws -> [String: Any] {
         try requireEditable(model, draftSession: action == "apply" ? session : nil, allowInvisible: true)
         let level = AgentAccess.level(for: model.liveProject.id)
@@ -176,7 +205,10 @@ enum MCPTools {
         guard sent == expected, active == nil || active?.base == liveRevision else {
             throw MCPFailure(code: "STALE_REVISION", message: "Editor is at \(liveRevision), draft is at \(expected); call timeline.get, then discard/review any stale draft and retry")
         }
-        let decoded = try decodeOps(args["ops"])
+        let board = try? await loadStoryboard(model: model, session: session)
+        let profile = try lintProfile(args["lint"])
+        let (loweredOps, lowered) = try lowerIntentOps(args["ops"], project: try viewedProject(model, session: session), clicks: model.events.clicks(), storyboard: board)
+        let decoded = try decodeOps(loweredOps)
         let originalDraftID = session.draft?.id
         let dryRun = args["dryRun"] as? Bool ?? false
         let resolution = try await MCPAssets.resolve(decoded, package: model.packageURL, project: model.liveProject, library: decoded.contains(where: { if case .layer(_, _, .recording, _) = $0 { return true }; return false }) ? await libraryRecordings() : [],
@@ -234,8 +266,11 @@ enum MCPTools {
             session.agentMedia.formUnion(resolution.created.map { "media/" + $0.lastPathComponent })
             session.agentMediaPackage = model.packageURL
         }
-        return ["revision": nextRevision, "mode": level.rawValue, "changes": try json(result.changes),
+        var payload: [String: Any] = ["revision": nextRevision, "mode": level.rawValue, "changes": try json(result.changes),
                 "duration": ["before": before.exportDuration, "after": result.project.exportDuration], "warnings": warnings(result.project, changes: result.changes), "dryRun": dryRun]
+        if let board { payload["report"] = try json(editReport(before: before, after: result.project, storyboard: board, profile: profile)) }
+        if !lowered.isEmpty { payload["lowered"] = try json(lowered) }
+        return payload
     }
     static func warnings(_ project: Project, changes: [EditChange]) -> [String] {
         let blocks = agentTimeline(project).blocks.filter { $0.lane == "text" }
@@ -487,6 +522,7 @@ enum MCPTools {
         case ("render", "sheet"): return "Rendering contact sheet"
         case ("render", "clip"): return "Rendering preview"
         case ("render", "cancel"): return "Cancelling render"
+        case ("render", "lint"): return "Linting edit"
         case ("draft", "submit"): return "Preparing review"
         case ("draft", "status"): return "Checking draft"
         case ("draft", "discard"): return "Discarding draft"
@@ -628,6 +664,10 @@ enum MCPTools {
         }
         guard session.renderTask == nil else { throw MCPFailure(code: "RENDER_BUSY", message: "A render is running; call render.cancel or wait for it to finish") }
         let project = args["draft"] as? Bool == false ? model.liveProject : try viewedProject(model, session: session)
+        if action == "lint" {
+            let report = editReport(before: model.liveProject, after: project, storyboard: try await loadStoryboard(model: model, session: session), profile: try lintProfile(args["profile"]))
+            return (["revision": try revision(project), "profile": (args["profile"] as? String) ?? "reel", "report": try json(report)], [])
+        }
         let revision = try revision(project)
         let projectID = project.id
         let frozen = AgentRender.renderModel(for: model, project: project)

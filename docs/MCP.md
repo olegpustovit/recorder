@@ -127,9 +127,9 @@ Nine tools, each with an `action` string (Resolve's MCP shows that grouping keep
 | `timeline` | `get {from?,to?}` → `AgentTimeline` (§T-801) |
 | `transcript` | `get {from?,to?,format:"words"\|"phrases"}` → `AgentTranscript` (§T-801). `NOT_TRANSCRIBED` if `model.transcript == nil`. |
 | `analyze` | `transcribe` (async, progress) · `pauses {minDuration=0.6,threshold=0.02}` → `[{from,to}]` · `fillers` → `[{word,from,to,text}]` · `activity` → `{idle:[…],typing:[…],clicks:[t…]}` (ranges only, never characters) |
-| `edit` | `apply {ifRevision, ops:[EditOp], dryRun=false}` → `{revision, mode:"draft"\|"live", changes:[EditChange], duration:{before,after}, warnings:[…]}` · `undo` (live only: `model.undo()` if the top undo name starts with `Claude:`) |
+| `edit` | `apply {ifRevision, ops:[EditOp], dryRun=false}` → `{revision, mode:"draft"\|"live", changes:[EditChange], duration:{before,after}, warnings:[…], report?:EditReport, lowered?:[LoweredIntent]}` (`lint:"reel"\|"tutorial"\|"demo"` picks the report profile) · `undo` (live only: `model.undo()` if the top undo name starts with `Claude:`) |
 | `draft` | `status` → `{base, ops, changes, submitted, verdict?}` · `submit {note}` → opens review in the editor · `discard` |
-| `render` | `frames {at:[t…] ≤6, draft=true, longEdge=640, grid=false}` (grid: 0.1-step magenta overlay labelled 0–1, origin top-left, the coordinates zoom `center` and text `position` use) → images + links · `sheet {count=12 ≤24 \| at:[…], draft=true}` → 1 JPEG + link · `clip {from,to, draft=true}` → job, then link (async, progress) · `cancel` |
+| `render` | `frames {at:[t…] ≤6, draft=true, longEdge=640, grid=false}` (grid: 0.1-step magenta overlay labelled 0–1, origin top-left, the coordinates zoom `center` and text `position` use) → images + links · `sheet {count=12 ≤24 \| at:[…], draft=true}` → 1 JPEG + link · `clip {from,to, draft=true}` → job, then link (async, progress) · `cancel` · `lint {profile="reel", draft=true}` → `{revision, profile, report}` (needs a storyboard) |
 | `export` | `final {destination?, shortEdge?, fps?, srt=false}` → waits for approval → `{path, seconds, bytes}` or `DENIED` |
 | `ui` | `show {at, select?:[id]}` → moves the playhead / selection in the editor |
 
@@ -162,6 +162,47 @@ Zoom centers are normalized0–1 in the source frame, with the origin at the top
 ```
 
 Text styles: `title`, `label`, `caption` (existing), `lowerThird`, `chapter` (new, T-803).
+
+### 5.3 Intent ops and the edit report (T-829, T-830)
+
+Core: `EditReport.swift` (`editReport`, `lint`, `LintProfile`), `IntentOps.swift` (`lowerIntents`). Both take a source-time
+`Storyboard` (analyze.shots) and map shots to output time through `TimeMap`. The MCP layer calls `MCPTools.loadStoryboard`
+(stub until T-827 lands: `NOT_ANALYZED`). Without a storyboard `edit.apply` still works and omits `report`;
+intent ops that need shots fail with `NOT_ANALYZED`.
+
+Intent ops are rewritten to `cut` / `speed` / `zoom` against the same base timeline before the batch is decoded, so the
+whole batch is one `applying` call and one undo step. `lowered:[{op,intent,ops,dropped?,note?}]` returns the primitives.
+
+```jsonc
+{"op":"keepShots","shots":["s02","s05"],"trim":{"lead":0.1,"tail":0.2}}   // or "where":{"kind":["payoff"],"minEnergy":0.3}; trim = source seconds per kept shot; others cut (snap)
+{"op":"pace","beat":{"default":0.9,"payoff":1.3,"motion":0.8},"maxStatic":1.2,"speedFill":{"min":1.5,"max":6}}
+{"op":"fitDuration","target":30,"tolerance":2,"protect":["s02"]}          // lowered.dropped = shots removed whole
+{"op":"autoZoom","lead":0.4,"tail":1.5,"scale":2,"from":0,"to":60}        // AutoZoom.swift click clustering → zoom ops (from/to optional output window)
+{"op":"speed","from":10,"to":14,"speed":3,"ramp":{"in":0.2,"out":0.3}}     // stepped speeds (4 per side max), no native easing
+```
+
+`pace`: static/cursorOnly shots longer than `maxStatic` (and not tagged `result`) are sped up by `d/maxStatic` when that is
+within `speedFill`, with any remainder cut; shorter overshoot is simply cut. Payoff shots keep `beat.payoff` (at least until
+0.3 s after the last click) and the tail is cut. Motion/typing shots longer than their beat are sped up to it (≤ `speedFill.max`).
+
+`fitDuration`: drops whole segments in ascending interest (static < cursorOnly < typing < motion < payoff, energy breaks ties)
+until the length is within `tolerance` of `target`; the last one is compressed (speed ≤ 6x) or tail-trimmed to land on target.
+`protect` ids are never touched; if the target is unreachable `lowered[].note` says so.
+
+`report`: `{duration, aslSec, staticSec: {before,after}, hookSec, longestStatic:{sec,at}, lint:[…]}`, computed draft vs the timeline
+the batch started from. Static = `static` or `cursorOnly` shots. `hookSec` = output time of the first payoff's first kept click
+(its start when none). Lint item: `{rule, sev, at, shot?, msg, suggest?}`; `suggest` is an op for the next `edit.apply`
+(output seconds of the edited timeline). `edgeContent` suggests the T-831 `reframe` op.
+
+| Rule | reel | demo | tutorial |
+|---|---|---|---|
+| hook (first payoff at) | ≤ 1.0 s | ≤ 2.0 s | ≤ 3.0 s |
+| maxStatic (not tag `result`) | 1.2 s | 2.5 s | 4.0 s |
+| asl | 0.8–2.0 s | 1.5–5.0 s | 2.0–8.0 s |
+| duration | 15–45 s | 20–120 s | 30–300 s |
+| tinyShot | < 0.25 s | < 0.3 s | < 0.4 s |
+| orphanEffect (zoom, non-caption text) | < 0.5 s visible, all profiles | | |
+| edgeContent | shot focus box outside `project.crop`, all profiles | | |
 
 ---
 

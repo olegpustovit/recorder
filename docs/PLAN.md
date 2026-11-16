@@ -691,8 +691,8 @@ acceptance undo, privacy (renders hide key overlays) and existing op semantics; 
 | Scope | Tasks | Done |
 |---|---|---|
 | Reliability | T-825…T-826 | 0/2 |
-| Perception + feedback core | T-827…T-829 | 0/3 |
-| Intent ops + reframe | T-830…T-831 | 0/2 |
+| Perception + feedback core | T-827…T-829 | 1/3 |
+| Intent ops + reframe | T-830…T-831 | 1/2 |
 | Captions + eval harness | T-832…T-833 | 0/2 |
 
 - [ ] **T-825 Persistent drafts, listChanged, schema parity** — R1 `agent-draft.json` in the package (base revision,
@@ -710,10 +710,10 @@ acceptance undo, privacy (renders hide key overlays) and existing op semantics; 
   Core segmentation tests on synthetic signals; 100 s fixture analyses < 5 s.
 - [ ] **T-828 render.storyboard / strip / compare** — shot-anchored tiles (settled keyframe, id + duration label,
   ≤ 48 per page), filmstrip 4–8 fps, base|draft side by side. Verify: tile count = shots, legible at 320 px.
-- [ ] **T-829 Edit report + render.lint** — `report` (duration/asl/hook/longestStatic/staticSec before/after, lint)
+- [x] **T-829 Edit report + render.lint** — `report` (duration/asl/hook/longestStatic/staticSec before/after, lint)
   on every edit.apply/dryRun; `render.lint` profiles reel/tutorial/demo with rules hook, maxStatic, asl, duration,
   tinyShot, orphanEffect, edgeContent, each naming a shot and a suggested op. Verify: Core report/lint tests.
-- [ ] **T-830 Intent ops** — keepShots, pace, fitDuration, speed `ramp`, autoZoom exposure; each lowers to
+- [x] **T-830 Intent ops** — keepShots, pace, fitDuration, speed `ramp`, autoZoom exposure; each lowers to
   cut/speed/zoom in one undo step and returns lowered ops. Verify: Core lowering tests, one-step undo.
 - [ ] **T-831 reframe** — `output.aspect` plus per-shot stationary/pan crop aimed at focus and cursor
   (time-varying crop on the camera lane); edgeContent lint clean. Verify: Core crop-path tests, focus kept in frame.
@@ -1683,3 +1683,7 @@ Final audit against https://artifacts.microapps.space/a/crsebftafkp3 · 2026-11-
 Native verification · 2026-11-16 · Run on explicit user approval ("Run them now", overriding the earlier no-test-windows request for this pass). Debug app assembled; on /tmp/M6Fixture.recorder all pass: mcp-edit, mcp-render, mcp-review normal and --reduce-motion, mcp-live, mcp-panel-motion, mcp-roundtrip, mcp-export, project-navigation, inspector-panels, mcp-edit --headless, plus new `mcp-layer-playback` (real MCPTools layer edit on an open editor: draft isolation of live state/project.json, preview and export-proxy frames show the layer exactly in its range, real AVKit Play draft window with audio+video tracks that plays, cancel, edit.apply invalidation, window-close cleanup, discard purge, accept keeps exactly the used media as one undo) and `zoom-ease-parity` (zoom ease changes both preview and proxy frames and converges). Native run exposed and fixed two defects the headless tests could not: show() deleted the just-rendered preview file, and mcp-edit still asserted 12 op schemas. Actual authenticated Claude Code via `mcp-live-client` (evidence /tmp/recorder-t824-client) passed with the new tool schemas. Panel PNGs /tmp/recorder-t824-motion/{ready,editor-ready}.png inspected: Play draft sits left of Accept N in the pinned footer at 320 pt without clipping. make test 212/212. Still HUMAN: judging panel feel/motion against the design frame (mark [~] until looked at).
 
 HUMAN review · 2026-11-16 · The user judged the Claude panel's feel and motion against the design frame and approved it ("i approve finalize it pls"). The remaining `[~]` for this request is closed; T-812…T-824 are complete.
+
+T-829 · 2026-11-17 · `EditReport.swift` (editReport/lint/LintProfile reel|tutorial|demo, rules hook/maxStatic/asl/duration/tinyShot/orphanEffect/edgeContent with `suggest` ops) takes a source-time Storyboard; edit.apply/dryRun return `report`, `render.lint {profile,draft}` added; `MCPTools.loadStoryboard` is a stub until T-827 merges. make test 225/225 (EditReportTests). Not run: GUI/selftests.
+
+T-830 · 2026-11-17 · `IntentOps.swift` lowerIntents: keepShots, pace, fitDuration, autoZoom (AutoZoom lead/tail params), speed `ramp` (stepped, ponytail) → cut/speed/zoom in the same batch (one `applying`, one undo step), `lowered` returned by edit.apply. IntentOpsTests incl. fitDuration target/tolerance/protect. make test 225/225; selftest schema count bumped 13→17 (not run).

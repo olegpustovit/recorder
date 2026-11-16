@@ -5140,7 +5140,7 @@ private final class MCPTestClient {
     model.beginGesture()
     _ = try await tool("edit", ["action": "apply", "ifRevision": baseRevision, "ops": style], error: "REVIEW_IN_PROGRESS")
     model.cancelGesture()
-    guard model.project.checkInvariants() == nil, MCPTools.operationSchemas.count == 13 else { throw MCPTestFailure(description: "Edit invariants/schemas") }
+    guard model.project.checkInvariants() == nil, MCPTools.operationSchemas.count == 17 else { throw MCPTestFailure(description: "Edit invariants/schemas") }
     let activity = AgentActivity.shared.rows.filter { $0.sessionID == session.id }
     guard activity.allSatisfy({ row in [row.intent, row.result, row.tool].allSatisfy { !$0.contains("PRIVATE_ACTIVITY_") } }),
           activity.contains(where: { $0.isError && $0.result == "STALE_REVISION" }),
