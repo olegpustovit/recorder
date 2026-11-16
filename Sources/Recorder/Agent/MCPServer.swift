@@ -5,7 +5,7 @@ import Observation
 import RecorderCore
 
 struct AgentDraft {
-    let id = UUID().uuidString
+    var id = UUID().uuidString   // var: a persisted draft keeps its id, which seeds its block ids
     var base: String
     var baseProject: Project
     var calls: [[EditOp]] = []
@@ -22,6 +22,20 @@ struct AgentDraft {
 
     init(base: String, baseProject: Project) {
         self.base = base; self.baseProject = baseProject; revision = base; duration = baseProject.exportDuration
+    }
+    /// Rebuilds a draft from `agent-draft.json` by replaying its calls, so ids and changes match the original exactly.
+    init(_ record: AgentDraftRecord, words: [Word]) throws {
+        self.init(base: record.base, baseProject: record.baseProject)
+        id = record.id
+        for (call, context) in zip(record.calls, record.contexts) {
+            var context = context; context.words = words
+            _ = try append(call, context: context)
+        }
+        excluded = Set(record.excluded); note = record.note; submitted = record.submitted
+    }
+    var record: AgentDraftRecord {
+        AgentDraftRecord(id: id, base: base, baseProject: baseProject, calls: calls, contexts: contexts,
+                         excluded: excluded.sorted { $0.lexicographicallyPrecedes($1) }, note: note, submitted: submitted)
     }
     /// Media imported by earlier calls of this draft, so a later call can reuse it as `asset`.
     var assets: [String: MediaAsset] { contexts.reduce(into: [:]) { $0.merge($1.assets) { first, _ in first } } }
@@ -415,6 +429,7 @@ enum AgentAccess: String, CaseIterable {
         model.isWatchingDraft = watching
         try model.updateReview { $0 = proposed }
         draft.submitted = !watching; session.draft = draft
+        session.persistDraft()
         if !watching { session.previewSuppressed = false }
         updateMarks(model, base: draft.baseProject)
     }
@@ -433,6 +448,7 @@ enum AgentAccess: String, CaseIterable {
         let proposed = try draft.refreshReview(context: EditContext(words: model.transcript ?? []))
         try model.updateReview { $0 = proposed }
         session.draft = draft; session.reviewError = nil
+        session.persistDraft()
         updateMarks(model, base: draft.baseProject)
     }
     func finishReview(_ session: MCPSession, commit: Bool) throws {
@@ -451,6 +467,7 @@ enum AgentAccess: String, CaseIterable {
         if commit { session.draft?.verdict = verdict } else { session.draft = nil }
         session.reviewError = nil
         session.previewSuppressed = false
+        session.persistDraft()
         removeFinishedSessions()
     }
     @discardableResult func takeOverWatching(_ model: EditorModel) -> Bool {
@@ -511,8 +528,11 @@ enum AgentAccess: String, CaseIterable {
     var reviewError: String?
     var agentName = "MCP client"
     var projectURL: URL?
-    // shortcut: drafts are memory-only and disappear when Recorder quits; persist only if recovery is requested.
     var draft: AgentDraft?
+    var draftRestoreError: String?
+    private var schemaChanged = false
+    /// Package holding this session's `agent-draft.json`; set when written or adopted, so only its owner deletes it.
+    var persistedPackage: URL?
     var lastDraftVerdict: String?
     var previewSuppressed = false
     var shownLiveProjects: Set<String> = []
@@ -534,6 +554,10 @@ enum AgentAccess: String, CaseIterable {
               request["params"] == nil || request["params"] is [String: Any] else {
             return Self.error(-32600, "Expected jsonrpc 2.0, a method string and object params", id: request["id"] ?? NSNull())
         }
+        if method == "notifications/initialized", schemaChanged {
+            schemaChanged = false
+            notify("notifications/tools/list_changed", [:])
+        }
         guard let id = request["id"] else { return nil }
         guard id is String || id is NSNull || ((id as? NSNumber).map { CFGetTypeID($0) != CFBooleanGetTypeID() } ?? false) else {
             return Self.error(-32600, "Request id must be a string or number", id: NSNull())
@@ -543,7 +567,12 @@ enum AgentAccess: String, CaseIterable {
         switch method {
         case "initialize":
             if let info = params["clientInfo"] as? [String: Any], let name = info["name"] as? String { agentName = String(name.prefix(80)) }
-            result = ["protocolVersion": "2025-06-18", "capabilities": ["tools": [:]],
+            // R2: a client that last saw another tool schema is told to re-list once it has initialized.
+            let key = "mcpSchemaVersion.\(agentName)"
+            let seen = UserDefaults.standard.string(forKey: key)
+            schemaChanged = seen != nil && seen != MCPTools.schemaVersion
+            UserDefaults.standard.set(MCPTools.schemaVersion, forKey: key)
+            result = ["protocolVersion": "2025-06-18", "capabilities": ["tools": ["listChanged": true]], "schemaVersion": MCPTools.schemaVersion,
                       "serverInfo": ["name": "recorder", "version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"],
                       "instructions": MCPTools.instructions]
         case "ping": result = [:]
@@ -557,6 +586,14 @@ enum AgentAccess: String, CaseIterable {
         default: return Self.error(-32601, "Unknown method \(method); call initialize or tools/list", id: id)
         }
         return ["jsonrpc": "2.0", "id": id, "result": result]
+    }
+    /// R1: keeps `agent-draft.json` equal to the active draft; removes it once the draft is accepted, discarded or gone.
+    // shortcut: rewrites the whole file (base project included) per change; fine for tens of ops, diff if drafts grow large.
+    func persistDraft() {
+        if let draft, draft.verdict == nil, let package = persistedPackage ?? projectURL {
+            do { try draft.record.write(to: package); persistedPackage = package }
+            catch { FileHandle.standardError.write(Data("Recorder MCP: could not save agent-draft.json: \(error.localizedDescription)\n".utf8)) }
+        } else if let package = persistedPackage { AgentDraftRecord.remove(from: package); persistedPackage = nil }
     }
     func notify(_ method: String, _ params: [String: Any]) { send(["jsonrpc": "2.0", "method": method, "params": params]) }
     private func progressReporter(token: Any?) -> (Double) -> Void {

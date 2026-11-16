@@ -37,6 +37,7 @@ enum SelfTest {
         "mcp-live-client": { args in try await checkMCPLiveClient(args) },
         "mcp-panel-motion": { args in try await UIKitGallery.checkAgentStudy(to: URL(fileURLWithPath: args.first ?? "/tmp/recorder-t814-motion")) },
         "mcp-export": { args in try await checkMCPExport(args) },
+        "mcp-schema": { _ in try await checkMCPSchema() },
         "motion-text": { _ in try await Compositor.runMotionTextSelfTest() },
         "layers": { args in try await SelfTest.cases["make-layers-fixture"]!(args) },
         "capture-exclusion": { _ in
@@ -4763,6 +4764,32 @@ private final class MCPTestClient {
     guard model.project == base, !model.isReviewingDraft, session.draft?.submitted == false,
           try Project.load(from: file) == base else { throw MCPTestFailure(description: "Closing review saved a proposal or lost its pending state") }
     print("MCP review: native group/disclosure/seek/footer clicks, rapid reversal, \(reducedMotion ? "reduced" : "normal") motion samples, submitted iteration/exclusion/reason/identity retention, partial/group/zero-op acceptance, atomic group validation, seeded result, one undo, preview/disk/client isolation, edit/Escape guards, scrubbing, stale replay/discard, dependency recovery, disconnect and close verified; /tmp/recorder-mcp-review.png")
+}
+
+/// R5/R6: tools/list and the handlers agree, every tool declares annotations and an outputSchema, and handler limits come from the schema.
+@MainActor private func checkMCPSchema() throws {
+    func fail(_ message: String) -> MCPTestFailure { MCPTestFailure(description: "mcp-schema: " + message) }
+    var listed: Set<String> = []
+    for tool in MCPTools.list {
+        let name = tool["name"] as? String ?? "?"
+        let properties = (tool["inputSchema"] as? [String: Any])?["properties"] as? [String: Any]
+        for action in (properties?["action"] as? [String: Any])?["enum"] as? [String] ?? [] { listed.insert("\(name).\(action)") }
+        guard tool["outputSchema"] != nil, tool["annotations"] != nil else { throw fail("\(name) lacks annotations or outputSchema") }
+    }
+    guard listed == MCPTools.handled else {
+        throw fail("listed without handler \(listed.subtracting(MCPTools.handled).sorted()), handler without schema \(MCPTools.handled.subtracting(listed).sorted())")
+    }
+    func annotation(_ name: String, _ key: String) -> Bool? {
+        ((MCPTools.list.first { $0["name"] as? String == name }?["annotations"]) as? [String: Any])?[key] as? Bool
+    }
+    guard ["analyze", "render", "timeline", "transcript"].allSatisfy({ annotation($0, "readOnlyHint") == true }), annotation("edit", "idempotentHint") == true else {
+        throw fail("annotations")
+    }
+    let render = (MCPTools.list.first { $0["name"] as? String == "render" }?["inputSchema"]) as? [String: Any] ?? [:]
+    guard schemaViolation(["action": "frames", "at": Array(repeating: 1.0, count: 24)], render) == nil,
+          schemaViolation(["action": "frames", "at": Array(repeating: 1.0, count: 25)], render)?.range == true,
+          schemaViolation(["action": "frames", "longEdge": 1], render)?.range == true else { throw fail("render.frames limits do not follow the schema") }
+    print("MCP schema: \(listed.count) tool actions have handlers, annotations and outputSchemas; limits are validated from the schema")
 }
 
 @MainActor private func checkMCPAssetsHeadless() async throws {

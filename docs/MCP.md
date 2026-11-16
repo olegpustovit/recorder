@@ -28,7 +28,7 @@ folders need the human's approval. Nothing the agent does bypasses `EditorModel`
 | D5 | Agents render freely into the cache; `export.final` outside it needs approval. | Cache: `~/Library/Caches/Recorder/Agent/<session>/`, purged at launch when older than 7 days. |
 | D6 | The **same `Recorder` binary** is the stdio shim: `Recorder --mcp`. | No new SwiftPM target, no `assemble-app.sh` change. |
 | D7 | A project an agent works on is **open in an editor window**. | One code path: tools act on `EditorWindowController`'s `EditorModel`. No headless editing. |
-| D8 | Drafts live **in memory** in the app. | Quitting the app drops pending drafts (ponytail comment). No new files in the package (SPEC §5 rule stands). |
+| D8 | Drafts are **persisted** (T-825, replaces the in-memory D8) in `agent-draft.json` inside the project package: id, base revision and base project, calls, per-call replay context (silent ranges, imported assets), exclusions, note, submitted flag. | Written atomically after each edit, review change and submit; deleted on accept or discard. `project.open` re-adopts it (or a disconnected session's in-memory draft) and returns `draft:{id,status,changes}`. One file per package, so one pending draft per project; a second concurrent draft overwrites it. The base project is stored so a stale draft replays exactly; words come from the live transcript. |
 | D9 | All times in tool I/O are **output seconds of the project at `ifRevision`** (what the agent sees in renders). | Core converts with `TimeMap` before mutating. Agents never see source time. |
 
 Out of scope (do **not** build): MCP resources/prompts, music ducking, LUFS normalisation, OCR, background music, counters,
@@ -86,8 +86,8 @@ Transport: one JSON object per line, UTF-8, `\n` terminated, both directions. Im
 
 | Method | Reply |
 |--------|-------|
-| `initialize` | `{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"recorder","version":<CFBundleShortVersionString>},"instructions":<§5.0 text>}`. Store `params.clientInfo.name` as the session's agent name. |
-| `notifications/initialized` | none (notification) |
+| `initialize` | `{"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":true}},"schemaVersion":<hash of tools/list>,"serverInfo":{"name":"recorder","version":<CFBundleShortVersionString>},"instructions":<§5.0 text>}`. Store `params.clientInfo.name` as the session's agent name. |
+| `notifications/initialized` | none; but when this client name last initialized against a different `schemaVersion` (remembered in UserDefaults), the server then sends `notifications/tools/list_changed` once (T-825). |
 | `ping` | `{}` |
 | `tools/list` | `{"tools":[…§5 schemas…]}` |
 | `tools/call` | `{"content":[…],"structuredContent":{…},"isError":false}` |
@@ -101,8 +101,17 @@ Transport: one JSON object per line, UTF-8, `\n` terminated, both directions. Im
 - Progress: if `params._meta.progressToken` is present on a long call (`render.clip`, `export.final`, `analyze.transcribe`),
   send `{"jsonrpc":"2.0","method":"notifications/progress","params":{"progressToken":…,"progress":0.35,"total":1}}`
   at most every 0.25 s.
-- Tool annotations in `tools/list`: read tools `{"readOnlyHint":true}`; `edit`, `draft` `{"destructiveHint":false}`;
-  `export` `{"destructiveHint":false,"openWorldHint":false}`.
+- Tool annotations in `tools/list`: `project`, `timeline`, `transcript`, `analyze`, `render` `{"readOnlyHint":true}`; `edit`
+  `{"destructiveHint":false,"idempotentHint":true}` (`ifRevision` makes a repeated apply fail, not repeat); `draft`
+  `{"destructiveHint":false}`; `export` `{"destructiveHint":false,"openWorldHint":false}`. Every tool also declares an
+  `outputSchema` (loose: known keys typed, none required, plus `project`/`revision`/`error`/`message`); results are
+  always in `structuredContent`.
+- Limits live only in the tool `inputSchema`. `tools/call` validates arguments against it server-side (`type`, `enum`,
+  `minimum`, `maximum`, `minLength`, `maxItems`, nested objects/arrays; `oneOf` unions are checked by the op decoder, which
+  also validates each op against its own schema). Out-of-range or off-enum numbers return `OUT_OF_RANGE`, wrong shapes
+  `INVALID_OP`. `render.frames at` takes up to 24 times, the same as the schema says. `MCPTools.handled` lists every
+  `tool.action` with a handler; `--selftest mcp-schema` diffs it against `tools/list` and checks annotations,
+  outputSchemas and the render limits.
 
 Error codes (exact strings): `PERMISSION_DENIED`, `NO_PROJECT`, `STALE_REVISION`, `TRANSCRIPT_CHANGED`, `NOT_TRANSCRIBED`,
 `OUT_OF_RANGE`, `INVALID_OP`, `INVARIANT`, `RENDER_BUSY`, `NEEDS_APPROVAL`, `DENIED`, `REVIEW_IN_PROGRESS`.
@@ -123,13 +132,13 @@ Nine tools, each with an `action` string (Resolve's MCP shows that grouping keep
 
 | Tool | Actions → result (all results include `project` id and `revision`) |
 |------|---------------------------------------------------------------------|
-| `project` | `list` → `[{id,title,path,duration,modified,hasMic}]` · `open {id\|path}` → opens the editor window, returns `info` · `info` → `{title,duration,size:{w,h},clips,lanes:{zoom,text,mask,…counts},hasMic,hasCamera,transcribed,access}` · `assets` → `{layers:[{asset,kind,id,from,to}], library:[{recording,title,duration}]}` (media a `layer` op can use) |
+| `project` | `list` → `[{id,title,path,duration,modified,hasMic}]` · `open {id\|path}` → opens the editor window, returns `info` plus `draft:{id,status:"drafting"\|"submitted"\|"stale",base,revision,changes}` when a pending draft was re-adopted (or `draft:{status:"unrecoverable",error}`); continue with the returned `revision` · `info` → `{title,duration,size:{w,h},clips,lanes:{zoom,text,mask,…counts},hasMic,hasCamera,transcribed,access}` · `assets` → `{layers:[{asset,kind,id,from,to}], library:[{recording,title,duration}]}` (media a `layer` op can use) |
 | `timeline` | `get {from?,to?}` → `AgentTimeline` (§T-801) |
 | `transcript` | `get {from?,to?,format:"words"\|"phrases"}` → `AgentTranscript` (§T-801). `NOT_TRANSCRIBED` if `model.transcript == nil`. |
 | `analyze` | `transcribe` (async, progress) · `pauses {minDuration=0.6,threshold=0.02}` → `[{from,to}]` · `fillers` → `[{word,from,to,text}]` · `activity` → `{idle:[…],typing:[…],clicks:[t…]}` (ranges only, never characters) |
 | `edit` | `apply {ifRevision, ops:[EditOp], dryRun=false}` → `{revision, mode:"draft"\|"live", changes:[EditChange], duration:{before,after}, warnings:[…]}` · `undo` (live only: `model.undo()` if the top undo name starts with `Claude:`) |
 | `draft` | `status` → `{base, ops, changes, submitted, verdict?}` · `submit {note}` → opens review in the editor · `discard` |
-| `render` | `frames {at:[t…] ≤6, draft=true, longEdge=640, grid=false}` (grid: 0.1-step magenta overlay labelled 0–1, origin top-left, the coordinates zoom `center` and text `position` use) → images + links · `sheet {count=12 ≤24 \| at:[…], draft=true}` → 1 JPEG + link · `clip {from,to, draft=true}` → job, then link (async, progress) · `cancel` |
+| `render` | `frames {at:[t…] ≤24, draft=true, longEdge=640, grid=false}` (grid: 0.1-step magenta overlay labelled 0–1, origin top-left, the coordinates zoom `center` and text `position` use) → images + links · `sheet {count=12 ≤24 \| at:[…], draft=true}` → 1 JPEG + link · `clip {from,to, draft=true}` → job, then link (async, progress) · `cancel` |
 | `export` | `final {destination?, shortEdge?, fps?, srt=false}` → waits for approval → `{path, seconds, bytes}` or `DENIED` |
 | `ui` | `show {at, select?:[id]}` → moves the playhead / selection in the editor |
 
@@ -755,7 +764,7 @@ The user waived HUMAN visual gates; these were agent-driven native checks, not a
 
 Verification limits: fresh microphone capture and positive on-device transcription were not repeated; the existing
 on-device transcription engine is reused. Lexical filler detection can only flag words present in its transcript.
-Drafts remain memory-only, the shim requires client reconnection after app exit, and long draft replay remains
+Drafts were memory-only at that time (persisted since T-825); the shim requires client reconnection after app exit, and long draft replay remains
 uncached as documented in source. The native SwiftPM build system is currently required on this toolchain and is
 deprecated upstream; the Makefile honors `DEVELOPER_DIR`, with Xcode and CLT Testing-path selection checked.
 This completion covers the prototype's MCP scope, including its explicit exclusions in §1; unrelated older

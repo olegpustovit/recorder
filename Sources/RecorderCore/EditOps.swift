@@ -184,12 +184,14 @@ public enum EditOp: Codable, Equatable, Sendable {
     }
 }
 
-public struct EditContext: Sendable {
-    public var words: [Word]
-    public var silent: [TimeRange]
-    public var operationSeeds: [String]
+public struct EditContext: Codable, Sendable {
+    // Codable covers what a persisted draft needs to replay; words come from the live transcript.
+    private enum CodingKeys: String, CodingKey { case silent, assets }
+    public var words: [Word] = []
+    public var silent: [TimeRange] = []
+    public var operationSeeds: [String] = []
     /// Probed media files keyed by package-relative path; `layer` ops may only name files listed here.
-    public var assets: [String: MediaAsset]
+    public var assets: [String: MediaAsset] = [:]
     public init(words: [Word] = [], silent: [TimeRange] = [], operationSeeds: [String] = [], assets: [String: MediaAsset] = [:]) {
         self.words = words; self.silent = silent; self.operationSeeds = operationSeeds; self.assets = assets
     }
