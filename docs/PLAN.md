@@ -691,8 +691,8 @@ acceptance undo, privacy (renders hide key overlays) and existing op semantics; 
 | Scope | Tasks | Done |
 |---|---|---|
 | Reliability | T-825…T-826 | 0/2 |
-| Perception + feedback core | T-827…T-829 | 2/3 |
-| Intent ops + reframe | T-830…T-831 | 1/2 |
+| Perception + feedback core | T-827…T-829 | 3/3 |
+| Intent ops + reframe | T-830…T-831 | 2/2 |
 | Captions + eval harness | T-832…T-833 | 2/2 |
 
 - [ ] **T-825 Persistent drafts, listChanged, schema parity** — R1 `agent-draft.json` in the package (base revision,
@@ -715,10 +715,10 @@ acceptance undo, privacy (renders hide key overlays) and existing op semantics; 
   recording. F1 ≥ 0.8 on 5 hand-labelled recordings not measured (no labelled set exists).
 - [x] **T-828 render.storyboard / strip / compare** — shot-anchored tiles (settled keyframe, id + duration label,
   ≤ 48 per page), filmstrip 4–8 fps, base|draft side by side. Verify: tile count = shots, legible at 320 px.
-- [ ] **T-829 Edit report + render.lint** — `report` (duration/asl/hook/longestStatic/staticSec before/after, lint)
+- [x] **T-829 Edit report + render.lint** — `report` (duration/asl/hook/longestStatic/staticSec before/after, lint)
   on every edit.apply/dryRun; `render.lint` profiles reel/tutorial/demo with rules hook, maxStatic, asl, duration,
   tinyShot, orphanEffect, edgeContent, each naming a shot and a suggested op. Verify: Core report/lint tests.
-- [ ] **T-830 Intent ops** — keepShots, pace, fitDuration, speed `ramp`, autoZoom exposure; each lowers to
+- [x] **T-830 Intent ops** — keepShots, pace, fitDuration, speed `ramp`, autoZoom exposure; each lowers to
   cut/speed/zoom in one undo step and returns lowered ops. Verify: Core lowering tests, one-step undo.
 - [x] **T-831 reframe** — `output.aspect` plus per-shot stationary/pan crop aimed at focus and cursor
   (time-varying crop on the camera lane); edgeContent lint clean. Verify: Core crop-path tests, focus kept in frame.
@@ -1695,3 +1695,6 @@ T-828 · 2026-11-17 · `render.storyboard/strip/compare` (AgentRender `tiles`/`k
 
 T-832 · 2026-11-17 · opt-in shot captions: Core `ShotCaption.shape` + `ShotCaptionTests`, app `AgentCaptions.captionShots` (Vision OCR on focus crop, classifier fallback, nil on failure) · verified: `make test` all pass, `make build` · not verified: Vision output on a real recording; `captions:true` on analyze.shots is wired by the integrator. captions wiring into analyze.shots done at integration
 T-831 · 2026-11-17 · `reframe` op (`aspect` 4:5|1:1|9:16|16:9, `mode` perShot|static). Core `reframePlan(storyboard:aspect:mode:sourceSize:) -> [CropKey]` (AutoFlip-style: stationary on focus ∪ cursor when it fits the largest aspect window, else linear pan between focus edges, clamped inside the frame; static = one window over all focus). Model: additive `Project.cropKeys` (source-time linear keys, empty = static `crop`; `Project.cropSample(atSource:)`), `Output.Aspect.r4x5` + `.ratio` (replaced three duplicate switches); format version 6 saved only when 4:5 or cropKeys is used (SPEC §5; `currentVersion` 6). Preview and export both sample the crop in `makeFrameState` (one line), so the existing Compositor consumes a per-frame crop of constant aspect; the Crop sheet clears keys. The MCP edit handler fills the op's `keys` from `loadStoryboard` before the op is stored (draft replay needs no storyboard); `loadStoryboard` is a stub throwing "run analyze.shots first" until T-827 merges (`// ponytail:`). Tests: ReframeTests (focus kept ≥95% of frames, stationary vs pan, clamp/aspect, static, cut at boundaries, old-project decode, op + version). make test and make build pass. NOT verified (no GUI): native preview/export pixel parity of a keyed crop, editor overlays (zoom-target/mask rect) while keys are active still map through the static `crop`; edgeContent lint is T-829.
+T-829 · 2026-11-17 · `EditReport.swift` (editReport/lint/LintProfile reel|tutorial|demo, rules hook/maxStatic/asl/duration/tinyShot/orphanEffect/edgeContent with `suggest` ops) takes a source-time Storyboard; edit.apply/dryRun return `report`, `render.lint {profile,draft}` added; `MCPTools.loadStoryboard` is a stub until T-827 merges. make test 225/225 (EditReportTests). Not run: GUI/selftests.
+
+T-830 · 2026-11-17 · `IntentOps.swift` lowerIntents: keepShots, pace, fitDuration, autoZoom (AutoZoom lead/tail params), speed `ramp` (stepped, ponytail) → cut/speed/zoom in the same batch (one `applying`, one undo step), `lowered` returned by edit.apply. IntentOpsTests incl. fitDuration target/tolerance/protect. make test 225/225; selftest schema count bumped 13→17 (not run).

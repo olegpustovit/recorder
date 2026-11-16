@@ -92,7 +92,6 @@ public struct ShotThresholds: Codable, Equatable, Sendable {
     }
 }
 
-private func r2(_ v: Double) -> Double { (v * 100).rounded() / 100 }
 
 public func storyboard(signals: [FrameSignal], fps: Double = 10, events: [InputEvent],
                        thresholds t: ShotThresholds = ShotThresholds()) -> Storyboard {
