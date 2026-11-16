@@ -575,6 +575,7 @@ Core tasks (T-801…T-803) are pure and unit-tested; app tasks use `--selftest` 
 | App: server, render, edit/draft | T-804…T-806 | 3/3 |
 | App: review UI, graphics, export/settings | T-807…T-809 | 3/3 |
 | Docs + smoke | T-810 | 1/1 |
+| Connect an Agent window | T-811 | 1/1 |
 
 - [x] **T-801 Core: agent views** · MCP.md §T-801 — `AgentViews.swift`: `agentTimeline`, `agentTranscript` (stable
   `wN` ids, output time, fillers), `isFiller`, `transcriptID`. Verify: `make test FILTER=AgentViews`; `make test`.
@@ -601,6 +602,10 @@ Core tasks (T-801…T-803) are pure and unit-tested; app tasks use `--selftest` 
   applied to agent-driven workflow; no person or live speech-capture approval claimed.
 - [x] **T-810 Docs + `make mcp-smoke`** · MCP.md §T-810 — SPEC §10 Agents, §5 version 5 rule, README, CLAUDE.md commands.
   Verify: `make mcp-smoke`; `make test`; `--selftest menu-actions`.
+- [x] **T-811 App: Connect an Agent window (requested 2026-11-16)** · SPEC §10 "Connecting a client" — dbman-style
+  `AgentsWindow.swift` (guide, eight clients, Other JSON, agentpack) replacing the Claude-only Settings row; Core
+  `AgentConfig` (JSON/TOML install/uninstall/status). Verify: `make test FILTER=AgentConfig`; `make test`;
+  `--selftest menus`; `--selftest settings-png <out> agents pane=<id>` inspected for guide/claude-code/codex/agentpack.
 
 ---
 
@@ -1533,3 +1538,5 @@ T-809 · 2026-11-16 · Added export.final with native NSAlert approval, ten-minu
 
 
 T-810 · 2026-11-16 · Added SPEC §10 Agents (access/review, privacy, protocol/tools, clocks and limits), corrected all §5 format rules to conditional v5/v4/v3, documented connection/default workflow in README and --mcp/mcp-smoke in CLAUDE.md. Added a timed stdio smoke that pipes initialize + tools/list through the same-binary shim, asserting protocol and exactly nine tools including edit. Fixed the shared Makefile toolchain selection/Testing paths and selected the native SwiftPM engine so the Verify commands run without manual flags; Xcode/CLT path selection and smoke Python syntax checked. Plain make build release passes; gracefully quit the owned idle source-build app before assembling the Developer ID signed bundle. Plain make mcp-smoke passes (auto-launch and piped-EOF reply drain); plain make test passes190/190; packaged release --selftest menu-actions passes; diff check clean. Logs /tmp/recorder-t810-{build,smoke,core,menu}.log. Fresh prototype version2 audit maps all decisions, nine tools,19 in-scope capabilities and ten tasks to tests/native real-client evidence in MCP.md §9; T-801…T-810 complete. No new dependency, installation, permission reset, release/push, wake or unlock. Existing real-client/native-review/generated-media evidence retained; fresh mic capture and positive on-device speech were not repeated, drafts remain memory-only and native SwiftPM is deprecated upstream. Unrelated backlog unchanged.
+
+T-811 · 2026-11-16 · User report: on the MacBook Air the installed build had MCP but nothing showed how to connect it (Claude Code had no server configured). Added Recorder ▸ Connect an Agent… (⇧⌘A, also in the status menu) modelled on dbman's Agents window: Start here guide + prompts, eight clients with Live/Connected/Update/Off/Not found status, Connect/Update/Disconnect/Reveal Config, copyable CLI commands and per-client snippets, Other client JSON, and an agentpack pane (init/mcp add/sync, copy as script, launch agents in Terminal). Core AgentConfig ported from dbman, user scope only (JSON merge / one TOML table, refuses commented JSON and inline TOML, keeps one .recorder-backup). Settings ▸ Agents now links to the window and lists live sessions; old AgentClient JSON/args moved to AgentConfig and the mcp-export check updated. make test FILTER=AgentConfig 3/3, make test 193/193, --selftest menus OK, settings-png renders for guide/claude-code/codex/agentpack inspected. Client paths other than Claude Code/Codex come from public docs (shortcut comment). mcp-export/mcp-smoke not re-run (unchanged logic; would replace the running source-build app).

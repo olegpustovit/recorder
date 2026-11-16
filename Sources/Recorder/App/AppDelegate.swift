@@ -133,6 +133,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let mode { ToolbarController.shared.selectMode(mode) }
     }
 
+    @objc private func openAgents() { AgentsWindow.show() }
+
     @objc private func openSettings() {
         SettingsWindow.show()
     }
@@ -221,6 +223,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let item = NSApp.mainMenu?.item(withTitle: "Recorder")?.submenu?.item(withTitle: "Settings…")
         item?.target = self
         item?.action = #selector(openSettings)
+        let agents = NSApp.mainMenu?.item(withTitle: "Recorder")?.submenu?.item(withTitle: "Connect an Agent…")
+        agents?.target = self
+        agents?.action = #selector(openAgents)
     }
 
     /// Wires "File ▸ Projects" (⇧⌘O) to the library window (T-302; the status item's own "Projects" is
@@ -343,6 +348,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         app.addItem(item("About", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:))))
         app.addItem(.separator())
         app.addItem(item("Settings…", ","))
+        app.addItem(item("Connect an Agent…", "a", [.command, .shift]))
         app.addItem(item("Copy State Snapshot", "s", [.control, .option, .command]))
         app.addItem(.separator())
         app.addItem(item("Quit", "q", action: #selector(NSApplication.terminate(_:))))
@@ -476,6 +482,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                      action: #selector(recordArea)))
         menu.addItem(.separator())
         menu.addItem(statusMenuItem("Settings…", key: ",", action: #selector(openSettings)))
+        menu.addItem(statusMenuItem("Connect an Agent…", key: "a", mods: [.command, .shift], action: #selector(openAgents)))
         let snapshotKey = hotkeyKey("Copy State Snapshot")
         menu.addItem(statusMenuItem("Copy State Snapshot", key: snapshotKey.key, mods: snapshotKey.mods, action: #selector(copyStateSnapshotTapped)))
         let showInDock = statusMenuItem("Show Recorder in Dock", key: "d", action: #selector(toggleShowInDock))

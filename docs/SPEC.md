@@ -1136,7 +1136,20 @@ The stdio shim launches Recorder when needed and connects to its same-user Unix 
 all edits use `EditorModel`, the existing timeline operations, compositor, autosave and undo.
 No SDK, extra executable, headless editor or third-party dependency is required.
 
-### Access and review
+### Connecting a client
+
+`Recorder ▸ Connect an Agent…` (⇧⌘A, also in the status-item menu; Settings ▸ Agents links to it) opens one window:
+**Start here** (how it works, five steps, prompts to try, live sessions), one row per client with a status chip
+(Live / Connected / Update / Off / Not found) — Claude Code, Claude Desktop, Codex, Cursor, VS Code (Copilot),
+OpenCode, Zed, Windsurf — plus **Other client** (launch line + `mcpServers` JSON) and **agentpack**.
+A client pane offers Connect / Update / Disconnect, Reveal Config, the exact terminal command (`claude mcp add …`,
+`codex mcp add …`) and the paste-in snippet for its own config file. Claude Code connects through its CLI; other
+clients get a `recorder` entry merged into their user config (`AgentConfig` in Core: strict JSON or one TOML table,
+first original kept as `<file>.recorder-backup`). **Update** appears when the entry points at a different Recorder
+binary (e.g. a source build). The agentpack pane runs `init` (if needed) → `mcp add recorder --command <binary>
+--args --mcp` → `sync` in a chosen project folder, copies them as a script, and launches `agentpack claude|codex|agent|opencode` in Terminal.
+
+
 
 Per-project access is **Off**, **Read**, **Draft** (default) or **Live**, selected in the Claude inspector.
 Draft edits stay in app memory and do not change the saved project. `draft.submit` opens the Claude tab:

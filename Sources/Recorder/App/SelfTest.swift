@@ -185,9 +185,9 @@ enum SelfTest {
             if args.contains("agents") { MCPServer.shared.register(session) }
             defer { session.connected = false; MCPServer.shared.removeFinishedSessions() }
             do {
-                let size = NSSize(width: 520, height: 640)
+                let size = args.contains("agents") ? NSSize(width: 880, height: 620) : NSSize(width: 520, height: 640)
                 let content = args.contains("agents")
-                    ? AnyView(VStack(alignment: .leading, spacing: 16) { TechSectionLabel(index: "03", title: "Agents"); AgentsPane(); Spacer(minLength: 0) }.padding(20).frame(width: size.width, height: size.height).signalWindow())
+                    ? AnyView(AgentsView(initial: args.dropFirst().first { $0.hasPrefix("pane=") }.map { String($0.dropFirst(5)) }).frame(width: size.width, height: size.height))
                     : AnyView(SettingsView().frame(width: size.width, height: size.height))
                 let hosting = NSHostingView(rootView: content)
                 hosting.frame = NSRect(origin: .zero, size: size)
@@ -2978,6 +2978,7 @@ enum SelfTest {
                     ("Record Window", "4", [.option, .command]),
                     ("Record Area", "5", [.option, .command]),
                     ("Settings…", ",", [.command]),
+                    ("Connect an Agent…", "a", [.command, .shift]),
                     ("Copy State Snapshot", "s", [.control, .option, .command]),
                     ("Show Recorder in Dock", "d", [.command]),
                     ("Projects", "o", [.command, .shift]),
@@ -4475,10 +4476,10 @@ private final class MCPTestClient {
     let revealed = try await tool("ui", ["action": "show", "at": 0.4])
     guard proposed["revision"] as? String == revealed["revision"] as? String, model.project == base else { throw MCPTestFailure(description: "ui.show lost the session's draft revision or applied it") }
     _ = try await tool("draft", ["action": "discard"])
-    let configuration = try JSONSerialization.jsonObject(with: Data(AgentClient.configurationJSON().utf8)) as? [String: Any]
+    let configuration = try JSONSerialization.jsonObject(with: Data(AgentConfig.genericJSON(command: AgentClient.recorderExecutable).utf8)) as? [String: Any]
     let server = (configuration?["mcpServers"] as? [String: Any])?["recorder"] as? [String: Any]
     guard server?["command"] as? String == Bundle.main.executableURL?.path, server?["args"] as? [String] == ["--mcp"],
-          AgentClient.connectArguments == ["mcp", "add", "recorder", "-s", "user", "--", Bundle.main.executableURL!.path, "--mcp"] else { throw MCPTestFailure(description: "Agent connection command/JSON") }
+          AgentConfig.claudeAddArguments(command: AgentClient.recorderExecutable) == ["mcp", "add", "recorder", "-s", "user", "--", Bundle.main.executableURL!.path, "--mcp"] else { throw MCPTestFailure(description: "Agent connection command/JSON") }
     _ = try await tool("export", exportArgs, error: "NO_PROJECT") { _ in controller.close(); return true }
     guard !fm.fileExists(atPath: destination.path) else { throw MCPTestFailure(description: "Closed project exported") }
     print("MCP export: native approval contents, allow/deny/timeout/cancel/busy, stale/access/close checks, non-overwriting MP4/SRT, preset/progress, ui.show and connection JSON/arguments verified")

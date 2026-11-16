@@ -132,109 +132,22 @@ struct SettingsView: View {
     }
 }
 
-enum AgentClient {
-    static var recorderExecutable: String { Bundle.main.executableURL!.path }
-    static var connectArguments: [String] { ["mcp", "add", "recorder", "-s", "user", "--", recorderExecutable, "--mcp"] }
-    static func configurationJSON() throws -> String {
-        let data = try JSONSerialization.data(withJSONObject: ["mcpServers": ["recorder": ["command": recorderExecutable, "args": ["--mcp"]] as [String: Any]]], options: [.prettyPrinted, .sortedKeys])
-        return String(decoding: data, as: UTF8.self)
-    }
-    static func run(_ executable: String, _ arguments: [String]) async throws -> (status: Int32, output: String) {
-        try await Task.detached(priority: .userInitiated) {
-            let process = Process(), pipe = Pipe()
-            process.executableURL = URL(fileURLWithPath: executable); process.arguments = arguments
-            process.currentDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
-            var environment = ProcessInfo.processInfo.environment
-            // Finder-launched apps lack the usual Claude/Homebrew install directories on PATH.
-            environment["PATH"] = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin").path + ":/opt/homebrew/bin:/usr/local/bin:" + (environment["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin")
-            process.environment = environment
-            process.standardOutput = pipe; process.standardError = pipe; process.standardInput = FileHandle.nullDevice
-            try process.run()
-            let timeout = DispatchWorkItem { if process.isRunning { process.terminate() } }
-            DispatchQueue.global().asyncAfter(deadline: .now() + 30, execute: timeout)
-            defer { timeout.cancel() }
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
-            return (process.terminationStatus, String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines))
-        }.value
-    }
-    static func status() async throws -> (path: String?, configured: Bool) {
-        let found = try await run("/usr/bin/env", ["which", "claude"])
-        guard found.status == 0, found.output.hasPrefix("/"), FileManager.default.isExecutableFile(atPath: found.output) else { return (nil, false) }
-        let result = try await run(found.output, ["mcp", "get", "recorder"])
-        return (found.output, result.status == 0)
-    }
-}
-
+/// Settings ▸ Agents: who's live, and the way into the Connect an Agent window (SPEC §10.1).
 struct AgentsPane: View {
-    @State private var path: String?
-    @State private var configured = false
-    @State private var working = false
-    @State private var checked = false
-    @State private var output: String?
-    @State private var failed = false
-
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Claude Code").font(Font(Theme.bodyFont))
-                    Text(working ? "Checking…" : !checked ? "Not checked" : path == nil ? "Not found on PATH" : configured ? "Configured" : "Ready to connect")
-                        .font(Font(Theme.captionFont)).foregroundStyle(Theme.textSecondaryColor)
-                }
+                Text("Claude Code, Codex, Cursor, agentpack and other MCP clients, with commands and a guide.")
+                    .font(Font(Theme.captionFont)).foregroundStyle(Theme.textSecondaryColor).fixedSize(horizontal: false, vertical: true)
                 Spacer()
-                Button("Connect") { Task { await connect() } }
-                    .buttonStyle(TechButtonStyle(kind: .primary, compact: true)).disabled(working || path == nil || configured)
-                Button("Copy JSON") {
-                    do {
-                        let json = try AgentClient.configurationJSON()
-                        NSPasteboard.general.clearContents()
-                        failed = !NSPasteboard.general.setString(json, forType: .string)
-                        output = failed ? "Couldn’t copy the configuration." : "MCP configuration copied."
-                    } catch { failed = true; output = error.localizedDescription }
-                }.buttonStyle(TechButtonStyle(kind: .secondary, compact: true))
+                Button("Connect an Agent…") { AgentsWindow.show() }.buttonStyle(TechButtonStyle(kind: .primary, compact: true))
             }
-            if let output {
-                Text(output).font(Font(Theme.captionFont)).textSelection(.enabled)
-                    .foregroundStyle(failed ? Theme.dangerColor : Theme.textSecondaryColor)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Text("Live sessions").font(Font(Theme.labelFont))
             let sessions = MCPServer.shared.sessions.filter(\.connected)
             if sessions.isEmpty { Text("No agents connected.").font(Font(Theme.captionFont)).foregroundStyle(Theme.textSecondaryColor) }
             ForEach(sessions, id: \.id) { session in
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(session.agentName).font(Font(Theme.bodyFont))
-                    Text(session.projectURL?.deletingPathExtension().lastPathComponent ?? "No project open")
-                        .font(Font(Theme.captionFont)).foregroundStyle(Theme.textSecondaryColor)
-                    Text("Connected since \(session.connectedSince.formatted(date: .omitted, time: .standard))")
-                        .font(Font(Theme.captionFont)).foregroundStyle(Theme.textSecondaryColor)
-                }.frame(maxWidth: .infinity, alignment: .leading)
-                Divider().overlay(Theme.strokeColor)
+                TechStatus(title: "\(session.agentName) · \(session.projectURL?.deletingPathExtension().lastPathComponent ?? "No project open") · since \(session.connectedSince.formatted(date: .omitted, time: .standard))", color: Theme.accentColor)
             }
         }
-        .task { await refresh() }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            Task { await refresh() }
-        }
-    }
-    private func refresh() async {
-        guard !working else { return }
-        working = true
-        defer { working = false; checked = true }
-        do { let state = try await AgentClient.status(); path = state.path; configured = state.configured }
-        catch { failed = true; output = error.localizedDescription }
-    }
-    private func connect() async {
-        guard !working, let path else { return }
-        working = true
-        defer { working = false }
-        do {
-            let result = try await AgentClient.run(path, AgentClient.connectArguments)
-            failed = result.status != 0
-            output = result.output.isEmpty ? (failed ? "Connection failed." : "Recorder configured.") : result.output
-            configured = (try await AgentClient.run(path, ["mcp", "get", "recorder"])).status == 0
-        } catch { failed = true; output = error.localizedDescription }
     }
 }
 
