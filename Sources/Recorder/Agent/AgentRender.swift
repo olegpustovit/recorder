@@ -31,7 +31,7 @@ enum AgentRender {
         let events = EventLog(events: model.events.events.filter { $0.k != .key && $0.k != .typing }, windowFrames: model.events.windowFrames)
         return EditorModel(packageURL: model.packageURL, project: project, events: events, paths: paths)
     }
-    @MainActor static func frames(model: EditorModel, at times: [Double], longEdge: Int, folder: URL) async throws -> [URL] {
+    @MainActor static func frames(model: EditorModel, at times: [Double], longEdge: Int, folder: URL, grid: Bool = false) async throws -> [URL] {
         guard !times.isEmpty, times.count <= 24, (2...640).contains(longEdge) else {
             throw MCPFailure(code: "OUT_OF_RANGE", message: "Use 1–24 frame times and longEdge 2–640")
         }
@@ -42,11 +42,48 @@ enum AgentRender {
             for image in images {
                 try Task.checkCancellation()
                 let url = folder.appendingPathComponent("frame-\(UUID().uuidString).png")
-                try image.write(to: url, options: .atomic)
+                try (grid ? try drawGrid(on: image) : image).write(to: url, options: .atomic)
                 files.append(url)
             }
             return files
         } catch { for url in files { try? FileManager.default.removeItem(at: url) }; throw error }
+    }
+    /// Overlays the 0.1-step normalized grid (origin top-left) on a rendered PNG; only used when the agent asks for `grid`.
+    static func drawGrid(on png: Data) throws -> Data {
+        guard let source = CGImageSourceCreateWithData(png as CFData, nil), let image = CGImageSourceCreateImageAtIndex(source, 0, nil),
+              let context = CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8, bytesPerRow: image.width * 4,
+                                      space: VideoColor.space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
+            throw MCPFailure(code: "INVALID_OP", message: "Could not draw the debug grid; retry without grid")
+        }
+        let w = image.width, h = image.height
+        context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+        NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
+        let font = NSFont.monospacedSystemFont(ofSize: max(8, CGFloat(min(w, h)) / 40), weight: .regular)
+        for line in DebugGrid.lines {
+            let color = NSColor(calibratedRed: 1, green: 0.2, blue: 0.8, alpha: line.major ? 0.9 : 0.45)
+            context.setStrokeColor(color.cgColor)
+            context.setLineWidth(line.major ? 2 : 1)
+            let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color]
+            switch line.axis {
+            case .vertical:
+                let x = DebugGrid.pixel(line.value, length: w) + 0.5
+                context.move(to: CGPoint(x: x, y: 0)); context.addLine(to: CGPoint(x: x, y: CGFloat(h))); context.strokePath()
+                if line.major { (line.label as NSString).draw(at: CGPoint(x: min(x + 2, CGFloat(w) - font.pointSize * 2.5), y: CGFloat(h) - font.pointSize * 1.4), withAttributes: attributes) }
+            case .horizontal:
+                let y = CGFloat(h) - 0.5 - DebugGrid.pixel(line.value, length: h)   // CG origin is bottom-left; grid origin is top-left
+                context.move(to: CGPoint(x: 0, y: y)); context.addLine(to: CGPoint(x: CGFloat(w), y: y)); context.strokePath()
+                if line.major && line.value > 0 { (line.label as NSString).draw(at: CGPoint(x: 2, y: y + 2), withAttributes: attributes) }
+            }
+        }
+        guard let output = context.makeImage(), let data = CFDataCreateMutable(nil, 0),
+              let destination = CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil) else {
+            throw MCPFailure(code: "INVALID_OP", message: "Could not encode the debug grid frame; retry without grid")
+        }
+        CGImageDestinationAddImage(destination, output, nil)
+        guard CGImageDestinationFinalize(destination) else { throw MCPFailure(code: "INVALID_OP", message: "Could not encode the debug grid frame; retry without grid") }
+        return data as Data
     }
     @MainActor static func sheet(model: EditorModel, at times: [Double], folder: URL) async throws -> URL {
         let frames = try await frames(model: model, at: times, longEdge: 320, folder: folder)

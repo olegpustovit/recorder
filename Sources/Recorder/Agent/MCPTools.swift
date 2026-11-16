@@ -67,7 +67,8 @@ enum MCPTools {
             tool("analyze", ["transcribe", "pauses", "fillers", "activity"], "Transcribe on-device, find mic pauses/fillers, or read activity ranges without key characters.", ["minDuration": number, "threshold": number], read: true),
             tool("edit", ["apply", "undo"], "Apply atomic edits using the latest ifRevision; edits land in a draft by default. Numeric times use that revision's output timeline; {marker:id, offset:seconds} anchors resolve after earlier ops in the batch.", ["ifRevision": string, "ops": ["type": "array", "items": ["oneOf": operationSchemas]], "dryRun": boolean]),
             tool("draft", ["status", "submit", "discard"], "Read your draft's exclusions, skipped reasons and verdict; submit for review or discard it. A pending submitted draft can receive more edit.apply calls, returning to watching until submitted again.", ["note": string]),
-            tool("render", ["frames", "sheet", "clip", "cancel"], "Render frames, a contact sheet or a 540p proxy into the agent cache. Key chips are hidden.", ["at": ["type": "array", "items": number, "maxItems": 24], "from": number, "to": number, "count": ["type": "integer", "minimum": 1, "maximum": 24], "longEdge": ["type": "integer", "minimum": 1, "maximum": 640], "draft": boolean]),
+            tool("render", ["frames", "sheet", "clip", "cancel"], "Render frames, a contact sheet or a 540p proxy into the agent cache. Key chips are hidden.", ["at": ["type": "array", "items": number, "maxItems": 24], "from": number, "to": number, "count": ["type": "integer", "minimum": 1, "maximum": 24], "longEdge": ["type": "integer", "minimum": 1, "maximum": 640], "draft": boolean,
+                "grid": ["type": "boolean", "description": "render.frames only: overlay a 0.1-step grid labelled 0–1, origin top-left, matching zoom center and text position coordinates (exact at 1× zoom with no layout padding)."]]),
             tool("export", ["final"], "Export an MP4 after the user's native approval, optionally with SRT subtitles.", ["destination": string, "shortEdge": ["type": "integer", "enum": [720, 1080, 2160]], "fps": ["type": "integer", "enum": [24, 30, 60]], "srt": boolean]),
             tool("ui", ["show"], "Move the editor playhead and select blocks by id.", ["at": ["type": "number"], "select": ["type": "array", "items": string]])
         ]
@@ -628,9 +629,11 @@ enum MCPTools {
         if action == "clip" { progress(0) }
         let jobID = UUID()
         let requested = times
+        let grid = args["grid"] as? Bool == true
+        if args["grid"] != nil, !(args["grid"] is Bool) || action != "frames" { throw MCPFailure(code: "INVALID_OP", message: "grid must be a boolean and is supported by render.frames only") }
         let task = Task { @MainActor in
             switch action {
-            case "frames": return try await AgentRender.frames(model: frozen, at: requested, longEdge: Int(edge), folder: folder)
+            case "frames": return try await AgentRender.frames(model: frozen, at: requested, longEdge: Int(edge), folder: folder, grid: grid)
             case "sheet": return [try await AgentRender.sheet(model: frozen, at: requested, folder: folder)]
             case "clip": return [try await AgentRender.clip(model: frozen, from: from, to: to, folder: folder, progress: progress)]
             default: throw MCPFailure(code: "INVALID_OP", message: "Choose a render action from tools/list")

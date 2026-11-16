@@ -4804,7 +4804,21 @@ private final class MCPTestClient {
               try anchored.project(context: EditContext()) == expected, anchored.selectedCount == 2, anchored.skipped.isEmpty else {
             throw MCPTestFailure(description: "Re-included marker anchor lost stable replay ids")
         }
-        print("MCP edit headless: snap/anchor schemas and decoding, warnings, current-time offsets, frozen replay, exclusions/dependent reasons and stable recovery verified; no application windows created")
+        do {
+            let w = 201, h = 101
+            let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4, space: VideoColor.space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+            ctx.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 1)); ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+            let blank = NSBitmapImageRep(cgImage: ctx.makeImage()!).representation(using: .png, properties: [:])!
+            let gridded = try AgentRender.drawGrid(on: blank)
+            guard let rep = NSBitmapImageRep(data: gridded), rep.pixelsWide == w, rep.pixelsHigh == h else { throw MCPTestFailure(description: "Grid changed frame size") }
+            func lit(_ x: Int, _ y: Int) -> Bool { let c = rep.colorAt(x: x, y: y)!; return c.redComponent > 0.2 }
+            // x=0 and x=200 are the 0 and 1 verticals, y=0 is the top (0.0) horizontal and y=100 the bottom (1.0); a mid-cell pixel stays untouched.
+            guard lit(0, 50), lit(200, 50), lit(100, 50), lit(100, 0), lit(100, 100), !lit(10, 55), !lit(15, 55) else { throw MCPTestFailure(description: "Grid lines are not at normalized top-left positions") }
+            let tool = MCPTools.list.first { ($0["name"] as? String) == "render" }
+            let renderProperties = (tool?["inputSchema"] as? [String: Any])?["properties"] as? [String: Any]
+            guard renderProperties?["grid"] != nil else { throw MCPTestFailure(description: "render schema lacks grid") }
+        }
+        print("MCP edit headless: snap/anchor schemas and decoding, grid geometry/drawing, warnings, current-time offsets, frozen replay, exclusions/dependent reasons and stable recovery verified; no application windows created")
         return
     }
     guard let path = args.first else { throw MCPTestFailure(description: "usage: mcp-edit <fixture.recorder>") }

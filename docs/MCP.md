@@ -129,7 +129,7 @@ Nine tools, each with an `action` string (Resolve's MCP shows that grouping keep
 | `analyze` | `transcribe` (async, progress) · `pauses {minDuration=0.6,threshold=0.02}` → `[{from,to}]` · `fillers` → `[{word,from,to,text}]` · `activity` → `{idle:[…],typing:[…],clicks:[t…]}` (ranges only, never characters) |
 | `edit` | `apply {ifRevision, ops:[EditOp], dryRun=false}` → `{revision, mode:"draft"\|"live", changes:[EditChange], duration:{before,after}, warnings:[…]}` · `undo` (live only: `model.undo()` if the top undo name starts with `Claude:`) |
 | `draft` | `status` → `{base, ops, changes, submitted, verdict?}` · `submit {note}` → opens review in the editor · `discard` |
-| `render` | `frames {at:[t…] ≤6, draft=true, longEdge=640}` → images + links · `sheet {count=12 ≤24 \| at:[…], draft=true}` → 1 JPEG + link · `clip {from,to, draft=true}` → job, then link (async, progress) · `cancel` |
+| `render` | `frames {at:[t…] ≤6, draft=true, longEdge=640, grid=false}` (grid: 0.1-step magenta overlay labelled 0–1, origin top-left, the coordinates zoom `center` and text `position` use) → images + links · `sheet {count=12 ≤24 \| at:[…], draft=true}` → 1 JPEG + link · `clip {from,to, draft=true}` → job, then link (async, progress) · `cancel` |
 | `export` | `final {destination?, shortEdge?, fps?, srt=false}` → waits for approval → `{path, seconds, bytes}` or `DENIED` |
 | `ui` | `show {at, select?:[id]}` → moves the playhead / selection in the editor |
 

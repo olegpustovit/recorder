@@ -623,7 +623,7 @@ editing, read-only review guards, frozen autosave, stable replay IDs, privacy an
 | Status, activity and finite motion | T-814 | 1/1 |
 | Live preview + timeline motion | T-815 (includes T-816) | 1/1 |
 | Iteration, boundary snapping, anchors | T-817…T-819 | 3/3 |
-| Zoom documentation/grid + follow/ease | T-820…T-821 | 0/2 |
+| Zoom documentation/grid + follow/ease | T-820…T-821 | 1/2 |
 | Text styling, assets, draft playback | T-822…T-824 | 0/3 |
 
 - [x] **T-812 Grouped Changes and pinned Accept (includes T-813)** — Core pure row grouping, fixed
@@ -662,7 +662,7 @@ editing, read-only review guards, frozen autosave, stable replay IDs, privacy an
 - [x] **T-819 Marker anchors** — Accept numeric times or `{marker:"id", offset}`; resolve anchors after earlier
   ops in batch while numeric times retain documented base-time semantics. Verify EditOps cuts/speed/marker
   create/update/delete/offset/missing-anchor cases, stable replay/exclusions and MCP schema/native checks.
-- [ ] **T-820 Zoom coordinates and debug grid** — Document normalized0–1 source-frame coordinates, top-left
+- [x] **T-820 Zoom coordinates and debug grid** — Document normalized0–1 source-frame coordinates, top-left
   origin (schema description done in T-818); reject out-of-range values; optional debug grid in render.frames.
   Verify coordinate validation, grid geometry/render output and normal-frame parity/privacy.
 - [ ] **T-821 Cursor-follow zoom and easing** — Zoom op `follow:"cursor"` and existing Spring presets;
@@ -1625,3 +1625,5 @@ T-817 · 2026-11-16 · Pending submitted drafts now accept additional applies fr
 T-818 · 2026-11-16 · Added flat Codable snap options to clip-splitting cut/cutWords/speed and default-on cutPauses, preserving strict defaults/opt-out. Reused the editor's0.1s media/two-frame output split limits at actual playback/media clocks; invalid points move to the nearest clip edge, earlier cuts inform later snap boundaries, and changes.note reports adjusted source ranges. Collapsed/uneditable ranges and snapped full-media removal become skipped warnings while valid batch operations continue; malformed/nonfinite inputs and strict invalid edits remain atomic errors. Draft replay retains automatic no-op skips in its deterministic cut seed, reports their reasons and excludes them from Accept N; adjustment notes use the existing change row. Added source-frame/top-left0–1 center schema descriptions from T-820. Full make test199/199 passes, including four added edge/base-time/stable-id, short/neighboring/full-removal, rate/import/speed and pause/default/JSON/word cases. New mcp-edit --headless passes the actual MCP schema/decoder, Boolean rejection, adjustment/warning generation, frozen replay and skipped selection without NSApplication/window creation. Logs /tmp/recorder-t818-{core,headless}.log. Per the user's instruction, no GUI selftests, app windows, focus changes, gallery launch, install or real-client recording were run; interactive row appearance was not rechecked. No dependencies, saved project format change, TCC reset, client configuration change, release or push. T-819…T-824 remain pending.
 
 T-819 · 2026-11-16 · Time fields (from/to/at) on cut, cutPauses, speed, zoom, text, highlight, marker and update accept numeric seconds (documented base-revision semantics, unchanged) or `{marker:"id", offset}`; anchors resolve against the draft prefix after earlier ops in the batch, including markers created/updated/deleted earlier. Missing anchors, anchors in removed footage and out-of-range offsets are atomic errors; replay keeps stable ids and excluded anchors skip dependents with a reason. MCP schema `oneOf` number/anchor plus edit description updated. make test 203/203 passes; `mcp-edit --headless` passes anchor schema/decode/offset/exclusion/recovery with no windows. No GUI selftests, dependencies, format change, install, release or push. T-820…T-824 remain pending.
+
+T-820 · 2026-11-16 · Zoom center/text position validation (finite, 0–1, source frame, top-left) now has regression coverage for create and update and a clearer error. New optional `render.frames` `grid:true` overlays a labelled 0.1-step grid (pure Core `DebugGrid` geometry, magenta lines, 0/0.5/1 emphasised) after rendering; default path untouched so normal frames are byte-identical, key chips still hidden. Non-boolean grid or use outside render.frames is INVALID_OP. make test 205/205; `mcp-edit --headless` draws the grid on a synthetic PNG and asserts line pixels at normalized corners/centre. No GUI selftests, dependencies, format change or push. T-821…T-824 remain pending.

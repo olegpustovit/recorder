@@ -381,7 +381,7 @@ public extension Project {
         let baseMap = TimeMap(clips)
         func point(_ point: NormPoint?, index: Int) throws {
             if let point, !point.x.isFinite || !point.y.isFinite || !(0...1).contains(point.x) || !(0...1).contains(point.y) {
-                throw EditError.invalidOp(index: index, reason: "position/center must be inside the normalized canvas")
+                throw EditError.invalidOp(index: index, reason: "position/center must be normalized 0–1 (zoom center: source frame, origin top-left)")
             }
         }
         func positive(_ value: Double?, index: Int) throws {

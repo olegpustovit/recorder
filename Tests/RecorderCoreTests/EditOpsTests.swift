@@ -3,6 +3,27 @@ import Testing
 @testable import RecorderCore
 
 @Suite struct EditOpsTests {
+    @Test func zoomCenterMustBeNormalizedSourceCoordinates() throws {
+        let base = project()
+        for center in [NormPoint(x: 1.2, y: 0.5), NormPoint(x: 0.5, y: -0.1), NormPoint(x: .nan, y: 0.5)] {
+            #expect(throws: EditError.self) { try base.applying([.zoom(from: 1, to: 3, scale: 2, center: center)], context: EditContext()) }
+        }
+        let ok = try base.applying([.zoom(from: 1, to: 3, scale: 2, center: NormPoint(x: 0, y: 1))], context: EditContext())
+        let id = try #require(ok.project.zooms.first?.id)
+        #expect(throws: EditError.self) {
+            try ok.project.applying([.update(id: id, from: nil, to: nil, text: nil, position: nil, size: nil, scale: nil, center: NormPoint(x: 2, y: 0.5))], context: EditContext())
+        }
+    }
+
+    @Test func debugGridGeometryIsTenthsFromTopLeft() {
+        let lines = DebugGrid.lines
+        #expect(lines.count == 22)
+        #expect(lines.filter { $0.axis == .vertical }.map(\.label) == (0...10).map { String(format: "%.1f", Double($0) / 10) })
+        #expect(lines.filter(\.major).count == 6)
+        #expect(DebugGrid.pixel(0, length: 640) == 0 && DebugGrid.pixel(1, length: 640) == 639 && DebugGrid.pixel(0.5, length: 101) == 50)
+        #expect(DebugGrid.pixel(-1, length: 10) == 0 && DebugGrid.pixel(2, length: 10) == 9)
+    }
+
     @Test func replaySeedsKeepCreatedAndSplitIDsStable() throws {
         let base = project()
         let ops: [EditOp] = [.zoom(from: 1, to: 5, scale: 2, center: nil), .speed(from: 2, to: 4, speed: 2), .cut(from: 6, to: 7)]
