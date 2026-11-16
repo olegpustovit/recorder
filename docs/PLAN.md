@@ -693,7 +693,7 @@ acceptance undo, privacy (renders hide key overlays) and existing op semantics; 
 | Reliability | T-825…T-826 | 0/2 |
 | Perception + feedback core | T-827…T-829 | 0/3 |
 | Intent ops + reframe | T-830…T-831 | 0/2 |
-| Captions + eval harness | T-832…T-833 | 0/2 |
+| Captions + eval harness | T-832…T-833 | 1/2 |
 
 - [ ] **T-825 Persistent drafts, listChanged, schema parity** — R1 `agent-draft.json` in the package (base revision,
   calls, status); `project.open` returns `draft:{id,status,changes}` and re-adopts it (replaces D8). R2
@@ -717,7 +717,7 @@ acceptance undo, privacy (renders hide key overlays) and existing op semantics; 
   cut/speed/zoom in one undo step and returns lowered ops. Verify: Core lowering tests, one-step undo.
 - [ ] **T-831 reframe** — `output.aspect` plus per-shot stationary/pan crop aimed at focus and cursor
   (time-varying crop on the camera lane); edgeContent lint clean. Verify: Core crop-path tests, focus kept in frame.
-- [ ] **T-832 Optional per-shot captions** — on-device (Vision OCR/classification) 6–10 word captions; `null`
+- [x] **T-832 Optional per-shot captions** — on-device (Vision OCR/classification) 6–10 word captions; `null`
   when unavailable, everything works without them. Verify: caption present/absent paths.
 - [ ] **T-833 Agent eval harness** — script scoring lint pass rate, ops per task, images requested over a set of
   recordings with the brief "30 s reel, fast cuts, no text"; run on MCP changes. Verify: harness runs on fixtures.
@@ -1683,3 +1683,5 @@ Final audit against https://artifacts.microapps.space/a/crsebftafkp3 · 2026-11-
 Native verification · 2026-11-16 · Run on explicit user approval ("Run them now", overriding the earlier no-test-windows request for this pass). Debug app assembled; on /tmp/M6Fixture.recorder all pass: mcp-edit, mcp-render, mcp-review normal and --reduce-motion, mcp-live, mcp-panel-motion, mcp-roundtrip, mcp-export, project-navigation, inspector-panels, mcp-edit --headless, plus new `mcp-layer-playback` (real MCPTools layer edit on an open editor: draft isolation of live state/project.json, preview and export-proxy frames show the layer exactly in its range, real AVKit Play draft window with audio+video tracks that plays, cancel, edit.apply invalidation, window-close cleanup, discard purge, accept keeps exactly the used media as one undo) and `zoom-ease-parity` (zoom ease changes both preview and proxy frames and converges). Native run exposed and fixed two defects the headless tests could not: show() deleted the just-rendered preview file, and mcp-edit still asserted 12 op schemas. Actual authenticated Claude Code via `mcp-live-client` (evidence /tmp/recorder-t824-client) passed with the new tool schemas. Panel PNGs /tmp/recorder-t824-motion/{ready,editor-ready}.png inspected: Play draft sits left of Accept N in the pinned footer at 320 pt without clipping. make test 212/212. Still HUMAN: judging panel feel/motion against the design frame (mark [~] until looked at).
 
 HUMAN review · 2026-11-16 · The user judged the Claude panel's feel and motion against the design frame and approved it ("i approve finalize it pls"). The remaining `[~]` for this request is closed; T-812…T-824 are complete.
+
+T-832 · 2026-11-17 · opt-in shot captions: Core `ShotCaption.shape` + `ShotCaptionTests`, app `AgentCaptions.captionShots` (Vision OCR on focus crop, classifier fallback, nil on failure) · verified: `make test` all pass, `make build` · not verified: Vision output on a real recording; `captions:true` on analyze.shots is wired by the integrator.
