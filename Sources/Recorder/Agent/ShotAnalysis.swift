@@ -1,0 +1,112 @@
+import AVFoundation
+import CryptoKit
+import RecorderCore
+
+/// analyze.shots (T-827) app half: decode screen.mov at 10 fps, 1/8 scale luma, and reduce it to `FrameSignal`s
+/// (RecorderCore.storyboard does the segmentation). Signals are cached in the package per media fingerprint.
+enum ShotAnalysis {
+    static let fps = 10.0
+    private static let cacheName = "shots-cache.json"
+    private struct Cache: Codable { var key: String; var signals: [FrameSignal] }
+
+    // ponytail: fingerprint = size + mtime + SHA256 of the first MB, not the whole file; an in-place edit past 1 MB that
+    // keeps size and mtime would be missed. Upgrade: hash the full file.
+    static func fingerprint(_ url: URL) throws -> String {
+        let size = (try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
+        let mtime = (try url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate?.timeIntervalSince1970) ?? 0
+        let handle = try FileHandle(forReadingFrom: url); defer { try? handle.close() }
+        let head = try handle.read(upToCount: 1 << 20) ?? Data()
+        return "\(size)-\(mtime)-" + SHA256.hash(data: head).map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func signals(package: URL, progress: @escaping (Double) -> Void) async throws -> [FrameSignal] {
+        let media = package.appendingPathComponent("screen.mov"), cacheURL = package.appendingPathComponent(cacheName)
+        guard FileManager.default.fileExists(atPath: media.path) else {
+            throw MCPFailure(code: "NO_PROJECT", message: "This project has no screen.mov to analyze; analyze.shots needs a screen recording")
+        }
+        let key = try fingerprint(media)
+        if let data = try? Data(contentsOf: cacheURL), let cache = try? JSONDecoder().decode(Cache.self, from: data), cache.key == key {
+            return cache.signals
+        }
+        let result = try await decode(media, progress: progress)
+        try? JSONEncoder().encode(Cache(key: key, signals: result)).write(to: cacheURL, options: .atomic)
+        return result
+    }
+
+    private static func decode(_ url: URL, progress: @escaping (Double) -> Void) async throws -> [FrameSignal] {
+        let asset = AVURLAsset(url: url)
+        guard let track = try await asset.loadTracks(withMediaType: .video).first else {
+            throw MCPFailure(code: "NO_PROJECT", message: "screen.mov has no video track")
+        }
+        let duration = try await asset.load(.duration).seconds, size = try await track.load(.naturalSize)
+        let w = max(16, Int(size.width) / 8 & ~1), h = max(16, Int(size.height) / 8 & ~1)
+        let reader = try AVAssetReader(asset: asset)
+        let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+            kCVPixelBufferWidthKey as String: w, kCVPixelBufferHeightKey as String: h])
+        reader.add(output)
+        guard reader.startReading() else { throw reader.error ?? CocoaError(.fileReadUnknown) }
+
+        let ticks = max(1, Int((duration * fps).rounded(.down)))
+        var signals: [FrameSignal] = [], previous: [UInt8]?, current: [UInt8]?
+        // ScreenCaptureKit writes frames only when content changes, so each 0.1 s tick shows the latest frame at or before it.
+        func emit(upTo time: Double) {
+            while signals.count < ticks, Double(signals.count) / fps < time, let frame = current {
+                signals.append(signal(frame, previous, w: w, h: h)); previous = frame
+            }
+        }
+        while let sample = output.copyNextSampleBuffer() {
+            try Task.checkCancellation()
+            guard let buffer = CMSampleBufferGetImageBuffer(sample) else { continue }
+            emit(upTo: CMSampleBufferGetPresentationTimeStamp(sample).seconds)
+            CVPixelBufferLockBaseAddress(buffer, .readOnly)
+            let base = CVPixelBufferGetBaseAddressOfPlane(buffer, 0)!, stride = CVPixelBufferGetBytesPerRowOfPlane(buffer, 0)
+            let (pw, ph) = (CVPixelBufferGetWidthOfPlane(buffer, 0), CVPixelBufferGetHeightOfPlane(buffer, 0))
+            current = (0..<ph).flatMap { Array(UnsafeBufferPointer(start: base.advanced(by: $0 * stride).assumingMemoryBound(to: UInt8.self), count: pw)) }
+            CVPixelBufferUnlockBaseAddress(buffer, .readOnly)
+            if signals.count % 20 == 0 { progress(min(0.99, Double(signals.count) / Double(ticks))) }
+        }
+        guard reader.status != .failed else { throw reader.error ?? CocoaError(.fileReadUnknown) }
+        emit(upTo: .infinity)
+        progress(1)
+        return signals
+    }
+
+    /// Luma buffers are tiny (≈240×135), so plain loops are fast enough. SSIM is the mean over 8×8 windows.
+    private static func signal(_ a: [UInt8], _ b: [UInt8]?, w: Int, h: Int) -> FrameSignal {
+        guard let b, a.count == b.count, a != b else { return FrameSignal(diff: 0, ssim: 1) }
+        var sum = 0, (x0, y0, x1, y1) = (w, h, -1, -1)
+        for y in 0..<h { for x in 0..<w {
+            let d = abs(Int(a[y * w + x]) - Int(b[y * w + x]))
+            sum += d
+            if d > 16 { x0 = min(x0, x); x1 = max(x1, x); y0 = min(y0, y); y1 = max(y1, y) }
+        } }
+        let (c1, c2) = (6.5025, 58.5225)
+        var total = 0.0, windows = 0.0
+        for wy in stride(from: 0, to: h - 7, by: 8) { for wx in stride(from: 0, to: w - 7, by: 8) {
+            var (sa, sb, saa, sbb, sab) = (0.0, 0.0, 0.0, 0.0, 0.0)
+            for y in wy..<wy + 8 { for x in wx..<wx + 8 {
+                let (p, q) = (Double(a[y * w + x]), Double(b[y * w + x]))
+                sa += p; sb += q; saa += p * p; sbb += q * q; sab += p * q
+            } }
+            let (ma, mb) = (sa / 64, sb / 64), (va, vb, cov) = (saa / 64 - ma * ma, sbb / 64 - mb * mb, sab / 64 - ma * mb)
+            total += (2 * ma * mb + c1) * (2 * cov + c2) / ((ma * ma + mb * mb + c1) * (va + vb + c2)); windows += 1
+        } }
+        let box = x1 < 0 ? nil : NormRect(x: Double(x0) / Double(w), y: Double(y0) / Double(h),
+                                          w: Double(x1 - x0 + 1) / Double(w), h: Double(y1 - y0 + 1) / Double(h))
+        return FrameSignal(diff: Double(sum) / Double(w * h) / 255, ssim: windows > 0 ? total / windows : 1, bbox: box)
+    }
+
+    /// Optional per-call overrides of `ShotThresholds` by field name.
+    static func thresholds(_ args: [String: Any]?) throws -> ShotThresholds {
+        guard let args else { return ShotThresholds() }
+        var merged = try MCPTools.object(ShotThresholds())
+        for (key, value) in args {
+            guard merged[key] != nil, let n = value as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID(), n.doubleValue.isFinite, n.doubleValue >= 0 else {
+                throw MCPFailure(code: "INVALID_OP", message: "thresholds.\(key) must be a nonnegative number; known keys: \(merged.keys.sorted().joined(separator: ", "))")
+            }
+            merged[key] = n.doubleValue
+        }
+        return try JSONDecoder().decode(ShotThresholds.self, from: JSONSerialization.data(withJSONObject: merged))
+    }
+}

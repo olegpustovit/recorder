@@ -49,3 +49,142 @@ public struct Storyboard: Codable, Equatable, Sendable {
         self.duration = duration; self.fps = fps; self.shots = shots; self.summary = summary
     }
 }
+
+// Segmentation + output-time mapping for the frozen types above (T-827).
+
+/// analyze.shots (T-827): GIFdroid-style segmentation of a screen recording into shots from cheap per-frame
+/// signals plus input events. Pure: the app decodes frames (`FrameSignal`s at `fps`), Core decides. Times are
+/// media seconds of the UNEDITED recording, so ids (s01…) stay stable across edits; `mapped(through:)` reports
+/// the same shots in output time.
+
+private extension NormRect {
+    func union(_ o: NormRect) -> NormRect {
+        let (x0, y0) = (min(x, o.x), min(y, o.y))
+        return NormRect(x: x0, y: y0, w: max(x + w, o.x + o.w) - x0, h: max(y + h, o.y + o.h) - y0)
+    }
+}
+
+/// What changed from the previous frame to this one (frame 0: diff 0, ssim 1).
+public struct FrameSignal: Codable, Equatable, Sendable {
+    public var diff: Double      // mean absolute luma difference, 0…1
+    public var ssim: Double      // similarity with the previous frame, 0…1
+    public var bbox: NormRect?   // changed-pixel bounding box, nil when nothing changed
+    public init(diff: Double, ssim: Double, bbox: NormRect? = nil) { self.diff = diff; self.ssim = ssim; self.bbox = bbox }
+}
+
+public struct ShotThresholds: Codable, Equatable, Sendable {
+    public var ssim = 0.985          // τ: a frame at or above it is "stable"
+    public var minStable = 0.3       // seconds a stable run needs to count as a state
+    public var cutSsim = 0.9         // a ≤ 2-frame change dipping below this is a cut
+    public var motionDiff = 0.01     // mean diff at or above which a shot is motion
+    public var payoffDiff = 0.03     // frame diff after a click that makes a payoff
+    public var cursorSpeed = 0.05    // normalised screen widths/s for cursorOnly
+    public var energyScale = 0.1     // diff that maps to energy 1
+    public init() {}
+}
+
+private func r2(_ v: Double) -> Double { (v * 100).rounded() / 100 }
+
+public func storyboard(signals: [FrameSignal], fps: Double = 10, events: [InputEvent],
+                       thresholds t: ShotThresholds = ShotThresholds()) -> Storyboard {
+    let n = signals.count
+    guard n > 0, fps > 0 else { return summarize([], duration: 0, fps: fps) }
+    var stable = signals.indices.map { $0 == 0 || signals[$0].ssim >= t.ssim }
+    let minRun = max(1, Int((t.minStable * fps).rounded(.up)))
+    var i = 0
+    while i < n {   // stable runs shorter than minStable are part of the surrounding change
+        var j = i
+        while j < n, stable[j] == stable[i] { j += 1 }
+        if stable[i], j - i < minRun { for k in i..<j { stable[k] = false } }
+        i = j
+    }
+    let starts = [0] + (1..<max(1, n)).filter { !stable[$0] && stable[$0 - 1] }
+    let moves = events.filter { ($0.k == .move || $0.k == .drag) && $0.x != nil && $0.y != nil }.sorted { $0.t < $1.t }
+    let clicks = events.filter { $0.k == .down && $0.b == 0 }.map(\.t).sorted()
+    let scrolls = events.filter { $0.k == .scroll }.map(\.t)
+    let typing = events.filter { $0.k == .typing || $0.k == .key }.map(\.t)
+    func any(_ times: [Double], _ lo: Double, _ hi: Double) -> Bool { times.contains { $0 >= lo && $0 < hi } }
+
+    var shots: [Shot] = []
+    for (k, a) in starts.enumerated() {
+        let b = k + 1 < starts.count ? starts[k + 1] : n
+        let (from, to) = (Double(a) / fps, Double(b) / fps)
+        let frames = signals[a..<b]
+        let lead = (a..<b).first { stable[$0] } ?? b          // end of the transition into this shot
+        let energy = frames.map(\.diff).reduce(0, +) / Double(b - a)
+        var reasons: [String] = []
+
+        var boundary = ShotBoundary.start
+        if a > 0 {
+            boundary = .cut
+            let (lo, hi) = (Double(a) / fps - 0.2, Double(lead) / fps + 0.1)
+            if any(scrolls, lo, hi) { boundary = .scroll; reasons.append("scroll event during the change") }
+            else if any(typing, lo, hi) { boundary = .type; reasons.append("typing during the change") }
+            else if lead - a <= 2, signals[a..<lead].map(\.ssim).min() ?? 1 < t.cutSsim { reasons.append("ssim dropped to \(r2(signals[a..<lead].map(\.ssim).min()!)) within \(lead - a) frame(s)") }
+            else { boundary = .animate; reasons.append("gradual change over \(lead - a) frames, no input") }
+        }
+
+        let inRange = clicks.filter { $0 >= from && $0 < to }
+        let payoff = clicks.contains { c in
+            c >= from - 0.5 && c <= to && (a..<b).contains { f in
+                let ft = Double(f) / fps
+                return ft >= c - 0.1 && ft <= c + 1 && signals[f].diff >= t.payoffDiff
+            }
+        }
+        let path = zip(moves.filter { $0.t >= from && $0.t < to }, moves.filter { $0.t >= from && $0.t < to }.dropFirst())
+            .reduce(0) { $0 + hypot($1.1.x! - $1.0.x!, $1.1.y! - $1.0.y!) }
+        let kind: ShotKind
+        if payoff { kind = .payoff; reasons.append("click followed by a large change") }
+        else if any(typing, from, to) { kind = .typing; reasons.append("typing in progress") }
+        else if energy >= t.motionDiff || any(scrolls, from, to) { kind = .motion; reasons.append("mean diff \(r2(energy)) or scroll") }
+        else if path / (to - from) >= t.cursorSpeed { kind = .cursorOnly; reasons.append("screen quiet, cursor moving") }
+        else { kind = .`static`; reasons.append("screen quiet, cursor still") }
+
+        // focus = changed pixels ∪ where the cursor dwelt over the shot's last second
+        let dwell = moves.filter { $0.t >= max(from, to - 1) && $0.t < to }
+        var focus = frames.compactMap(\.bbox).reduce(nil as NormRect?) { $0?.union($1) ?? $1 }
+        if let lo = dwell.map({ $0.x! }).min(), let hi = dwell.map({ $0.x! }).max(),
+           let lo2 = dwell.map({ $0.y! }).min(), let hi2 = dwell.map({ $0.y! }).max() {
+            let pad = 0.05, x0 = max(0, lo - pad), y0 = max(0, lo2 - pad)
+            let box = NormRect(x: x0, y: y0, w: min(1, hi + pad) - x0, h: min(1, hi2 + pad) - y0)
+            focus = focus?.union(box) ?? box
+        }
+        let seen = moves.filter { $0.t >= from && $0.t < to }
+        shots.append(Shot(id: String(format: "s%02d", k + 1), from: r2(from), to: r2(to), kind: kind, boundary: boundary,
+                          energy: r2(min(1, energy / t.energyScale)),
+                          staticFrac: r2(Double((a..<b).filter { signals[$0].ssim >= t.ssim }.count) / Double(b - a)),
+                          clicks: inRange.map(r2), cursor: seen.isEmpty ? nil : NormPoint(x: r2(seen.map { $0.x! }.reduce(0, +) / Double(seen.count)), y: r2(seen.map { $0.y! }.reduce(0, +) / Double(seen.count))),
+                          focus: focus.map { NormRect(x: r2($0.x), y: r2($0.y), w: r2($0.w), h: r2($0.h)) } ?? NormRect(),
+                          reasons: reasons, caption: nil))
+    }
+    return summarize(shots, duration: Double(n) / fps, fps: fps)
+}
+
+private func summarize(_ shots: [Shot], duration: Double, fps: Double) -> Storyboard {
+    let quiet = shots.filter { $0.kind == .`static` }
+    let longest = quiet.max { $0.to - $0.from < $1.to - $1.from }
+    return Storyboard(duration: duration, fps: fps, shots: shots, summary: StoryboardSummary(
+        shots: shots.count, aslSec: shots.isEmpty ? 0 : r2(shots.map { $0.to - $0.from }.reduce(0, +) / Double(shots.count)),
+        staticSec: r2(quiet.map { $0.to - $0.from }.reduce(0, +)), longestStatic: longest.map { StoryboardSummary.Span(from: $0.from, to: $0.to) }))
+}
+
+public extension Storyboard {
+    /// The same shots (same ids) in the output time of `map`; footage the edits dropped is omitted, a shot split
+    /// by a cut appears once per kept piece, and imported/gap clips have no recorded footage.
+    func mapped(through map: TimeMap) -> Storyboard {
+        var out: [Shot] = [], offset = 0.0
+        for clip in map.clips {
+            defer { offset += clip.outputDuration }
+            guard !clip.isEmpty, clip.file == nil else { continue }
+            func output(_ media: Double) -> Double { r2(offset + (clip.sourceTime(atMedia: media) - clip.sourceStart) / clip.timeScale) }
+            for var s in shots {
+                let (lo, hi) = (max(s.from, clip.mediaIn), min(s.to, clip.mediaEnd))
+                guard hi - lo > 1e-9 else { continue }
+                s.clicks = s.clicks.filter { $0 >= lo && $0 < hi }.map(output)
+                (s.from, s.to) = (output(lo), output(hi))
+                out.append(s)
+            }
+        }
+        return summarize(out.sorted { $0.from < $1.from }, duration: map.outputDuration, fps: fps)
+    }
+}

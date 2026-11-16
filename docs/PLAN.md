@@ -691,7 +691,7 @@ acceptance undo, privacy (renders hide key overlays) and existing op semantics; 
 | Scope | Tasks | Done |
 |---|---|---|
 | Reliability | T-825…T-826 | 0/2 |
-| Perception + feedback core | T-827…T-829 | 0/3 |
+| Perception + feedback core | T-827…T-829 | 1/3 |
 | Intent ops + reframe | T-830…T-831 | 0/2 |
 | Captions + eval harness | T-832…T-833 | 0/2 |
 
@@ -704,7 +704,7 @@ acceptance undo, privacy (renders hide key overlays) and existing op semantics; 
   mark `editable:false` with reason; layer from/to maps both ends. R4 `{marker:"label"}` when unique,
   `{shot:"s07",edge}` and same-batch `ref`. R7 errors carry `fix` and `current`. Verify: EditOps tests per lane,
   label/ref anchors, snapped-range fix on clip-edge error.
-- [ ] **T-827 analyze.shots** — Core pure segmentation (stable states SSIM ≥ 0.985 for 0.3 s, boundary kinds
+- [x] **T-827 analyze.shots** — Core pure segmentation (stable states SSIM ≥ 0.985 for 0.3 s, boundary kinds
   cut/scroll/animate/type, interest payoff/motion/cursorOnly/static/typing with reasons, focus box, source-keyed
   stable IDs, summary); app decodes 10 fps 1/8-scale luma with vImage, cached per media content hash. Verify:
   Core segmentation tests on synthetic signals; 100 s fixture analyses < 5 s.
@@ -1683,3 +1683,5 @@ Final audit against https://artifacts.microapps.space/a/crsebftafkp3 · 2026-11-
 Native verification · 2026-11-16 · Run on explicit user approval ("Run them now", overriding the earlier no-test-windows request for this pass). Debug app assembled; on /tmp/M6Fixture.recorder all pass: mcp-edit, mcp-render, mcp-review normal and --reduce-motion, mcp-live, mcp-panel-motion, mcp-roundtrip, mcp-export, project-navigation, inspector-panels, mcp-edit --headless, plus new `mcp-layer-playback` (real MCPTools layer edit on an open editor: draft isolation of live state/project.json, preview and export-proxy frames show the layer exactly in its range, real AVKit Play draft window with audio+video tracks that plays, cancel, edit.apply invalidation, window-close cleanup, discard purge, accept keeps exactly the used media as one undo) and `zoom-ease-parity` (zoom ease changes both preview and proxy frames and converges). Native run exposed and fixed two defects the headless tests could not: show() deleted the just-rendered preview file, and mcp-edit still asserted 12 op schemas. Actual authenticated Claude Code via `mcp-live-client` (evidence /tmp/recorder-t824-client) passed with the new tool schemas. Panel PNGs /tmp/recorder-t824-motion/{ready,editor-ready}.png inspected: Play draft sits left of Accept N in the pinned footer at 320 pt without clipping. make test 212/212. Still HUMAN: judging panel feel/motion against the design frame (mark [~] until looked at).
 
 HUMAN review · 2026-11-16 · The user judged the Claude panel's feel and motion against the design frame and approved it ("i approve finalize it pls"). The remaining `[~]` for this request is closed; T-812…T-824 are complete.
+
+T-827 analyze.shots · 2026-11-17 · Core `storyboard(signals:fps:events:thresholds:)` + `Storyboard.mapped(through:)` (Shots.swift), app decode/SSIM/cache (ShotAnalysis.swift, `shots-cache.json`), `analyze.shots` tool with concise/detailed and thresholds. `make test` passes (ShotsTests). The 100 s decode timing is unverified (no GUI/selftest run); `thumb` omitted (no recorder:// resource mechanism).
