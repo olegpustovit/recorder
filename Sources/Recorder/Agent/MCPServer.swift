@@ -276,13 +276,27 @@ enum AgentAccess: String, CaseIterable {
         let time: Date
         let agent: String
         let tool: String
-        let summary: String
-        let ms: Int
-        let isError: Bool
+        let intent: String
+        var result: String = ""
+        var ms: Int = 0
+        var isError = false
         var projectID: String? = nil
+        var sessionID: String? = nil
     }
     private(set) var rows: [Row] = []
+    private(set) var current: [UUID: Row] = [:]
     func log(_ row: Row) { rows.append(row); if rows.count > 200 { rows.removeFirst(rows.count - 200) } }
+    @discardableResult func begin(_ row: Row) -> UUID { current[row.id] = row; return row.id }
+    func finish(_ id: UUID, result: String, isError: Bool = false, projectID: String? = nil) {
+        guard var row = current.removeValue(forKey: id) else { return }
+        row.result = result; row.isError = isError; row.ms = Int(Date().timeIntervalSince(row.time) * 1000)
+        row.projectID = projectID ?? row.projectID
+        log(row)
+    }
+    func clear(sessionID: String) {
+        rows.removeAll { $0.sessionID == sessionID }
+        current = current.filter { $0.value.sessionID != sessionID }
+    }
 }
 
 @MainActor @Observable final class MCPServer {

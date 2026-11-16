@@ -231,21 +231,23 @@ enum MCPTools {
                                 approveExport: (@MainActor (AgentExportRequest) async throws -> Bool)? = nil,
                                 approvalTimeout: Duration = .seconds(600)) async -> [String: Any] {
         let began = Date()
-        var action = "invalid", errorCode: String?
+        let definition = list.first { $0["name"] as? String == name }
+        let properties = (definition?["inputSchema"] as? [String: Any])?["properties"] as? [String: Any] ?? [:]
+        let allowed = (properties["action"] as? [String: Any])?["enum"] as? [String] ?? []
+        let action = (args["action"] as? String).flatMap { allowed.contains($0) ? $0 : nil } ?? "invalid"
+        let loggedName = definition == nil ? "invalid" : name
+        let activityID = AgentActivity.shared.begin(.init(time: began, agent: session.agentName, tool: "\(loggedName).\(action)",
+            intent: activityIntent(loggedName, action, args), projectID: (try? model(for: session))?.liveProject.id ?? session.draft?.baseProject.id,
+            sessionID: session.id))
+        var errorCode: String?, outcome = "Completed"
         defer {
-            let loggedName = list.contains { $0["name"] as? String == name } ? name : "invalid"
             let projectID = (try? model(for: session))?.liveProject.id ?? session.draft?.baseProject.id
-            AgentActivity.shared.log(.init(time: began, agent: session.agentName, tool: "\(loggedName).\(action)",
-                summary: errorCode ?? "completed", ms: Int(Date().timeIntervalSince(began) * 1000), isError: errorCode != nil, projectID: projectID))
+            AgentActivity.shared.finish(activityID, result: errorCode ?? outcome, isError: errorCode != nil, projectID: projectID)
         }
         do {
-            guard let tool = list.first(where: { $0["name"] as? String == name }),
-                  let schema = tool["inputSchema"] as? [String: Any], let properties = schema["properties"] as? [String: Any],
-                  let actionSchema = properties["action"] as? [String: Any], let allowed = actionSchema["enum"] as? [String],
-                  let requested = args["action"] as? String, allowed.contains(requested), Set(args.keys).isSubset(of: Set(properties.keys)) else {
+            guard definition != nil, action != "invalid", Set(args.keys).isSubset(of: Set(properties.keys)) else {
                 throw MCPFailure(code: "INVALID_OP", message: "Use a tool/action and arguments from tools/list, then retry")
             }
-            action = requested
             for (key, value) in args {
                 let type = (properties[key] as? [String: Any])?["type"] as? String
                 let valid: Bool
@@ -380,6 +382,7 @@ enum MCPTools {
                 if payload["project"] == nil { payload["project"] = current.liveProject.id }
                 if payload["revision"] == nil { payload["revision"] = try revision(viewedProject(current, session: session)) }
             } else { payload["project"] = NSNull(); payload["revision"] = NSNull() }
+            outcome = activityResult(name, action, payload)
             var reply = result(payload)
             reply["content"] = (reply["content"] as? [[String: Any]] ?? []) + extraContent
             return reply
@@ -392,6 +395,74 @@ enum MCPTools {
             } else { failure = error as? MCPFailure ?? MCPFailure(code: "INVALID_OP", message: "\(error.localizedDescription); check the project in Recorder and retry") }
             errorCode = failure.code
             return result(["error": failure.code, "message": "\(failure.code): \(failure.message)"], isError: true)
+        }
+    }
+
+    // Only fixed tool/kind names and aggregate numbers enter activity, never argument or response text.
+    static func activityIntent(_ name: String, _ action: String, _ args: [String: Any]) -> String {
+        switch (name, action) {
+        case ("edit", "apply"):
+            guard let ops = try? decodeOps(args["ops"]) else { return "Applying edits" }
+            var kinds: [String] = []
+            for op in ops {
+                let kind: String
+                switch op {
+                case .captions: kind = "captions"
+                case .highlight: kind = "highlight"
+                case .update: kind = "update"
+                case .remove: kind = "remove"
+                case .style: kind = "style"
+                default: kind = AgentChangeKind(op).rawValue.lowercased()
+                }
+                if !kinds.contains(kind) { kinds.append(kind) }
+            }
+            let verb = args["dryRun"] as? Bool == true ? "Checking" : "Applying"
+            if ops.isEmpty { return "\(verb) 0 ops" }
+            if kinds.count == 1 { return "\(verb) \(ops.count) \(kinds[0]) ops" }
+            return "\(verb) \(ops.count) ops · \(kinds.joined(separator: ", "))"
+        case ("edit", "undo"): return "Undoing edit"
+        case ("project", "list"): return "Reading recordings"
+        case ("project", "open"): return "Opening recording"
+        case ("project", "info"): return "Reading project"
+        case ("timeline", "get"): return "Reading timeline"
+        case ("transcript", "get"): return "Reading transcript"
+        case ("analyze", "pauses"): return "Finding pauses"
+        case ("analyze", "fillers"): return "Finding fillers"
+        case ("analyze", "activity"): return "Finding activity"
+        case ("analyze", "transcribe"): return "Transcribing speech"
+        case ("render", "frames"): return "Rendering frames"
+        case ("render", "sheet"): return "Rendering contact sheet"
+        case ("render", "clip"): return "Rendering preview"
+        case ("render", "cancel"): return "Cancelling render"
+        case ("draft", "submit"): return "Preparing review"
+        case ("draft", "status"): return "Checking draft"
+        case ("draft", "discard"): return "Discarding draft"
+        case ("export", "final"): return "Exporting final video"
+        case ("ui", "show"): return "Showing timeline"
+        default: return "Calling Recorder"
+        }
+    }
+    static func activityResult(_ name: String, _ action: String, _ payload: [String: Any]) -> String {
+        switch (name, action) {
+        case ("edit", "apply"):
+            let count = (payload["changes"] as? [Any])?.count ?? 0
+            let duration = payload["duration"] as? [String: Double] ?? [:]
+            let delta = (duration["after"] ?? 0) - (duration["before"] ?? 0)
+            return "\(count) ops · \(String(format: delta < 0 ? "−%.1f s" : "+%.1f s", abs(delta)))\(payload["dryRun"] as? Bool == true ? " · dry run" : "")"
+        case ("edit", "undo"): return "Undone"
+        case ("draft", "submit"): return payload["stale"] as? Bool == true ? "Stale draft" : "Ready for review · \(payload["selected"] as? Int ?? 0) changes"
+        case ("draft", "discard"): return "Discarded"
+        case ("analyze", "pauses"): return "\((payload["pauses"] as? [Any])?.count ?? 0) pauses"
+        case ("analyze", "fillers"): return "\((payload["fillers"] as? [Any])?.count ?? 0) fillers"
+        case ("analyze", "activity"): return "\((payload["idle"] as? [Any])?.count ?? 0) idle ranges"
+        case ("analyze", "transcribe"): return "\(payload["words"] as? Int ?? 0) words"
+        case ("render", "frames"): return "\((payload["files"] as? [Any])?.count ?? 0) frames"
+        case ("render", "sheet"): return "Contact sheet ready"
+        case ("render", "clip"), ("export", "final"): return String(format: "%.1f s video ready", payload["seconds"] as? Double ?? 0)
+        case ("render", "cancel"): return payload["cancelled"] as? Bool == true ? "Cancelled" : "Nothing to cancel"
+        case ("project", "list"): return "\((payload["projects"] as? [Any])?.count ?? 0) recordings"
+        case ("transcript", "get"): return "\((payload["words"] as? [Any])?.count ?? 0) words"
+        default: return "Completed"
         }
     }
 

@@ -1160,6 +1160,14 @@ clicking a change seeks to its output time. The summary shows selected count, re
 Accept N stays pinned outside the scroll area; unticking all and Accept 0 closes without a project mutation.
 Stale/error notices stay above the summary; a stale draft offers Replay on current. Activity is collapsed.
 Disclosures open in320ms, with55ms child stagger/4pt entrance; Reduce Motion uses140ms opacity without movement.
+The Claude status strip shows the current call's intent, then Idle, Drafting, Ready for review or Accepted N.
+A1pt rail draws once on call completion; it resets at the next call and does not imply a known percentage of
+the agent's overall work. New groups wipe in over320ms with a2pt leading edge fading out over700ms. Adding
+more operations to an existing group refreshes only the edge/counts, preserving its expansion and controls.
+Reduce Motion replaces these wipes with140ms opacity and omits the edge. Sequences terminate and cancel
+when their view, replay or motion mode changes; there are no ambient loops or pulses.
+Accepted groups remain visible/read-only with Accepted N in the status/footer. Replay resets group/activity
+disclosures and cancels pending child reveals.
 Accept creates one named `Claude: …` undo step; Live mode applies each call directly as one named undo step.
 A stale draft offers **Replay on current**; replay reports invalid/dependent operations as skipped.
 Only one review can be active per project. Quitting Recorder loses pending drafts; disconnecting a client does
@@ -1167,7 +1175,15 @@ not automatically accept them. Human gestures, active review and voiceover recor
 
 Agents never receive key characters. Activity analysis returns ranges/times only; agent frames, sheets and proxies
 force the Keys overlay off. The last 200 activity summaries are kept in memory (the panel shows the last 50 for
-this project). Agent renders use UUID files under `~/Library/Caches/Recorder/Agent/<session>/`; files older than
+this project). Each activity entry has a fixed tool/operation-kind intent and an aggregate result (counts,
+duration delta or error code), never typed keys, edit text, labels, notes, paths or raw error details.
+Concurrent in-flight calls have separate identities; finishing/cancelling one preserves the others.
+The collapsed newest-first feed shows intent/result prominently, with time/duration as secondary detail.
+The gallery's **Claude panel motion study** opens a generated disposable recording with the real inspector,
+preview and timeline. Replay stages17 operations, ending ready for review; Stop/restart cancels old work,
+Reduce Motion supplements the system setting, and closing removes the sample/session. This replay study
+does not itself establish production live propagation (T-815).
+Agent renders use UUID files under `~/Library/Caches/Recorder/Agent/<session>/`; files older than
 seven days are purged at launch. A final MP4 export requires a native approval sheet showing the client, project,
 range/preset and destination. Deny, timeout and cancellation write no final output. Existing destinations are never
 overwritten. Accepted final exports use the native saved settings (including configured visual effects), with an

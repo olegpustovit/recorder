@@ -30,6 +30,7 @@ enum SelfTest {
         "mcp-render": { args in try await checkMCPRender(args) },
         "mcp-edit": { args in try await checkMCPEdit(args) },
         "mcp-review": { args in try await checkMCPReview(args) },
+        "mcp-panel-motion": { args in try await UIKitGallery.checkAgentStudy(to: URL(fileURLWithPath: args.first ?? "/tmp/recorder-t814-motion")) },
         "mcp-export": { args in try await checkMCPExport(args) },
         "motion-text": { _ in try await Compositor.runMotionTextSelfTest() },
         "layers": { args in try await SelfTest.cases["make-layers-fixture"]!(args) },
@@ -1526,8 +1527,8 @@ enum SelfTest {
                 } else { model.edit("Human edit") { $0.frame.padding = 0.04 } }
                 model.inspectorShowsAgent = true
                 if variant == "agent-error" { session.reviewError = "The selected block no longer exists. Replay this draft on the current project." }
-                AgentActivity.shared.log(.init(time: Date(timeIntervalSince1970: 0), agent: session.agentName, tool: "edit.apply", summary: "3 ops", ms: 12, isError: false, projectID: project.id))
-                AgentActivity.shared.log(.init(time: Date(timeIntervalSince1970: 1), agent: session.agentName, tool: "draft.submit", summary: "Review", ms: 4, isError: variant == "agent-error", projectID: project.id))
+                AgentActivity.shared.log(.init(time: Date(timeIntervalSince1970: 0), agent: session.agentName, tool: "edit.apply", intent: "Applying 3 ops · cuts, text", result: "3 ops · −2.3 s", ms: 12, isError: false, projectID: project.id))
+                AgentActivity.shared.log(.init(time: Date(timeIntervalSince1970: 1), agent: session.agentName, tool: "draft.submit", intent: "Preparing review", result: variant == "agent-error" ? "INVALID_OP" : "Ready for review", ms: 4, isError: variant == "agent-error", projectID: project.id))
             }
             defer {
                 model.endReview(commit: false, name: "")
@@ -4734,6 +4735,8 @@ private final class MCPTestClient {
     try synthesizeSineM4A(at: package.appendingPathComponent("mic.m4a"), duration: fixture.source.duration, silence: 1...2)
     let words = [Word(text: "Um,", start: 0.2, end: 0.4), Word(text: "there", start: 1.3, end: 1.7)]
     try JSONEncoder().encode(words).write(to: package.appendingPathComponent("transcript.json"))
+    try JSONEncoder().encode(EventLog(events: [InputEvent(t: 0.2, k: .key, keyCode: 0, ch: "PRIVATE_ACTIVITY_KEYS")]))
+        .write(to: package.appendingPathComponent("events.json"))
     NSApplication.shared.setActivationPolicy(.accessory); NSApplication.shared.finishLaunching()
     guard let controller = await EditorWindowController.open(package: package).value else { throw MCPTestFailure(description: "Could not open edit fixture") }
     let model = controller.model
@@ -4758,7 +4761,13 @@ private final class MCPTestClient {
     let dry = try await tool("edit", ["action": "apply", "ifRevision": baseRevision, "ops": style, "dryRun": true])
     guard dry["revision"] as? String == baseRevision, session.draft == nil, model.project == base else { throw MCPTestFailure(description: "Dry run mutated state") }
     let first = try await tool("edit", ["action": "apply", "ifRevision": baseRevision, "ops": [
-        ["op": "cut", "from": 0.5, "to": 1.0], ["op": "text", "from": 1.0, "to": 2.0, "style": "title", "text": "Draft"]]])
+        ["op": "cut", "from": 0.5, "to": 1.0], ["op": "text", "from": 1.0, "to": 2.0, "style": "title", "text": "PRIVATE_ACTIVITY_TEXT"],
+        ["op": "marker", "at": 2.4, "label": "PRIVATE_ACTIVITY_LABEL"]]])
+    guard let applied = AgentActivity.shared.rows.last, applied.sessionID == session.id,
+          applied.intent == "Applying 3 ops · cuts, text, markers", applied.result == "3 ops · −0.5 s",
+          !AgentActivity.shared.current.values.contains(where: { $0.sessionID == session.id }) else {
+        throw MCPTestFailure(description: "Activity intent/result or completed call cleanup")
+    }
     let timeline = try await tool("timeline", ["action": "get"])
     guard let textID = (timeline["blocks"] as? [[String: Any]])?.first(where: { $0["lane"] as? String == "text" })?["id"] as? String,
           timeline["revision"] as? String == first["revision"] as? String else { throw MCPTestFailure(description: "Draft timeline/revision") }
@@ -4816,7 +4825,13 @@ private final class MCPTestClient {
     _ = try await tool("edit", ["action": "apply", "ifRevision": baseRevision, "ops": style], error: "REVIEW_IN_PROGRESS")
     model.cancelGesture()
     guard model.project.checkInvariants() == nil, MCPTools.operationSchemas.count == 12 else { throw MCPTestFailure(description: "Edit invariants/schemas") }
-    print("MCP edit: deterministic replay/ids/exclusions, dry-run and disk isolation, draft reads/renders, stale revisions, submit/discard, pause/word contexts, overlap warnings, live undo and review/gesture guards verified")
+    let activity = AgentActivity.shared.rows.filter { $0.sessionID == session.id }
+    guard activity.allSatisfy({ row in [row.intent, row.result, row.tool].allSatisfy { !$0.contains("PRIVATE_ACTIVITY_") } }),
+          activity.contains(where: { $0.isError && $0.result == "STALE_REVISION" }),
+          !AgentActivity.shared.current.values.contains(where: { $0.sessionID == session.id }) else {
+        throw MCPTestFailure(description: "Activity leaked text, omitted error codes or retained finished calls")
+    }
+    print("MCP edit: privacy-safe intent/result/error activity, deterministic replay/ids/exclusions, dry-run and disk isolation, draft reads/renders, stale revisions, submit/discard, pause/word contexts, overlap warnings, live undo and review/gesture guards verified")
 }
 
 @MainActor private func checkMCPRender(_ args: [String]) async throws {
@@ -4911,6 +4926,9 @@ private final class MCPTestClient {
             try await Task.sleep(for: .milliseconds(5))
         }
         guard let sessionID else { throw MCPTestFailure(description: "Proxy job did not start") }
+        guard await MainActor.run(body: { AgentActivity.shared.current.values.contains { $0.sessionID == sessionID && $0.tool == "render.clip" && $0.intent == "Rendering preview" } }) else {
+            throw MCPTestFailure(description: "Running proxy has no in-flight activity")
+        }
         for (id, action) in [(102, "frames"), (103, "cancel")] {
             _ = MCPSocket.write(try JSONSerialization.data(withJSONObject: ["jsonrpc": "2.0", "id": id, "method": "tools/call", "params": ["name": "render", "arguments": ["action": action, "at": [1]]]]) + Data([10]), to: client.fd)
         }

@@ -524,6 +524,27 @@ Layout (inspector, 320 pt; updated by T-812 to the [panel redesign](https://arti
   disables) the system Reduce Motion preference; it also permits a deterministic native reduced-motion selftest.
 - Accessibility: groups use native mixed-state NSButton checkboxes, rows use labelled Toggle checkboxes, and
   disclosures/seek/Accept are named buttons with keyboard semantics.
+- T-814 status/activity: tool entry creates an independently identified in-flight activity; the current
+  project's latest call supplies the status intent. Completion removes only that call, appends one of the
+  last200 entries, and supplies an aggregate result (op/count/delta, render count/duration, or error code).
+  These strings use fixed names and numbers; they do not interpolate input text/labels/notes/paths/keys or
+  raw response/error text. The collapsed project feed shows the newest50 with intent/result, then time/ms.
+  The1pt rail resets at call start and draws over320ms on completion (140ms opacity for Reduce Motion);
+  it represents a completed call, not a guessed percentage of the agent's total work. Idle/ready/accepted
+  statuses are plain text. New groups wipe320ms; a2pt edge fades700ms. Existing groups keep their state
+  as counts change. Arrivals and disclosures cancel stale tasks; shared buttons retain80ms press/160ms hover.
+  Accepted groups remain readable with disabled inclusion controls and an Accepted N footer; replay resets
+  the activity disclosure and cancels unfinished child reveals.
+  `make gallery` → **Claude panel motion study / Open study…** opens a generated recording and the real
+  inspector/preview/timeline, with Replay, Stop and a preview-only Reduce Motion toggle. This study uses
+  existing draft/review methods directly between calls; production live draft propagation remains T-815.
+
+**T-814 Verify.** `mcp-edit` asserts a3-op intent/result and absence of private recorded key/edit/marker text.
+`mcp-render` checks in-flight state during an actual cancellable proxy. `mcp-panel-motion <output-directory>`
+clicks native Replay/Stop/Reduce Motion, samples each of four calls mid/settled plus working/idle/error/ready/
+accepted states, exercises restart/cancellation,17-op counts, base/disk isolation, one undo, concurrent activity
+cleanup and sample-close cleanup. Existing `mcp-review` runs in normal/reduced motion, `inspector-panels` and
+full `make test` remain required; inspect the native renders and gallery.
 
 **Verify.** Selftest `mcp-review <package>`: submit a 3-op draft, untick one via the model API, accept → project equals
 `base.applying(2 ops)` with the same operation seeds, undo restores base, `draft.status` says `accepted 2 of 3`.
