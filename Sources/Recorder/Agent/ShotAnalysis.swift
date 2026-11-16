@@ -21,6 +21,15 @@ enum ShotAnalysis {
         return "\(size)-\(mtime)-" + SHA256.hash(data: head).map { String(format: "%02x", $0) }.joined()
     }
 
+    /// Signals only if analyze.shots already decoded this media; never decodes (edit reports must stay instant).
+    static func cachedSignals(package: URL) -> [FrameSignal]? {
+        let media = package.appendingPathComponent("screen.mov")
+        guard let key = try? "v\(algorithmVersion)-" + fingerprint(media),
+              let data = try? Data(contentsOf: package.appendingPathComponent(cacheName)),
+              let cache = try? JSONDecoder().decode(Cache.self, from: data), cache.key == key else { return nil }
+        return cache.signals
+    }
+
     static func signals(package: URL, progress: @escaping (Double) -> Void) async throws -> [FrameSignal] {
         let media = package.appendingPathComponent("screen.mov"), cacheURL = package.appendingPathComponent(cacheName)
         guard FileManager.default.fileExists(atPath: media.path) else {

@@ -73,11 +73,12 @@ enum MCPTools {
             tool("timeline", ["get"], "Read clips, effect blocks and markers in output seconds.", range, read: true),
             tool("transcript", ["get"], "Read up to 2000 spoken words with stable wN ids, or timestamped phrases. Key presses are never returned.", range.merging(["format": ["type": "string", "enum": ["words", "phrases"]]], uniquingKeysWith: { _, b in b }), read: true),
             tool("analyze", ["transcribe", "pauses", "fillers", "activity", "shots"], "Transcribe on-device, find mic pauses/fillers, read activity ranges without key characters, or get the shot storyboard (shots: ids stay tied to source moments across edits; times are output seconds).", ["minDuration": number, "threshold": number,
+                "captions": ["type": "boolean", "description": "analyze.shots only: add on-device 6–10 word captions per shot (slower; null when unavailable)."],
                 "response_format": ["type": "string", "enum": ["concise", "detailed"], "description": "analyze.shots only: concise (default) omits reasons only; focus is always kept."],
                 "thresholds": ["type": "object", "description": "analyze.shots only: optional overrides of ssim, minStable, cutSsim, motionDiff, payoffDiff, cursorSpeed, energyScale. energyScale and minStable must be > 0; ssim and cutSsim within 0…1.", "additionalProperties": ["type": "number", "minimum": 0]]], read: true),
             tool("edit", ["apply", "undo"], "Apply atomic edits using the latest ifRevision; edits land in a draft by default. Numeric times use that revision's output timeline; {marker:id, offset:seconds} anchors resolve after earlier ops in the batch.", ["ifRevision": string, "ops": ["type": "array", "items": ["oneOf": operationSchemas]], "dryRun": boolean]),
             tool("draft", ["status", "submit", "discard"], "Read your draft's exclusions, skipped reasons and verdict; submit for review or discard it. A pending submitted draft can receive more edit.apply calls, returning to watching until submitted again.", ["note": string]),
-            tool("render", ["frames", "sheet", "clip", "cancel"], "Render frames, a contact sheet or a 540p proxy into the agent cache. Key chips are hidden.", ["at": ["type": "array", "items": number, "maxItems": 24], "from": number, "to": number, "count": ["type": "integer", "minimum": 1, "maximum": 24], "longEdge": ["type": "integer", "minimum": 1, "maximum": 640], "draft": boolean,
+            tool("render", ["frames", "sheet", "clip", "storyboard", "strip", "compare", "cancel"], "Render frames, a contact sheet, a 540p proxy, per-shot storyboard tiles (needs analyze.shots), a filmstrip (strip: from, to, fps 4–8, ≤48 tiles) or base|draft rows (compare: at ≤6) into the agent cache. Key chips are hidden.", ["at": ["type": "array", "items": number, "maxItems": 24], "shots": ["type": "array", "items": string, "maxItems": 48, "description": "render.storyboard only: shot ids; default all shots the draft keeps."], "page": ["type": "integer", "minimum": 1, "description": "render.storyboard only: 48 tiles per page."], "fps": ["type": "integer", "minimum": 4, "maximum": 8, "description": "render.strip only."], "from": number, "to": number, "count": ["type": "integer", "minimum": 1, "maximum": 24], "longEdge": ["type": "integer", "minimum": 1, "maximum": 640], "draft": boolean,
                 "grid": ["type": "boolean", "description": "render.frames only: overlay a 0.1-step grid labelled 0–1, origin top-left, matching zoom center and text position coordinates (exact at 1× zoom with no layout padding)."]]),
             tool("export", ["final"], "Export an MP4 after the user's native approval, optionally with SRT subtitles.", ["destination": string, "shortEdge": ["type": "integer", "enum": [720, 1080, 2160]], "fps": ["type": "integer", "enum": [24, 30, 60]], "srt": boolean]),
             tool("ui", ["show"], "Move the editor playhead and select blocks by id.", ["at": ["type": "number"], "select": ["type": "array", "items": string]])
@@ -400,8 +401,9 @@ enum MCPTools {
                     let thresholds = try ShotAnalysis.thresholds(args["thresholds"])
                     let signals = try await ShotAnalysis.signals(package: model.packageURL, progress: progress)
                     // ponytail: no recorder:// resource mechanism exists, so shots carry no thumb; use render.frames at a shot's time.
-                    let board = storyboard(signals: signals, fps: ShotAnalysis.fps, events: model.events.events, thresholds: thresholds)
-                        .mapped(through: TimeMap(viewed.clips))
+                    var source = storyboard(signals: signals, fps: ShotAnalysis.fps, events: model.events.events, thresholds: thresholds)
+                    if args["captions"] as? Bool == true { source = try await AgentCaptions.captionShots(source, model: model) }
+                    let board = source.mapped(through: TimeMap(viewed.clips))
                     payload = try object(board)
                     if format == "concise", let shots = payload["shots"] as? [[String: Any]] {
                         payload["shots"] = shots.map { $0.filter { $0.key != "reasons" } }
@@ -500,6 +502,9 @@ enum MCPTools {
         case ("analyze", "transcribe"): return "Transcribing speech"
         case ("render", "frames"): return "Rendering frames"
         case ("render", "sheet"): return "Rendering contact sheet"
+        case ("render", "storyboard"): return "Rendering shot storyboard"
+        case ("render", "strip"): return "Rendering filmstrip"
+        case ("render", "compare"): return "Rendering base vs draft"
         case ("render", "clip"): return "Rendering preview"
         case ("render", "cancel"): return "Cancelling render"
         case ("draft", "submit"): return "Preparing review"
@@ -527,6 +532,9 @@ enum MCPTools {
         case ("analyze", "transcribe"): return "\(payload["words"] as? Int ?? 0) words"
         case ("render", "frames"): return "\((payload["files"] as? [Any])?.count ?? 0) frames"
         case ("render", "sheet"): return "Contact sheet ready"
+        case ("render", "storyboard"): return "Storyboard ready"
+        case ("render", "strip"): return "Filmstrip ready"
+        case ("render", "compare"): return "Comparison ready"
         case ("render", "clip"), ("export", "final"): return String(format: "%.1f s video ready", payload["seconds"] as? Double ?? 0)
         case ("render", "cancel"): return payload["cancelled"] as? Bool == true ? "Cancelled" : "Nothing to cancel"
         case ("project", "list"): return "\((payload["projects"] as? [Any])?.count ?? 0) recordings"
@@ -651,9 +659,40 @@ enum MCPTools {
         var times: [Double] = []
         let edge = try number(args, "longEdge", default: 640)
         guard (2...640).contains(edge) else { throw MCPFailure(code: "OUT_OF_RANGE", message: "longEdge must be 2–640 pixels") }
-        if action == "frames" || action == "sheet" {
+        var labels: [String]?
+        var extra: [String: Any] = [:]
+        if action == "compare", args["draft"] as? Bool == false { throw MCPFailure(code: "INVALID_OP", message: "render.compare compares the live project with the draft; draft:false leaves nothing to compare") }
+        if action == "storyboard" {
+            let board = try loadStoryboard(model: model)
+            if args["shots"] != nil, !(args["shots"] is [String]) { throw MCPFailure(code: "INVALID_OP", message: "shots must be an array of shot id strings") }
+            let wanted = args["shots"] as? [String]
+            if let wanted, let unknown = wanted.first(where: { id in !board.shots.contains { $0.id == id } }) {
+                throw MCPFailure(code: "INVALID_OP", message: "Unknown shot id \(unknown); run analyze.shots and use its ids")
+            }
+            let map = TimeMap(frozen.project.clips)
+            let kept = board.shots.filter { wanted?.contains($0.id) ?? true }.compactMap { shot in
+                AgentRender.keyframe(shot, fps: board.fps, map: map).map { (shot, $0.output, $0.kept) }
+            }
+            let pages = max(1, (kept.count + 47) / 48)
+            let rawPage = try number(args, "page", default: 1)
+            guard rawPage >= 1, rawPage <= Double(pages), rawPage == rawPage.rounded(), case let page = Int(rawPage) else { throw MCPFailure(code: "OUT_OF_RANGE", message: "page must be 1–\(pages)") }
+            let slice = kept[(page - 1) * 48 ..< min(kept.count, page * 48)]
+            times = slice.map(\.1)
+            labels = slice.map { String(format: "%@ %.1fs", $0.0.id, $0.2) }
+            extra = ["page": page, "pages": pages, "shots": slice.map(\.0.id)]
+            guard !times.isEmpty else { throw MCPFailure(code: "OUT_OF_RANGE", message: "The draft keeps none of these shots") }
+        } else if action == "strip" {
+            let fps = try number(args, "fps", default: 6)
+            let from = try number(args, "from", default: -1), to = try number(args, "to", default: -1)
+            guard (4...8).contains(fps), fps == fps.rounded(), from >= 0, to > from, to <= duration, (to - from) * fps <= 48 else {
+                throw MCPFailure(code: "OUT_OF_RANGE", message: "render.strip needs fps 4–8 and 0 ≤ from < to ≤ \(duration) with at most 48 tiles (\(Int(48 / fps)) s at \(Int(fps)) fps)")
+            }
+            times = (0..<max(1, Int(((to - from) * fps).rounded(.down)))).map { from + Double($0) / fps }
+            labels = times.map(AgentRender.timecode)
+        }
+        if action == "frames" || action == "sheet" || action == "compare" {
             if let values = args["at"] as? [Any] {
-                guard !values.isEmpty, values.count <= (action == "frames" ? 6 : 24) else { throw MCPFailure(code: "OUT_OF_RANGE", message: "Use 1–6 frame times or 1–24 sheet times") }
+                guard !values.isEmpty, values.count <= (action == "sheet" ? 24 : 6) else { throw MCPFailure(code: "OUT_OF_RANGE", message: "Use 1–6 frame times or 1–24 sheet times") }
                 times = try values.map { try number(["at": $0], "at", default: -1) }
             } else if action == "sheet" {
                 let count = try number(args, "count", default: 12)
@@ -667,13 +706,15 @@ enum MCPTools {
         let folder = AgentRender.cacheFolder(session: session.id)
         if action == "clip" { progress(0) }
         let jobID = UUID()
-        let requested = times
+        let requested = times, tileLabels = labels
         let grid = args["grid"] as? Bool == true
         if args["grid"] != nil, !(args["grid"] is Bool) || action != "frames" { throw MCPFailure(code: "INVALID_OP", message: "grid must be a boolean and is supported by render.frames only") }
         let task = Task { @MainActor in
             switch action {
             case "frames": return try await AgentRender.frames(model: frozen, at: requested, longEdge: Int(edge), folder: folder, grid: grid)
             case "sheet": return [try await AgentRender.sheet(model: frozen, at: requested, folder: folder)]
+            case "storyboard", "strip": return [try await AgentRender.sheet(model: frozen, at: requested, labels: tileLabels, folder: folder)]
+            case "compare": return [try await AgentRender.compare(base: AgentRender.renderModel(for: model, project: model.liveProject), draft: frozen, at: requested, folder: folder)]
             case "clip": return [try await AgentRender.clip(model: frozen, from: from, to: to, folder: folder, progress: progress)]
             default: throw MCPFailure(code: "INVALID_OP", message: "Choose a render action from tools/list")
             }
@@ -694,12 +735,21 @@ enum MCPTools {
         if action == "clip", let file = files.first {
             payload["seconds"] = try await AVURLAsset(url: file).load(.duration).seconds
             payload["bytes"] = (try FileManager.default.attributesOfItem(atPath: file.path)[.size] as? NSNumber)?.intValue ?? 0
-        } else { payload["at"] = times }
+        } else { payload["at"] = times; payload.merge(extra) { _, new in new } }
         try requireAccess(frozen.project, tool: "render")
         guard EditorWindowController.allOpen.contains(where: { $0.model.liveProject.id == projectID }) else {
             throw MCPFailure(code: "NO_PROJECT", message: "The editor closed during rendering; use project.open and retry")
         }
         return (payload, content)
+    }
+
+    /// Source-time storyboard from analyze.shots' cached signals, for storyboard/lint/intent/reframe ops.
+    // shortcut: uses default thresholds even if analyze.shots was called with overrides; persist them with the cache if agents rely on overrides.
+    @MainActor static func loadStoryboard(model: EditorModel) throws -> Storyboard {
+        guard let signals = ShotAnalysis.cachedSignals(package: model.packageURL) else {
+            throw MCPFailure(code: "NO_STORYBOARD", message: "run analyze.shots first (decoded once, then cached)")
+        }
+        return storyboard(signals: signals, fps: ShotAnalysis.fps, events: model.events.events)
     }
 
     @MainActor static func libraryRecordings() async -> [MCPAssets.LibraryRecording] {

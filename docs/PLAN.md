@@ -713,7 +713,7 @@ acceptance undo, privacy (renders hide key overlays) and existing op semantics; 
   decoder (~300 fps, unchanged by output scaling, zero-copy or parallel readers) is the bound; our signal code is
   ≈0.7 s CPU. Upgrade path: decode-time frame skipping (only possible for non-reference frames) or analysing during
   recording. F1 ≥ 0.8 on 5 hand-labelled recordings not measured (no labelled set exists).
-- [ ] **T-828 render.storyboard / strip / compare** — shot-anchored tiles (settled keyframe, id + duration label,
+- [x] **T-828 render.storyboard / strip / compare** — shot-anchored tiles (settled keyframe, id + duration label,
   ≤ 48 per page), filmstrip 4–8 fps, base|draft side by side. Verify: tile count = shots, legible at 320 px.
 - [ ] **T-829 Edit report + render.lint** — `report` (duration/asl/hook/longestStatic/staticSec before/after, lint)
   on every edit.apply/dryRun; `render.lint` profiles reel/tutorial/demo with rules hook, maxStatic, asl, duration,
@@ -722,7 +722,7 @@ acceptance undo, privacy (renders hide key overlays) and existing op semantics; 
   cut/speed/zoom in one undo step and returns lowered ops. Verify: Core lowering tests, one-step undo.
 - [ ] **T-831 reframe** — `output.aspect` plus per-shot stationary/pan crop aimed at focus and cursor
   (time-varying crop on the camera lane); edgeContent lint clean. Verify: Core crop-path tests, focus kept in frame.
-- [ ] **T-832 Optional per-shot captions** — on-device (Vision OCR/classification) 6–10 word captions; `null`
+- [x] **T-832 Optional per-shot captions** — on-device (Vision OCR/classification) 6–10 word captions; `null`
   when unavailable, everything works without them. Verify: caption present/absent paths.
 - [x] **T-833 Agent eval harness** — script scoring lint pass rate, ops per task, images requested over a set of
   recordings with the brief "30 s reel, fast cuts, no text"; run on MCP changes. Verify: harness runs on fixtures.
@@ -1691,3 +1691,6 @@ HUMAN review · 2026-11-16 · The user judged the Claude panel's feel and motion
 
 T-833 · 2026-11-17 · Agent eval harness `scripts/agent-eval.py` (stdlib only): scores MCP JSONL transcripts for ops per task (dryRun false, ok edit.apply), images returned by render.* (tiles/frames counted from args), tool calls, final lint pass (last `lint` array, fails on error/warn), final report duration, plus manual `--pref label=value`; table and `--json`. `--selftest` asserts metrics on two synthetic transcripts and passes. Brief and usage documented in docs/MCP.md §10. No Makefile target (the script takes transcript args), no GUI run, no dependencies. Real recordings and MCP changes not yet run through it (fixtures are synthetic). T-830, T-831, T-832 remain pending.
 T-827 analyze.shots · 2026-11-17 · Core `storyboard(signals:fps:events:thresholds:)` + `Storyboard.mapped(through:)` (Shots.swift), app decode/SSIM/cache (ShotAnalysis.swift, `shots-cache.json`), `analyze.shots` tool with concise/detailed and thresholds. `make test` passes (ShotsTests). The 100 s decode timing is unverified (no GUI/selftest run); `thumb` omitted (no recorder:// resource mechanism).
+T-828 · 2026-11-17 · `render.storyboard/strip/compare` (AgentRender `tiles`/`keyframe`/`compare`, MCPTools render branch; storyboard via `loadStoryboard` stub until T-827 merges) · verified: `make test` all pass, `make build` · not verified: rendered output (no GUI run; needs `--selftest`/HUMAN on a fixture once analyze.shots exists).
+
+T-832 · 2026-11-17 · opt-in shot captions: Core `ShotCaption.shape` + `ShotCaptionTests`, app `AgentCaptions.captionShots` (Vision OCR on focus crop, classifier fallback, nil on failure) · verified: `make test` all pass, `make build` · not verified: Vision output on a real recording; `captions:true` on analyze.shots is wired by the integrator. captions wiring into analyze.shots done at integration
