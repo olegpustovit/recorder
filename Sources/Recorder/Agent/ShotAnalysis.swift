@@ -39,7 +39,7 @@ enum ShotAnalysis {
             throw MCPFailure(code: "NO_PROJECT", message: "screen.mov has no video track")
         }
         let duration = try await asset.load(.duration).seconds, size = try await track.load(.naturalSize)
-        let w = max(16, Int(size.width) / 8 & ~1), h = max(16, Int(size.height) / 8 & ~1)
+        var w = max(16, Int(size.width) / 8 & ~1), h = max(16, Int(size.height) / 8 & ~1)
         let reader = try AVAssetReader(asset: asset)
         let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
@@ -62,7 +62,13 @@ enum ShotAnalysis {
             CVPixelBufferLockBaseAddress(buffer, .readOnly)
             let base = CVPixelBufferGetBaseAddressOfPlane(buffer, 0)!, stride = CVPixelBufferGetBytesPerRowOfPlane(buffer, 0)
             let (pw, ph) = (CVPixelBufferGetWidthOfPlane(buffer, 0), CVPixelBufferGetHeightOfPlane(buffer, 0))
-            current = (0..<ph).flatMap { Array(UnsafeBufferPointer(start: base.advanced(by: $0 * stride).assumingMemoryBound(to: UInt8.self), count: pw)) }
+            // The decoder may round the requested size; index with the size actually delivered.
+            (w, h) = (pw, ph)
+            var frame = [UInt8](repeating: 0, count: pw * ph)
+            frame.withUnsafeMutableBytes { dst in
+                for row in 0..<ph { (dst.baseAddress! + row * pw).copyMemory(from: base + row * stride, byteCount: pw) }
+            }
+            current = frame
             CVPixelBufferUnlockBaseAddress(buffer, .readOnly)
             if signals.count % 20 == 0 { progress(min(0.99, Double(signals.count) / Double(ticks))) }
         }
@@ -95,6 +101,25 @@ enum ShotAnalysis {
         let box = x1 < 0 ? nil : NormRect(x: Double(x0) / Double(w), y: Double(y0) / Double(h),
                                           w: Double(x1 - x0 + 1) / Double(w), h: Double(y1 - y0 + 1) / Double(h))
         return FrameSignal(diff: Double(sum) / Double(w * h) / 255, ssim: windows > 0 ? total / windows : 1, bbox: box)
+    }
+
+    /// `--selftest shots-perf <package>`: analyze a copy (the cache write must not touch the original) and time it.
+    static func selfTestPerf(_ args: [String]) async throws {
+        struct Fail: Error { let description: String }
+        guard let path = args.first else { throw Fail(description: "usage: shots-perf <package>") }
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("shots-perf-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        try FileManager.default.copyItem(at: URL(fileURLWithPath: path).appendingPathComponent("screen.mov"), to: tmp.appendingPathComponent("screen.mov"))
+        let start = Date()
+        let s = try await signals(package: tmp, progress: { _ in })
+        let first = Date().timeIntervalSince(start)
+        let again = Date(); _ = try await signals(package: tmp, progress: { _ in })
+        let cached = Date().timeIntervalSince(again)
+        let board = storyboard(signals: s, events: [])
+        print(String(format: "shots-perf frames=%d media=%.1fs decode=%.2fs cached=%.3fs shots=%d asl=%.2fs",
+                     s.count, Double(s.count) / fps, first, cached, board.shots.count, board.summary.aslSec))
+        guard cached < 0.5 else { throw Fail(description: "cache miss on second call") }
     }
 
     /// Optional per-call overrides of `ShotThresholds` by field name.
