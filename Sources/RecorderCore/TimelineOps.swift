@@ -2604,7 +2604,10 @@ public extension Project {
 
     /// Removes the zoom, layout, mask or text block with `id`, whichever track it's in.
     mutating func removeBlock(_ id: UUID, propagate: Bool = true) {
-        let key = id.uuidString
+        removeBlock(id: id.uuidString, propagate: propagate)
+    }
+
+    mutating func removeBlock(id key: String, propagate: Bool = true) {
         let before = self
         if let audio = audioClips.first(where: { $0.id == key }) {
             if propagate, audio.link == .screen {

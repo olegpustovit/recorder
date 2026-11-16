@@ -571,14 +571,14 @@ Core tasks (T-801…T-803) are pure and unit-tested; app tasks use `--selftest` 
 
 | Scope | Tasks | Done |
 |---|---|---|
-| Core: views, edit ops, markers/styles | T-801…T-803 | 1/3 |
+| Core: views, edit ops, markers/styles | T-801…T-803 | 2/3 |
 | App: server, render, edit/draft | T-804…T-806 | 0/3 |
 | App: review UI, graphics, export/settings | T-807…T-809 | 0/3 |
 | Docs + smoke | T-810 | 0/1 |
 
 - [x] **T-801 Core: agent views** · MCP.md §T-801 — `AgentViews.swift`: `agentTimeline`, `agentTranscript` (stable
   `wN` ids, output time, fillers), `isFiller`, `transcriptID`. Verify: `make test FILTER=AgentViews`; `make test`.
-- [ ] **T-802 Core: `EditOp` + `Project.applying`** · MCP.md §T-802 — ops in base output time, converted to source
+- [x] **T-802 Core: `EditOp` + `Project.applying`** · MCP.md §T-802 — ops in base output time, converted to source
   before mutating; `removeSourceRanges` via `split`/`deleteClips`; atomic with `checkInvariants`. Verify:
   `make test FILTER=EditOps`; `make test`.
 - [ ] **T-803 Core: markers, `lowerThird`/`chapter`, SRT** · MCP.md §T-803 — additive `markers`; version 5 only when the
@@ -1513,3 +1513,5 @@ T-733 · 2026-11-16 · Joined clips get the clip inspector: group speed multipli
 T-734 · 2026-11-16 · Video-lane insert preview for Video 2+ drags (trial clip lane + index-aligned ripple from zero-length stand-ins). Selftests timeline-lift (new preview check), timeline-reorder/-ops/-tracks/-full-layers OK (debug build). HUMAN: judge the animation in the app.
 
 T-801 · 2026-11-16 · Added pure Codable output-time timeline/transcript views, stable transcript hash and full-array word IDs, filler detection and caption-based phrase formatting. Covers retained effect segments, window shots, connected audio/layer tails, range filters, imported/gap exclusion and copied footage with independent media clocks. Existing TimeMap media semantics retained rather than treating editing-clock positions as microphone media times. Tests live in the existing SwiftPM Tests/RecorderCoreTests directory. make test FILTER=AgentViews passes 5/5; full make test passes 174/174 using the documented Xcode native/platform Testing flags. No AppKit/AVFoundation imports in the new Core file; no project mutation or UI changes. Remaining MCP tasks T-802…T-810 are unimplemented.
+
+T-802 · 2026-11-16 · Added flat-JSON EditOp/JSONValue, atomic Project.applying with base-output range resolution, indexed validation/errors and change summaries/deltas. Reuses split/delete/setSpeed/block/caption/Preset paths; unions overlapping cuts, preserves source-time effects and ripple settings, follows linked audio, maps pause/word/caption media through copies/rates and excludes imports from transcript-driven cuts. Plain cuts support imported clips; public removeSourceRanges remains recording-only. Shared removeBlock now accepts persisted string IDs while its existing UUID callers retain the same implementation. Exact cuts that cannot satisfy existing minimum clip/split constraints fail atomically rather than silently truncating. Marker ops intentionally reject until T-803. make test FILTER=EditOps passes 10/10; full make test passes 184/184 with documented Xcode native/platform Testing flags; diff check passes. No native MCP runtime/UI acceptance claimed; T-803…T-810 remain pending.
