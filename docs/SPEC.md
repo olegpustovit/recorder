@@ -1046,6 +1046,10 @@ Source: proposal https://claude.ai/artifact/5AM3Z6uVtk3nBi142picJA (decisions 20
   Remove). Pinned footer "Add text at playhead"; `T` on the timeline does the same. 9:16 keeps captions above the bottom 18 %.
   Agent motion styles `lowerThird` and `chapter` each use a separate overlap group, so they can coexist with captions;
   Caption/Title/Label retain their shared non-overlapping group. Lower-third/caption collisions produce agent warnings.
+  Lower thirds use a left-aligned Barlow title and smaller Andale Mono subtitle on an 85% dark plate with a white
+  left rule, defaulting to `(0.05, 0.8)`. Chapters centre a Barlow title over a 72% full-canvas scrim, with an optional
+  numeric first line as a smaller mono index. Both fade over 0.3 source seconds at their edges and use the same
+  compositor in preview/export; their video colours do not follow the editor appearance. See MCP.md §T-808.
 - **Captions.** Sound ▸ Microphone ▸ *Generate Captions* runs on-device speech recognition on `mic.m4a` (never server),
   groups words into phrases of ≤ 4 words breaking on gaps > 0.5 s and sentence punctuation, and replaces only Caption-style
   blocks (one undo step). Editing a caption's text re-spreads word timings evenly.

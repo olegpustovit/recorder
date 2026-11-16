@@ -22,6 +22,10 @@ import Testing
             #expect(loaded.version == 5 && loaded.texts == project.texts && loaded.markers == project.markers)
             #expect(project.version == 3)
         }
+        #expect(TextBlock(style: .lowerThird).position == NormPoint(x: 0.05, y: 0.8))
+        let minimal = Data(#"{"style":"lowerThird"}"#.utf8)
+        #expect(try JSONDecoder().decode(TextBlock.self, from: minimal).position == NormPoint(x: 0.05, y: 0.8))
+        #expect(TextBlock(style: .lowerThird, position: NormPoint(x: 0.2, y: 0.3)).position == NormPoint(x: 0.2, y: 0.3))
         project.texts = []
         try project.save(to: url)
         #expect(try Project.load(from: url).version == 4)

@@ -30,6 +30,8 @@ enum SelfTest {
         "mcp-render": { args in try await checkMCPRender(args) },
         "mcp-edit": { args in try await checkMCPEdit(args) },
         "mcp-review": { args in try await checkMCPReview(args) },
+        "motion-text": { _ in try await Compositor.runMotionTextSelfTest() },
+        "layers": { args in try await SelfTest.cases["make-layers-fixture"]!(args) },
         "capture-exclusion": { _ in
             struct Fail: Error { let description: String }
             let first = await MainActor.run { () -> NSWindow in
@@ -1442,114 +1444,119 @@ enum SelfTest {
             try await EditorWorkspaceGallery.render(to: URL(fileURLWithPath: args.first ?? "build/editor-workspace.png"),
                 width: CGFloat(Double(args.dropFirst().first ?? "1120") ?? 1120))
         },
-        "inspector-png": { args in
+        "inspector-png": { @MainActor args in
             struct Fail: Error, CustomStringConvertible { let description: String }
             guard let outPath = args.first else {
                 throw Fail(description: "usage: inspector-png <out.png> [background-kind|zoom|clip|layout|mask|cursor|camera|audio|animations|keys|agent]")
             }
-            try await MainActor.run {
-                let fm = FileManager.default
-                let tmp = fm.temporaryDirectory.appendingPathComponent("recorder-selftest-inspector-png-\(UUID().uuidString)")
-                try fm.createDirectory(at: tmp, withIntermediateDirectories: true)
-                defer { try? fm.removeItem(at: tmp) }
-                var project = Project(title: "Inspector PNG")
-                project.clips = [
-                    Clip(sourceStart: 0, sourceEnd: 41.2, speed: 1),
-                    Clip(sourceStart: 41.2, sourceEnd: 61.8, speed: 2),
-                ]
-                let zoom = Zoom(start: 3, end: 7, scale: 2, mode: .manual)
-                project.zooms = [zoom]
-                let layout = Layout(start: 10, end: 15, kind: .cameraFull)
-                project.layouts = [layout]
-                let mask = Mask(start: 20, end: 24, kind: .mask, rect: NormRect(x: 0.2, y: 0.2, w: 0.4, h: 0.4), opacity: 0.8)
-                project.masks = [mask]
+            let fm = FileManager.default
+            let tmp = fm.temporaryDirectory.appendingPathComponent("recorder-selftest-inspector-png-\(UUID().uuidString)")
+            try fm.createDirectory(at: tmp, withIntermediateDirectories: true)
+            defer { try? fm.removeItem(at: tmp) }
+            var project = Project(title: "Inspector PNG")
+            project.clips = [
+                Clip(sourceStart: 0, sourceEnd: 41.2, speed: 1),
+                Clip(sourceStart: 41.2, sourceEnd: 61.8, speed: 2),
+            ]
+            let zoom = Zoom(start: 3, end: 7, scale: 2, mode: .manual)
+            project.zooms = [zoom]
+            let layout = Layout(start: 10, end: 15, kind: .cameraFull)
+            project.layouts = [layout]
+            let mask = Mask(start: 20, end: 24, kind: .mask, rect: NormRect(x: 0.2, y: 0.2, w: 0.4, h: 0.4), opacity: 0.8)
+            project.masks = [mask]
 
-                let variant = args[safe: 1]
-                var initialTab: InspectorView.Tab = .background
-                switch variant {
-                case "zoom", "clip", "layout", "mask", "group", "camera-clip": break
-                case "cursor": initialTab = .cursor
-                case "camera": initialTab = .camera; project.source.hasCamera = true
-                case "camera-empty": initialTab = .camera
-                case "audio":
-                    initialTab = .audio; project.source.hasMic = true; project.source.hasSystemAudio = true
-                    project.audioTracks = [AudioTrack(name: "Mic"), AudioTrack(name: "System")]
-                case "audio-empty": initialTab = .audio
-                case "audio-multi":
-                    project.source.hasMic = true
-                    project.audioTracks = [AudioTrack(name: "Mic"), AudioTrack(name: "Audio 1")]
-                    project.audioClips = [AudioClip(start: 0, end: 10, file: "mic.m4a", track: 0, gain: 1, fadeIn: 0.5),
-                                          AudioClip(start: 2, end: 8, file: "music.m4a", track: 1, gain: 0.5)]
-                    project.audioClips[0].color = .green; project.audioClips[1].color = .blue
-                case "animations": initialTab = .animations
-                case "keys": initialTab = .keys
-                default:
-                    if let kind = variant.flatMap(Background.Kind.init(rawValue:)) { project.background.kind = kind }
-                }
-
-                if variant?.hasPrefix("agent") == true { project.source.duration = 61.8 }
-                try project.save(to: tmp.appendingPathComponent("project.json"))
-                let model = EditorModel(packageURL: tmp, project: project, events: EventLog())
-                var agent: MCPSession?
-                if variant?.hasPrefix("agent") == true {
-                    let session = MCPSession(); session.agentName = "claude-code"; session.projectURL = tmp
-                    var draft = AgentDraft(base: try MCPTools.revision(project), baseProject: project)
-                    _ = try draft.append([.cut(from: 8.3, to: 10), .cut(from: 14, to: 14.6),
-                        .text(from: 20, to: 23, style: .title, text: "A clearer introduction", position: nil, size: nil)], context: EditContext())
-                    draft.note = variant == "agent-long" ? String(repeating: "Removed long pauses and tightened the introduction. ", count: 8) : "Removed long pauses and tightened the introduction."
-                    draft.submitted = true; draft.excluded = [[0, 1]]
-                    let proposed = try draft.refreshReview(context: EditContext())
-                    session.draft = draft; MCPServer.shared.register(session); agent = session
-                    if variant != "agent-stale" {
-                        model.beginReview(); model.reviewSessionID = session.id
-                        try model.updateReview { $0 = proposed }
-                    } else { model.edit("Human edit") { $0.frame.padding = 0.04 } }
-                    model.inspectorShowsAgent = true
-                    if variant == "agent-error" { session.reviewError = "The selected block no longer exists. Replay this draft on the current project." }
-                    AgentActivity.shared.log(.init(time: Date(timeIntervalSince1970: 0), agent: session.agentName, tool: "edit.apply", summary: "3 ops", ms: 12, isError: false, projectID: project.id))
-                    AgentActivity.shared.log(.init(time: Date(timeIntervalSince1970: 1), agent: session.agentName, tool: "draft.submit", summary: "Review", ms: 4, isError: variant == "agent-error", projectID: project.id))
-                }
-                defer {
-                    model.endReview(commit: false, name: "")
-                    if let agent { agent.draft = nil; agent.connected = false; MCPServer.shared.removeFinishedSessions() }
-                }
-                if variant == "zoom" { model.selection = [UUID(uuidString: zoom.id)!] }
-                if variant == "clip" { model.selectedClip = 1 }
-                if variant == "group" { model.selectedClips = [0, 1] }
-                if variant == "audio-multi" { model.selection = Set(project.audioClips.compactMap { UUID(uuidString: $0.id) }) }
-                if variant == "camera-clip" {
-                    let id = UUID()
-                    model.edit("Fixture camera") {
-                        $0.source.hasCamera = true
-                        var clip = CameraClip(start: 0, end: 10)
-                        clip.id = id.uuidString
-                        $0.cameraClips = [clip]
-                    }
-                    model.selection = [id]
-                }
-                if variant == "layout" { model.selection = [UUID(uuidString: layout.id)!] }
-                if variant == "mask" { model.selection = [UUID(uuidString: mask.id)!] }
-
-                let height: CGFloat = variant == "agent-short" ? 420 : 760
-                let hosting = NSHostingView(rootView: InspectorView(model: model, initialTab: initialTab))
-                hosting.appearance = NSAppearance(named: .darkAqua)
-                hosting.frame = NSRect(x: 0, y: 0, width: InspectorView.width, height: height)
-
-                let window = NSWindow(contentRect: hosting.frame, styleMask: [.borderless], backing: .buffered, defer: false)
-                window.appearance = NSAppearance(named: .darkAqua)
-                window.contentView = hosting
-                hosting.layoutSubtreeIfNeeded()
-
-                guard let rep = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) else {
-                    throw Fail(description: "no bitmap rep")
-                }
-                hosting.cacheDisplay(in: hosting.bounds, to: rep)
-                guard let data = rep.representation(using: .png, properties: [:]) else {
-                    throw Fail(description: "png encode failed")
-                }
-                try data.write(to: URL(fileURLWithPath: outPath))
-                print("wrote \(outPath)")
+            let variant = args[safe: 1]
+            var initialTab: InspectorView.Tab = .background
+            switch variant {
+            case "zoom", "clip", "layout", "mask", "group", "camera-clip": break
+            case "cursor": initialTab = .cursor
+            case "camera": initialTab = .camera; project.source.hasCamera = true
+            case "camera-empty": initialTab = .camera
+            case "audio":
+                initialTab = .audio; project.source.hasMic = true; project.source.hasSystemAudio = true
+                project.audioTracks = [AudioTrack(name: "Mic"), AudioTrack(name: "System")]
+            case "audio-empty": initialTab = .audio
+            case "audio-multi":
+                project.source.hasMic = true
+                project.audioTracks = [AudioTrack(name: "Mic"), AudioTrack(name: "Audio 1")]
+                project.audioClips = [AudioClip(start: 0, end: 10, file: "mic.m4a", track: 0, gain: 1, fadeIn: 0.5),
+                                      AudioClip(start: 2, end: 8, file: "music.m4a", track: 1, gain: 0.5)]
+                project.audioClips[0].color = .green; project.audioClips[1].color = .blue
+            case "animations": initialTab = .animations
+            case "keys": initialTab = .keys
+            default:
+                if let kind = variant.flatMap(Background.Kind.init(rawValue:)) { project.background.kind = kind }
             }
+
+            if variant?.hasPrefix("agent") == true { project.source.duration = 61.8 }
+            try project.save(to: tmp.appendingPathComponent("project.json"))
+            let model = EditorModel(packageURL: tmp, project: project, events: EventLog())
+            var agent: MCPSession?
+            if variant?.hasPrefix("agent") == true {
+                let session = MCPSession(); session.agentName = "claude-code"; session.projectURL = tmp
+                var draft = AgentDraft(base: try MCPTools.revision(project), baseProject: project)
+                _ = try draft.append([.cut(from: 8.3, to: 10), .cut(from: 14, to: 14.6),
+                    .text(from: 20, to: 23, style: .title, text: "A clearer introduction", position: nil, size: nil)], context: EditContext())
+                draft.note = variant == "agent-long" ? String(repeating: "Removed long pauses and tightened the introduction. ", count: 8) : "Removed long pauses and tightened the introduction."
+                draft.submitted = true; draft.excluded = [[0, 1]]
+                let proposed = try draft.refreshReview(context: EditContext())
+                session.draft = draft; MCPServer.shared.register(session); agent = session
+                if variant != "agent-stale" {
+                    model.beginReview(); model.reviewSessionID = session.id
+                    try model.updateReview { $0 = proposed }
+                } else { model.edit("Human edit") { $0.frame.padding = 0.04 } }
+                model.inspectorShowsAgent = true
+                if variant == "agent-error" { session.reviewError = "The selected block no longer exists. Replay this draft on the current project." }
+                AgentActivity.shared.log(.init(time: Date(timeIntervalSince1970: 0), agent: session.agentName, tool: "edit.apply", summary: "3 ops", ms: 12, isError: false, projectID: project.id))
+                AgentActivity.shared.log(.init(time: Date(timeIntervalSince1970: 1), agent: session.agentName, tool: "draft.submit", summary: "Review", ms: 4, isError: variant == "agent-error", projectID: project.id))
+            }
+            defer {
+                model.endReview(commit: false, name: "")
+                if let agent { agent.draft = nil; agent.connected = false; MCPServer.shared.removeFinishedSessions() }
+            }
+            if variant == "zoom" { model.selection = [UUID(uuidString: zoom.id)!] }
+            if variant == "clip" { model.selectedClip = 1 }
+            if variant == "group" { model.selectedClips = [0, 1] }
+            if variant == "audio-multi" { model.selection = Set(project.audioClips.compactMap { UUID(uuidString: $0.id) }) }
+            if variant == "camera-clip" {
+                let id = UUID()
+                model.edit("Fixture camera") {
+                    $0.source.hasCamera = true
+                    var clip = CameraClip(start: 0, end: 10)
+                    clip.id = id.uuidString
+                    $0.cameraClips = [clip]
+                }
+                model.selection = [id]
+            }
+            if variant == "layout" { model.selection = [UUID(uuidString: layout.id)!] }
+            if variant == "mask" { model.selection = [UUID(uuidString: mask.id)!] }
+            if variant == "text-lowerThird" || variant == "text-chapter" {
+                let style: TextBlock.Style = variant == "text-lowerThird" ? .lowerThird : .chapter
+                let text = TextBlock(start: 0, end: 3, text: style == .lowerThird ? "Sam Lee\nBuilding Recorder" : "03\nMake the next take count", style: style)
+                model.edit("Text fixture") { $0.texts = [text] }; model.selection = [UUID(uuidString: text.id)!]
+            }
+
+            let height: CGFloat = variant == "agent-short" ? 420 : 760
+            let hosting = NSHostingView(rootView: InspectorView(model: model, initialTab: initialTab))
+            hosting.appearance = NSAppearance(named: .darkAqua)
+            hosting.frame = NSRect(x: 0, y: 0, width: InspectorView.width, height: height)
+
+            let window = NSWindow(contentRect: hosting.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+            window.appearance = NSAppearance(named: .darkAqua)
+            window.contentView = hosting
+            hosting.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(600))
+            hosting.layoutSubtreeIfNeeded()
+
+            guard let rep = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) else {
+                throw Fail(description: "no bitmap rep")
+            }
+            hosting.cacheDisplay(in: hosting.bounds, to: rep)
+            guard let data = rep.representation(using: .png, properties: [:]) else {
+                throw Fail(description: "png encode failed")
+            }
+            try data.write(to: URL(fileURLWithPath: outPath))
+            print("wrote \(outPath)")
         },
         // T-414: exercises the exact closures `ZoomPanel`/`ClipPanel`/`CursorTab`'s controls call.
         // Zoom: Level slider drag (begin -> 10 updates -> commit), Mode change, Remove — each one
@@ -3854,19 +3861,28 @@ enum SelfTest {
             print("timing:", words.prefix(3).map { "\($0.text)@\($0.start)-\($0.end)" }, "…", words.last.map { "\($0.text)@\($0.end)" } ?? "")
             guard zip(words, words.dropFirst()).allSatisfy({ $0.start <= $1.start }), words.allSatisfy({ $0.start < $0.end }) else { throw Fail(description: "word timings missing or out of order") }
         },
-        // T-629: /tmp/TextFixture.recorder — a caption (with word timings), a title and a label, back to back.
-        "make-text-fixture": { _ in
-            let url = URL(fileURLWithPath: "/tmp/TextFixture.recorder")
-            try? FileManager.default.removeItem(at: url)
+        // All five styles, including both motion-text fade windows; optional --portrait.
+        "make-text-fixture": { args in
+            struct Fail: Error, CustomStringConvertible { let description: String }
+            let url = URL(fileURLWithPath: args.first { !$0.hasPrefix("--") } ?? "/tmp/TextFixture.recorder")
+            let marker = url.appendingPathComponent(".text-selftest")
+            if FileManager.default.fileExists(atPath: url.path) {
+                guard (try? String(contentsOf: marker, encoding: .utf8)) == "Recorder text fixture" else { throw Fail(description: "Refusing to overwrite a non-fixture package") }
+                try FileManager.default.removeItem(at: url)
+            }
             try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-            try await Self.synthesizeGradientMovie(at: url.appendingPathComponent("screen.mov"), width: 640, height: 360, fps: 3, frameCount: 9)
-            var project = Project(title: "Text Fixture", source: Source(kind: .display, pixelWidth: 640, pixelHeight: 360, scale: 1, duration: 3.0))
-            project.clips = [Clip(sourceStart: 0, sourceEnd: 3.0, speed: 1)]
+            try "Recorder text fixture".write(to: marker, atomically: true, encoding: .utf8)
+            try await Self.synthesizeGradientMovie(at: url.appendingPathComponent("screen.mov"), width: 640, height: 360, fps: 3, frameCount: 18)
+            var project = Project(title: "Text Fixture", source: Source(kind: .display, pixelWidth: 640, pixelHeight: 360, scale: 1, duration: 6.0))
+            project.output.aspect = args.contains("--portrait") ? .r9x16 : .r16x9
+            project.clips = [Clip(sourceStart: 0, sourceEnd: 6.0, speed: 1)]
             let words = ["Hello", "there", "big", "world"].enumerated().map { Word(text: $1, start: Double($0) * 0.25, end: Double($0 + 1) * 0.25) }
             project.texts = [
                 TextBlock(start: 0, end: 1, text: "Hello there big world", words: words, style: .caption, size: 56),
                 TextBlock(start: 1, end: 2, text: "Quarterly review", style: .title, position: NormPoint(x: 0.5, y: 0.3), size: 64),
                 TextBlock(start: 2, end: 3, text: "Step 3 of 5", style: .label, position: NormPoint(x: 0.2, y: 0.15), size: 64),
+                TextBlock(start: 3, end: 4.5, text: "Sam Lee\nBuilding Recorder", style: .lowerThird, size: 72),
+                TextBlock(start: 4.5, end: 6, text: "03\nMake the next take count", style: .chapter, size: 72),
             ]
             try project.save(to: url.appendingPathComponent("project.json"))
         },

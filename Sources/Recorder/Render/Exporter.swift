@@ -656,7 +656,11 @@ enum ExporterSelfTest {
         }
         // T-629: inside each text block, and 0.1 s in (a caption's first word is already inverted).
         for text in project.texts {
-            for s in [(text.start + text.end) / 2, text.start + 0.1] { if let t = timeMap.outputTime(atSource: s) { times.insert(t) } }
+            var samples = [(text.start + text.end) / 2, text.start + 0.1]
+            if text.style == .lowerThird || text.style == .chapter {
+                samples += [text.start, text.start + 0.15, text.start + 0.3, text.end - 0.3, text.end - 0.15, text.end]
+            }
+            for s in samples { if let t = timeMap.outputTime(atSource: s) { times.insert(t) } }
         }
         for layer in project.layers {
             guard let start = timeMap.outputTime(atSource: layer.start) else { continue }

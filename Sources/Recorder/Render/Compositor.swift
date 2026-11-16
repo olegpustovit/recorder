@@ -188,7 +188,7 @@ final class Compositor {
         }
 
         for layer in s.layers where layer.block.aboveCamera { drawLayer(layer, state: s, encoder: encoder) }
-        for (block, word) in s.texts { drawText(block, word: word, outputSize: s.outputSize, encoder: encoder) }
+        for (block, word) in s.texts { drawText(block, word: word, sourceTime: s.sourceTime, outputSize: s.outputSize, encoder: encoder) }
 
         // Pass 5: keyboard-shortcut chip (SPEC §6.2 pass 4 "key overlay", §6.6 Keys tab, T-602) —
         // bottom-centre of the whole canvas (not "screen space": like the camera bubble, it doesn't
@@ -741,10 +741,20 @@ final class Compositor {
     /// Caption = outlined white text, the spoken word inverted in a white box; Title = Barlow on a black bar;
     /// Label = mono on a square chip. ponytail: Barlow Semi Condensed ships only in Light, so the Caption
     /// uses Light at 1.15x size with the outline for weight; bundle the 500 weight to match the SPEC exactly.
-    private func drawText(_ block: TextBlock, word: Int?, outputSize: CGSize, encoder: MTLRenderCommandEncoder) {
-        guard !block.text.isEmpty else { return }
+    private func drawText(_ block: TextBlock, word: Int?, sourceTime: Double, outputSize: CGSize, encoder: MTLRenderCommandEncoder) {
+        guard !block.text.isEmpty, block.size.isFinite, block.size > 0 else { return }
         let shortEdge = min(outputSize.width, outputSize.height)
-        let px = CGFloat(block.size) * shortEdge / 1080
+        let motion = block.style == .lowerThird || block.style == .chapter
+        let px = motion ? min(CGFloat(block.size) * shortEdge / 1080, shortEdge) : CGFloat(block.size) * shortEdge / 1080
+        let fade = min(0.3, (block.end - block.start) / 2)
+        let alpha = motion && fade > 0 ? min(1, max(0, min(sourceTime - block.start, block.end - sourceTime) / fade)) : 1
+        guard alpha > 0 else { return }
+        if block.style == .chapter {
+            var scrim = Uniforms()
+            let color = Theme.mediaMatte
+            scrim.color = SIMD4(Float(color.redComponent), Float(color.greenComponent), Float(color.blueComponent), Float(0.72 * alpha))
+            draw(scrim, encoder: encoder)
+        }
         let key = "\(block.style)|\(block.text)|\(word ?? -1)|\(px)|\(Int(outputSize.width))"
         let texture: MTLTexture
         if let cached = textTextureCache[key] { texture = cached } else {
@@ -769,21 +779,39 @@ final class Compositor {
                         }
                     }
                 }
-            case .title, .lowerThird, .chapter:
-                // shortcut: lowerThird/chapter use title plates until T-808 adds their dedicated rendering.
+            case .title:
                 text.addAttributes([.font: Theme.headingFont(px), .foregroundColor: NSColor.white, .paragraphStyle: para], range: all)
                 pad = CGSize(width: px * 0.6, height: px * 0.3)
+            case .lowerThird, .chapter:
+                para.alignment = block.style == .lowerThird ? .left : .center
+                para.lineSpacing = px * 0.15
+                text.addAttributes([.font: Theme.headingFont(px), .foregroundColor: Theme.mediaText, .paragraphStyle: para], range: all)
+                let lines = block.text.components(separatedBy: "\n")
+                if lines.count > 1 {
+                    let first = (lines[0] as NSString).length
+                    let secondary: NSRange?
+                    if block.style == .lowerThird { secondary = NSRange(location: first + 1, length: text.length - first - 1) }
+                    else { secondary = !lines[0].isEmpty && lines[0].allSatisfy(\.isNumber) ? NSRange(location: 0, length: first) : nil }
+                    if let secondary { text.addAttribute(.font, value: Theme.timecodeFont(px * 0.45), range: secondary) }
+                }
+                if block.style == .lowerThird { pad = CGSize(width: px * 0.6, height: px * 0.3) }
             case .label:
                 text.addAttributes([.font: NSFont.monospacedSystemFont(ofSize: px * 0.5, weight: .regular), .foregroundColor: NSColor.black, .paragraphStyle: para], range: all)
                 pad = CGSize(width: px * 0.3, height: px * 0.2)
             }
             let box = text.boundingRect(with: CGSize(width: maxWidth, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin])
-            let size = CGSize(width: ceil(box.width + pad.width * 2) + 8, height: ceil(box.height + pad.height * 2) + 8)
+            let size = CGSize(width: motion ? min(ceil(box.width + pad.width * 2) + 8, outputSize.width * 0.9) : ceil(box.width + pad.width * 2) + 8,
+                              height: motion ? min(ceil(box.height + pad.height * 2) + 8, outputSize.height * 0.8) : ceil(box.height + pad.height * 2) + 8)
             guard let made = bitmapTexture(size: size, draw: {
                 let inner = CGRect(origin: .zero, size: size).insetBy(dx: 4, dy: 4)
                 switch block.style {
                 case .caption: break
-                case .title, .lowerThird, .chapter: NSColor.black.withAlphaComponent(0.85).setFill(); inner.fill()
+                case .title: NSColor.black.withAlphaComponent(0.85).setFill(); inner.fill()
+                case .lowerThird:
+                    Theme.mediaPlate.withAlphaComponent(0.85).setFill(); inner.fill()
+                    Theme.mediaText.setFill()
+                    CGRect(x: inner.minX, y: inner.minY, width: 3 * shortEdge / 1080, height: inner.height).fill()
+                case .chapter: break
                 case .label: NSColor.white.setFill(); inner.fill()
                 }
                 let rect = inner.insetBy(dx: pad.width, dy: pad.height)
@@ -794,7 +822,7 @@ final class Compositor {
                     if let hot { outline.addAttributes([.foregroundColor: NSColor.clear, .strokeWidth: 0], range: hot) }
                     outline.draw(with: rect, options: [.usesLineFragmentOrigin])
                 }
-                text.draw(with: rect, options: [.usesLineFragmentOrigin])
+                text.draw(with: rect, options: motion ? [.usesLineFragmentOrigin, .truncatesLastVisibleLine] : [.usesLineFragmentOrigin])
             }) else { return }
             if textTextureCache.count > 96 { textTextureCache.removeAll() }
             textTextureCache[key] = made
@@ -804,11 +832,17 @@ final class Compositor {
         let safeBottom = block.style == .caption && outputSize.height > outputSize.width ? outputSize.height * 0.82 : outputSize.height
         let cx = min(max(CGFloat(block.position.x) * outputSize.width, w / 2), outputSize.width - w / 2)
         let cy = min(max(CGFloat(block.position.y) * outputSize.height, h / 2), safeBottom - h / 2)
+        let origin: CGPoint
+        if block.style == .lowerThird {
+            origin = CGPoint(x: min(max(0, CGFloat(block.position.x) * outputSize.width), max(0, outputSize.width - w)).rounded(),
+                             y: min(max(0, CGFloat(block.position.y) * outputSize.height), max(0, outputSize.height - h)).rounded())
+        } else if block.style == .chapter { origin = CGPoint(x: ((outputSize.width - w) / 2).rounded(), y: ((outputSize.height - h) / 2).rounded()) }
+        else { origin = CGPoint(x: (cx - w / 2).rounded(), y: (cy - h / 2).rounded()) }
         var u = Uniforms()
-        u.rectNDC = ndcRect(CGRect(x: (cx - w / 2).rounded(), y: (cy - h / 2).rounded(), width: w, height: h), in: outputSize)
+        u.rectNDC = ndcRect(CGRect(origin: origin, size: CGSize(width: w, height: h)), in: outputSize)
         u.uvRect = SIMD4(0, 0, 1, 1)
         u.mode = 2
-        u.globalAlpha = 1
+        u.globalAlpha = Float(alpha)
         encoder.setFragmentTexture(texture, index: 0)
         draw(u, encoder: encoder)
         encoder.setFragmentTexture(dummyTexture, index: 0)
@@ -861,6 +895,69 @@ final class Compositor {
 // MARK: - Selftest `render <package> <out.png>` (SPEC §6.2, plan T-304)
 
 extension Compositor {
+    @MainActor static func runMotionTextSelfTest() async throws {
+        struct Fail: Error, CustomStringConvertible { let description: String }
+        guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue() else { throw Fail(description: "No Metal device") }
+        let compositor = try Compositor(device: device)
+        for (width, height) in [(960, 540), (540, 960)] {
+            let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false)
+            descriptor.storageMode = .shared; descriptor.usage = [.renderTarget, .shaderRead]
+            var project = Project(source: Source(pixelWidth: width, pixelHeight: height, duration: 4), clips: [Clip(sourceStart: 0, sourceEnd: 4)])
+            project.background = Background(kind: .color, color: "#FFFFFF"); project.frame.enabled = false
+            func render(_ block: TextBlock, at time: Double = 2, light: Bool = false) async throws -> [UInt8] {
+                guard let target = device.makeTexture(descriptor: descriptor), let command = queue.makeCommandBuffer() else { throw Fail(description: "Motion text target") }
+                var state = FrameState(outputSize: CGSize(width: width, height: height), screen: nil, camera: nil, project: project)
+                state.sourceTime = time; state.texts = [(block, nil)]
+                if light, let appearance = NSAppearance(named: .aqua) {
+                    appearance.performAsCurrentDrawingAppearance { compositor.render(state, to: target, commandBuffer: command) }
+                } else { compositor.render(state, to: target, commandBuffer: command) }
+                try await command.commitAndWait()
+                var bytes = [UInt8](repeating: 0, count: width * height * 4)
+                target.getBytes(&bytes, bytesPerRow: width * 4, from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0)
+                return bytes
+            }
+            func check(_ condition: Bool, _ message: String) throws { if !condition { throw Fail(description: "Motion text \(width)×\(height): \(message)") } }
+            func pixel(_ bytes: [UInt8], _ x: Int = 0, _ y: Int = 0) -> Int { Int(bytes[(y * width + x) * 4]) }
+            let lower = TextBlock(start: 1, end: 3, text: "Sam Lee\nBuilding Recorder", style: .lowerThird, size: 72)
+            let chapter = TextBlock(start: 1, end: 3, text: "03\nMake the next take count", style: .chapter, size: 72)
+            let bytes = try await render(lower)
+            var changed: [(Int, Int)] = []
+            var platePixels = 0
+            for y in 0..<height { for x in 0..<width {
+                let value = pixel(bytes, x, y)
+                if value < 250 { changed.append((x, y)) }
+                if abs(value - 48) <= 2 { platePixels += 1 }
+            } }
+            try check(platePixels > 50 && !changed.isEmpty, "85% plate is missing")
+            try check(changed.allSatisfy { Double($0.0) >= Double(width) * 0.05 - 1 && Double($0.1) >= Double(height) * 0.8 - 1 }, "Lower third is not anchored at the default left position")
+            try check(pixel(bytes) == 255, "Lower third covered the whole canvas")
+            try writePNG(bytes: bytes, width: width, height: height, to: URL(fileURLWithPath: "/tmp/recorder-motion-lower-\(width)x\(height).png"))
+            var revised = lower; revised.text = "Sam Lee\nA different subtitle"
+            try check(try await render(revised) != bytes, "Subtitle missing from cache key")
+            let card = try await render(chapter)
+            try check(abs(pixel(card) - 77) <= 2, "72% chapter scrim missing")
+            try writePNG(bytes: card, width: width, height: height, to: URL(fileURLWithPath: "/tmp/recorder-motion-chapter-\(width)x\(height).png"))
+            try check(try await render(chapter, light: true) == card, "Window appearance changed video colours")
+            try check(try await render(lower) == bytes, "Warm-cache render differs")
+            revised = chapter; revised.text = "04\nMake the next take count"
+            try check(try await render(revised) != card, "Chapter number missing from cache key")
+            for time in [1.0, 1.15, 1.3, 2.7, 2.85, 3.0] {
+                let sample = try await render(chapter, at: time)
+                let expected = time == 1 || time == 3 ? 255 : time == 1.15 || time == 2.85 ? 166 : 77
+                try check(abs(pixel(sample) - expected) <= 2, "0.3-second fade at \(time): \(pixel(sample)) versus \(expected)")
+            }
+            let half = try await render(lower, at: 1.15)
+            try check(zip(half, bytes).enumerated().allSatisfy { index, pair in
+                index % 4 == 3 || abs(Int(pair.0) - (255 + Int(pair.1)) / 2) <= 2
+            }, "Lower-third text, rule and plate did not fade together")
+            revised = chapter; revised.text = "Make the next take count"
+            try check(try await render(revised) != card, "Unnumbered chapter is blank or reused the indexed texture")
+            revised = lower; revised.size = .greatestFiniteMagnitude; revised.text = String(repeating: "Large text ", count: 1_000)
+            try check(try await render(revised).contains(where: { $0 < 200 }), "Oversized motion text could not render within the canvas")
+        }
+        print("motion-text: landscape/portrait plates, anchoring, scrim, both lines/cache, numbers, fades and fixed video colours verified; /tmp/recorder-motion-*.png")
+    }
+
     @MainActor static func runLayersSelfTest(package: URL) async throws {
         struct Fail: Error, CustomStringConvertible { let description: String }
         func check(_ value: Bool, _ message: String) throws { if !value { throw Fail(description: message) } }

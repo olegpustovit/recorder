@@ -225,7 +225,7 @@ public struct TextBlock: Codable, Equatable, Sendable {
     public init(id: String = makeProjectID().uuidString, start: Double = 0, end: Double = 0, text: String = "Text", words: [Word]? = nil,
                 style: Style = .title, position: NormPoint? = nil, size: Double = 48) {
         self.id = id; self.start = start; self.end = end; self.text = text; self.words = words; self.style = style
-        self.position = position ?? NormPoint(x: 0.5, y: style == .caption ? 0.8 : 0.5); self.size = size
+        self.position = position ?? (style == .lowerThird ? NormPoint(x: 0.05, y: 0.8) : NormPoint(x: 0.5, y: style == .caption ? 0.8 : 0.5)); self.size = size
     }
     enum CodingKeys: String, CodingKey { case id, start, end, text, words, style, position, size, color }
     public init(from decoder: Decoder) throws {
@@ -236,7 +236,7 @@ public struct TextBlock: Codable, Equatable, Sendable {
         text = try c.value(.text, default: "")
         words = try c.decodeIfPresent([Word].self, forKey: .words)
         style = try c.value(.style, default: .title)
-        position = try c.value(.position, default: NormPoint())
+        position = try c.value(.position, default: style == .lowerThird ? NormPoint(x: 0.05, y: 0.8) : NormPoint())
         size = try c.value(.size, default: 48)
         color = try? c.decodeIfPresent(BlockColor.self, forKey: .color)
     }

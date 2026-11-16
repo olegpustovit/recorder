@@ -20,23 +20,27 @@ struct TextPanel: View {
                     .onChange(of: typing) { _, now in
                         if now { model.beginGesture() } else { model.commitGesture("Edit text") }
                     }
+                let style = Binding(get: { text.style }, set: { new in edit { $0.style = new } })
                 HStack(spacing: 8) {
                     Text("Style").font(Font(Theme.bodyFont)).foregroundStyle(Theme.textSecondaryColor).frame(width: 60, alignment: .leading)
-                    TechSegmentedControl(selection: Binding(get: { text.style }, set: { new in edit { $0.style = new } }), options: [
-                        (.caption, "Caption"), (.title, "Title"), (.label, "Label"),
-                    ])
+                    VStack(spacing: 4) {
+                        TechSegmentedControl(selection: style, options: [(.caption, "Caption"), (.title, "Title"), (.label, "Label")])
+                        TechSegmentedControl(selection: style, options: [(.lowerThird, "Lower third"), (.chapter, "Chapter")])
+                    }
                 }
                 LabeledSlider(title: "Size", value: Binding(get: { text.size }, set: { new in change { $0.size = new } }), range: 16...120,
                               defaultValue: 48, format: { String(format: "%.0f", $0) },
                               onEditingChanged: { $0 ? model.beginGesture() : model.commitGesture("Text size") })
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Position").font(Font(Theme.bodyFont)).foregroundStyle(Theme.textSecondaryColor)
-                    ForEach(Self.ys, id: \.self) { y in
-                        HStack(spacing: 4) {
-                            ForEach(Self.xs, id: \.self) { x in
-                                let here = abs(text.position.x - x) < 0.01 && abs(text.position.y - y) < 0.01
-                                Button { edit { $0.position = NormPoint(x: x, y: y) } } label: { Text(here ? "●" : "○").frame(maxWidth: .infinity) }
-                                    .buttonStyle(TechButtonStyle(kind: here ? .primary : .quiet, compact: true))
+                if text.style != .chapter {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Position").font(Font(Theme.bodyFont)).foregroundStyle(Theme.textSecondaryColor)
+                        ForEach(Self.ys, id: \.self) { y in
+                            HStack(spacing: 4) {
+                                ForEach(text.style == .lowerThird ? [0.05, 0.5, 0.8] : Self.xs, id: \.self) { x in
+                                    let here = abs(text.position.x - x) < 0.01 && abs(text.position.y - y) < 0.01
+                                    Button { edit { $0.position = NormPoint(x: x, y: y) } } label: { Text(here ? "●" : "○").frame(maxWidth: .infinity) }
+                                        .buttonStyle(TechButtonStyle(kind: here ? .primary : .quiet, compact: true))
+                                }
                             }
                         }
                     }

@@ -529,18 +529,35 @@ do not describe it as a human-performed comparison or as evidence of physical re
 ### T-808 App: render `lowerThird` and `chapter`
 
 **Files.** `Render/Compositor.swift` (`drawText`), `Inspector/TextPanel.swift` (style segment gains the two styles),
-`SelfTest.swift` (parity fixture text).
+`SelfTest.swift` (parity fixture text and native render checks), `Exporter.swift` (sample fade edges in parity),
+`Theme.swift` (fixed video text/plate colours), `RecorderCore/Project.swift` + `ProjectTests.swift` (lower-third default anchor).
 
 - `lowerThird`: text block's first line = title (`headingFont`-like Barlow Semi Condensed Light at `size`), second line =
   subtitle (Andale Mono at `size*0.45`), left-aligned at `position` (default x 0.05, y 0.80) on a `#0B0B0B` @ 85 % plate
   with a 3 px `#F4F3EE` left rule; fade 0.3 s in/out using the block's edges (reuse the caption fade if one exists).
 - `chapter`: full-frame `#080808` @ 72 % scrim, centred title (`size`, Barlow Light), small mono index above if the text
   starts with `"<n>\n"`; 0.3 s fade.
+- Lower-third position anchors the plate's top-left, clamped inside the canvas; its omitted position defaults to
+  `(0.05, 0.8)` for construction and decoding. Explicit saved positions remain unchanged. Font/plate dimensions and
+  the 3 px rule scale from a 1080 px short edge, matching the existing text pass.
+- Both motion styles fade linearly over 0.3 source seconds at each stored edge (short blocks use half their duration).
+  The fixed video palette stays unchanged when the editor switches between light and dark appearances.
 - Cache key must include style and both lines. Both are drawn in the existing text pass (render order unchanged).
+  Motion-text textures are bounded to the canvas and truncate overflow; an oversized font cannot allocate an
+  unbounded bitmap. Chapter titles are always centred; their position grid is hidden in TextPanel.
+- TextPanel's existing style selector uses two rows for all five choices at 320 pt; lower-third positioning includes
+  its default 5% left anchor. Existing style changes still validate overlap groups and form one undo step.
 - Preview and export share the code (parity maxDelta 0).
 
-**Verify.** `--selftest parity <fixture with one lowerThird and one chapter>` maxDelta 0; `--selftest layers` unchanged;
-`make test`. **HUMAN:** look at both styles at 16:9 and 9:16.
+**Verify.** `--selftest make-text-fixture <package> [--portrait]` writes a marked six-second package with all five
+styles; it refuses to overwrite an unmarked package. Run `--selftest parity <package>` for both aspect ratios
+(midpoints and both fade edges), `--selftest motion-text` for native pixel checks, `--selftest layers` for the existing
+layer suite, and `make test`. The `layers` command forwards to the existing marked layer-fixture/test runner.
+`motion-text` checks the 85% plate, left anchor, 72% scrim, subtitle/index cache keys, fades, appearance independence
+and bounded oversized text at 16:9 and 9:16, writing `/tmp/recorder-motion-*.png`.
+`--selftest inspector-png <out.png> text-lowerThird|text-chapter` captures the settled style controls.
+**Visual review:** inspect both styles over actual preview frames at 16:9 and 9:16. The user's 2026-11-15 HUMAN
+visual waiver permits agent inspection; no human-performed comparison is claimed.
 
 ### T-809 App: `export.final`, SRT sidecar, `ui.show`, Settings ▸ Agents
 

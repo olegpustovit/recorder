@@ -59,6 +59,9 @@ enum Theme {
 
     /// Appearance-local inversion keeps media pixels intact and shares tokens with AppKit.
     static let mediaMatte = NSColor(hex: "#080808")
+    // Rendered text uses fixed video colours in either window appearance.
+    static let mediaPlate = NSColor(hex: "#0B0B0B")
+    static let mediaText = NSColor(hex: "#F4F3EE")
 
     private static func adaptive(_ hex: String, light lightHex: String? = nil) -> NSColor {
         let dark = NSColor(hex: hex)
