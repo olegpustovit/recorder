@@ -81,6 +81,15 @@ public struct ShotThresholds: Codable, Equatable, Sendable {
     public var cursorSpeed = 0.05    // normalised screen widths/s for cursorOnly
     public var energyScale = 0.1     // diff that maps to energy 1
     public init() {}
+    /// Why these values are unusable (they would divide by zero or put NaN into JSON), or nil.
+    public var invalidReason: String? {
+        if !(energyScale > 0 && energyScale.isFinite) { return "energyScale must be > 0" }
+        if !(0...1).contains(ssim) { return "ssim must be within 0…1" }
+        if !(0...1).contains(cutSsim) { return "cutSsim must be within 0…1" }
+        if !(minStable > 0 && minStable.isFinite) { return "minStable must be > 0" }
+        if ![motionDiff, payoffDiff, cursorSpeed].allSatisfy({ $0 >= 0 && $0.isFinite }) { return "motionDiff, payoffDiff and cursorSpeed must be ≥ 0" }
+        return nil
+    }
 }
 
 private func r2(_ v: Double) -> Double { (v * 100).rounded() / 100 }
@@ -102,7 +111,8 @@ public func storyboard(signals: [FrameSignal], fps: Double = 10, events: [InputE
     let moves = events.filter { ($0.k == .move || $0.k == .drag) && $0.x != nil && $0.y != nil }.sorted { $0.t < $1.t }
     let clicks = events.filter { $0.k == .down && $0.b == 0 }.map(\.t).sorted()
     let scrolls = events.filter { $0.k == .scroll }.map(\.t)
-    let typing = events.filter { $0.k == .typing || $0.k == .key }.map(\.t)
+    // Shortcuts (command/control held) are not typing; one stray key must not make a long shot `.typing`.
+    let typing = events.filter { $0.k == .typing || ($0.k == .key && ($0.mods ?? 0) & 0x140000 == 0) }.map(\.t).sorted()
     func any(_ times: [Double], _ lo: Double, _ hi: Double) -> Bool { times.contains { $0 >= lo && $0 < hi } }
 
     var shots: [Shot] = []
@@ -112,6 +122,7 @@ public func storyboard(signals: [FrameSignal], fps: Double = 10, events: [InputE
         let frames = signals[a..<b]
         let lead = (a..<b).first { stable[$0] } ?? b          // end of the transition into this shot
         let energy = frames.map(\.diff).reduce(0, +) / Double(b - a)
+        let peak = signals[a..<min(b, a + Int(fps.rounded(.up)))].map(\.diff).max() ?? 0   // a shot that opens on a big change then holds is still motion
         var reasons: [String] = []
 
         var boundary = ShotBoundary.start
@@ -120,7 +131,10 @@ public func storyboard(signals: [FrameSignal], fps: Double = 10, events: [InputE
             let (lo, hi) = (Double(a) / fps - 0.2, Double(lead) / fps + 0.1)
             if any(scrolls, lo, hi) { boundary = .scroll; reasons.append("scroll event during the change") }
             else if any(typing, lo, hi) { boundary = .type; reasons.append("typing during the change") }
-            else if lead - a <= 2, signals[a..<lead].map(\.ssim).min() ?? 1 < t.cutSsim { reasons.append("ssim dropped to \(r2(signals[a..<lead].map(\.ssim).min()!)) within \(lead - a) frame(s)") }
+            else if lead - a <= 2 {   // the change spans ≤ 2 frames: cut; cutSsim only says how sure
+                let low = signals[a..<lead].map(\.ssim).min() ?? 1
+                reasons.append("ssim dropped to \(r2(low)) within \(lead - a) frame(s)" + (low < t.cutSsim ? "" : " (shallow: above cutSsim)"))
+            }
             else { boundary = .animate; reasons.append("gradual change over \(lead - a) frames, no input") }
         }
 
@@ -134,9 +148,11 @@ public func storyboard(signals: [FrameSignal], fps: Double = 10, events: [InputE
         let path = zip(moves.filter { $0.t >= from && $0.t < to }, moves.filter { $0.t >= from && $0.t < to }.dropFirst())
             .reduce(0) { $0 + hypot($1.1.x! - $1.0.x!, $1.1.y! - $1.0.y!) }
         let kind: ShotKind
+        let typed = typing.filter { $0 >= from && $0 < to }
+        let typingShot = typed.count >= 3 && (typed.last! - typed.first!) >= 0.25 * (to - from)
         if payoff { kind = .payoff; reasons.append("click followed by a large change") }
-        else if any(typing, from, to) { kind = .typing; reasons.append("typing in progress") }
-        else if energy >= t.motionDiff || any(scrolls, from, to) { kind = .motion; reasons.append("mean diff \(r2(energy)) or scroll") }
+        else if typingShot { kind = .typing; reasons.append("typing in progress") }
+        else if peak >= t.motionDiff || any(scrolls, from, to) { kind = .motion; reasons.append("peak diff \(r2(peak)) (mean \(r2(energy))) or scroll") }
         else if path / (to - from) >= t.cursorSpeed { kind = .cursorOnly; reasons.append("screen quiet, cursor moving") }
         else { kind = .`static`; reasons.append("screen quiet, cursor still") }
 
@@ -172,7 +188,7 @@ public extension Storyboard {
     /// The same shots (same ids) in the output time of `map`; footage the edits dropped is omitted, a shot split
     /// by a cut appears once per kept piece, and imported/gap clips have no recorded footage.
     func mapped(through map: TimeMap) -> Storyboard {
-        var out: [Shot] = [], offset = 0.0
+        var out: [Shot] = [], offset = 0.0, open: [String: (idx: Int, src: Double)] = [:]
         for clip in map.clips {
             defer { offset += clip.outputDuration }
             guard !clip.isEmpty, clip.file == nil else { continue }
@@ -182,9 +198,14 @@ public extension Storyboard {
                 guard hi - lo > 1e-9 else { continue }
                 s.clicks = s.clicks.filter { $0 >= lo && $0 < hi }.map(output)
                 (s.from, s.to) = (output(lo), output(hi))
-                out.append(s)
+                // a plain split (nothing removed) is one shot: join pieces contiguous in source and output time
+                if let o = open[s.id], abs(o.src - lo) < 1e-9, abs(out[o.idx].to - s.from) < 0.02 {
+                    out[o.idx].to = s.to; out[o.idx].clicks += s.clicks; open[s.id] = (o.idx, hi)
+                } else { open[s.id] = (out.count, hi); out.append(s) }
             }
         }
-        return summarize(out.sorted { $0.from < $1.from }, duration: map.outputDuration, fps: fps)
+        var board = summarize(out.sorted { $0.from < $1.from }, duration: map.outputDuration, fps: fps)
+        board.summary.shots = Set(out.map(\.id)).count
+        return board
     }
 }

@@ -73,8 +73,8 @@ enum MCPTools {
             tool("timeline", ["get"], "Read clips, effect blocks and markers in output seconds.", range, read: true),
             tool("transcript", ["get"], "Read up to 2000 spoken words with stable wN ids, or timestamped phrases. Key presses are never returned.", range.merging(["format": ["type": "string", "enum": ["words", "phrases"]]], uniquingKeysWith: { _, b in b }), read: true),
             tool("analyze", ["transcribe", "pauses", "fillers", "activity", "shots"], "Transcribe on-device, find mic pauses/fillers, read activity ranges without key characters, or get the shot storyboard (shots: ids stay tied to source moments across edits; times are output seconds).", ["minDuration": number, "threshold": number,
-                "response_format": ["type": "string", "enum": ["concise", "detailed"], "description": "analyze.shots only: concise (default) omits reasons and focus."],
-                "thresholds": ["type": "object", "description": "analyze.shots only: optional overrides of ssim, minStable, cutSsim, motionDiff, payoffDiff, cursorSpeed, energyScale.", "additionalProperties": ["type": "number", "minimum": 0]]], read: true),
+                "response_format": ["type": "string", "enum": ["concise", "detailed"], "description": "analyze.shots only: concise (default) omits reasons only; focus is always kept."],
+                "thresholds": ["type": "object", "description": "analyze.shots only: optional overrides of ssim, minStable, cutSsim, motionDiff, payoffDiff, cursorSpeed, energyScale. energyScale and minStable must be > 0; ssim and cutSsim within 0…1.", "additionalProperties": ["type": "number", "minimum": 0]]], read: true),
             tool("edit", ["apply", "undo"], "Apply atomic edits using the latest ifRevision; edits land in a draft by default. Numeric times use that revision's output timeline; {marker:id, offset:seconds} anchors resolve after earlier ops in the batch.", ["ifRevision": string, "ops": ["type": "array", "items": ["oneOf": operationSchemas]], "dryRun": boolean]),
             tool("draft", ["status", "submit", "discard"], "Read your draft's exclusions, skipped reasons and verdict; submit for review or discard it. A pending submitted draft can receive more edit.apply calls, returning to watching until submitted again.", ["note": string]),
             tool("render", ["frames", "sheet", "clip", "cancel"], "Render frames, a contact sheet or a 540p proxy into the agent cache. Key chips are hidden.", ["at": ["type": "array", "items": number, "maxItems": 24], "from": number, "to": number, "count": ["type": "integer", "minimum": 1, "maximum": 24], "longEdge": ["type": "integer", "minimum": 1, "maximum": 640], "draft": boolean,
@@ -397,14 +397,14 @@ enum MCPTools {
                 case ("analyze", "shots"):
                     let format = args["response_format"] as? String ?? "concise"
                     guard ["concise", "detailed"].contains(format) else { throw MCPFailure(code: "INVALID_OP", message: "response_format must be concise or detailed") }
-                    let thresholds = try ShotAnalysis.thresholds(args["thresholds"] as? [String: Any])
+                    let thresholds = try ShotAnalysis.thresholds(args["thresholds"])
                     let signals = try await ShotAnalysis.signals(package: model.packageURL, progress: progress)
                     // ponytail: no recorder:// resource mechanism exists, so shots carry no thumb; use render.frames at a shot's time.
                     let board = storyboard(signals: signals, fps: ShotAnalysis.fps, events: model.events.events, thresholds: thresholds)
                         .mapped(through: TimeMap(viewed.clips))
                     payload = try object(board)
                     if format == "concise", let shots = payload["shots"] as? [[String: Any]] {
-                        payload["shots"] = shots.map { $0.filter { $0.key != "reasons" && $0.key != "focus" } }
+                        payload["shots"] = shots.map { $0.filter { $0.key != "reasons" } }
                     }
                 case ("analyze", "transcribe"):
                     guard model.liveProject.source.hasMic, Waveform.audioURL(in: model.packageURL, file: "mic.m4a") != nil else { throw notTranscribed() }

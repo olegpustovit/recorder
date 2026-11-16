@@ -29,7 +29,7 @@ import Testing
     @Test func boundaryByInput() {
         let scroll = storyboard(signals: Self.signals(), events: [InputEvent(t: 3.95, k: .scroll)])
         #expect(scroll.shots[2].boundary == .scroll && scroll.shots[2].kind == .motion)
-        let type = storyboard(signals: Self.signals(), events: [InputEvent(t: 4.1, k: .typing)])
+        let type = storyboard(signals: Self.signals(), events: [4.1, 4.4, 4.7].map { InputEvent(t: $0, k: .typing) })
         #expect(type.shots[2].boundary == .type && type.shots[2].kind == .typing)
     }
 
@@ -57,6 +57,42 @@ import Testing
         #expect(out.shots.map(\.from) == [0, 2] && out.shots.map(\.to) == [2, 3])
         let split = s.mapped(through: TimeMap([Clip(sourceStart: 0, sourceEnd: 3)]))
         #expect(split.shots.map(\.id) == ["s01", "s02"] && split.shots[1].to == 3 && split.summary.shots == 2)
+    }
+
+    @Test func splitWithNothingRemovedIsOneShot() {
+        let s = storyboard(signals: Self.signals(), events: [Self.click])
+        let split = s.mapped(through: TimeMap([Clip(sourceStart: 0, sourceEnd: 3), Clip(sourceStart: 3, sourceEnd: 6)]))
+        #expect(split.shots.map(\.id) == ["s01", "s02", "s03"] && split.shots[1].to == 4 && split.summary.shots == 3)
+        let gap = s.mapped(through: TimeMap([Clip(sourceStart: 0, sourceEnd: 3), Clip(sourceStart: 3.5, sourceEnd: 6)]))
+        #expect(gap.shots.map(\.id) == ["s01", "s02", "s02", "s03"] && gap.summary.shots == 3)   // real cut inside s02: two pieces, one shot
+    }
+
+    @Test func typingNeedsDensityAndNoShortcuts() {
+        let one = storyboard(signals: Self.signals(), events: [InputEvent(t: 4.1, k: .key, keyCode: 0, mods: 0)])
+        #expect(one.shots[2].kind == .motion)
+        let cmd = [4.1, 4.4, 4.7].map { InputEvent(t: $0, k: .key, keyCode: 8, mods: 0x100000) }
+        #expect(storyboard(signals: Self.signals(), events: cmd).shots[2].kind == .motion)
+        let sparse = [0.1, 2.5, 5.9].map { InputEvent(t: $0, k: .typing) }   // 3 events but across other shots
+        #expect(storyboard(signals: Self.signals(), events: sparse).shots[0].kind != .typing)
+    }
+
+    @Test func openingBurstThenHoldIsMotion() {
+        let sig = (0..<30).map { i in FrameSignal(diff: i == 10 ? 0.2 : 0, ssim: i == 10 ? 0.5 : 1) }
+        #expect(storyboard(signals: sig, events: []).shots[1].kind == .motion)
+    }
+
+    @Test func cutIsDecidedBySpanNotDepth() {
+        var sig = Self.signals(); sig[20] = FrameSignal(diff: 0.05, ssim: 0.95)   // shallow but 1 frame
+        #expect(storyboard(signals: sig, events: []).shots[1].boundary == .cut)
+    }
+
+    @Test func thresholdValidation() {
+        #expect(ShotThresholds().invalidReason == nil)
+        var t = ShotThresholds(); t.energyScale = 0; #expect(t.invalidReason != nil)
+        t = ShotThresholds(); t.ssim = 1.5; #expect(t.invalidReason != nil)
+        t = ShotThresholds(); t.cutSsim = -0.1; #expect(t.invalidReason != nil)
+        t = ShotThresholds(); t.minStable = 0; #expect(t.invalidReason != nil)
+        t = ShotThresholds(); t.motionDiff = .nan; #expect(t.invalidReason != nil)
     }
 
     @Test func emptyInput() {
