@@ -760,3 +760,19 @@ uncached as documented in source. The native SwiftPM build system is currently r
 deprecated upstream; the Makefile honors `DEVELOPER_DIR`, with Xcode and CLT Testing-path selection checked.
 This completion covers the prototype's MCP scope, including its explicit exclusions in §1; unrelated older
 repository milestones retain their existing status.
+
+## 10. Agent eval (T-833)
+
+`scripts/agent-eval.py` scores MCP client transcripts for the brief **"30 s reel, fast cuts, no text"** over a set of
+recordings. Run it on every MCP change. Input is JSONL, one JSON-RPC message per line, as a stdio relay logs it
+(`tools/call` requests and their responses). Label = file name without `.jsonl`.
+
+```
+scripts/agent-eval.py run1.jsonl run2.jsonl ...         # table: calls, ops, images, lint PASS/FAIL, final duration, pref
+scripts/agent-eval.py --json --pref run1=0.7 run*.jsonl  # + JSON summary; --pref is the manual human-vs-hand-edit score
+scripts/agent-eval.py --selftest                         # asserts metrics on built-in synthetic transcripts
+```
+
+Metrics: `ops` = ops of `edit.apply` calls with `dryRun` false that succeeded; `images` = image items of `render.*`
+responses, counting `at` length or `count` from the args; lint pass = the last `lint` array in a response's
+`structuredContent` has no `error`/`warn` item; the summary lint rate is passes over transcripts.
