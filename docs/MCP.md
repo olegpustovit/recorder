@@ -94,7 +94,10 @@ Transport: one JSON object per line, UTF-8, `\n` terminated, both directions. Im
 | anything else with an `id` | JSON-RPC error `-32601` |
 
 - Tool failures are **results**, not JSON-RPC errors: `isError: true`, `content: [{"type":"text","text":"STALE_REVISION: …"}]`,
-  `structuredContent: {"error":"STALE_REVISION","message":"…"}`.
+  `structuredContent: {"error":"STALE_REVISION","message":"…","fix":{…},"current":{…}}` (T-826): `fix` is always an
+  object with a `hint` and, when derivable, `{index, op}` — the corrected op (a clip-edge cut returns the range snapped to
+  the edge with `snap:true`; an out-of-range time is clamped); `current` is `{revision, duration, clips:[{from,to}]}` of
+  the project the call saw (null before `project.open`).
 - `content` always starts with one `text` item holding the JSON of `structuredContent` (clients that ignore structured
   output still work). Images: `{"type":"image","mimeType":"image/png","data":<base64>}`. Files:
   `{"type":"resource_link","uri":"file:///…","name":"proxy-0001.mp4","mimeType":"video/mp4"}`.
@@ -171,6 +174,20 @@ Zoom centers are normalized0–1 in the source frame, with the origin at the top
 ```
 
 Text styles: `title`, `label`, `caption` (existing), `lowerThird`, `chapter` (new, T-803).
+
+**Anchors (T-826).** Any `from`/`to`/`at` may be a number or an anchor object, resolved on the timeline after the
+earlier ops of the same batch: `{"marker":"<id or label>","offset":s}` (a label works when exactly one marker has it;
+two or more is an error naming the count), `{"ref":"name","offset":s}` (the start of an earlier op in this batch that
+declared `"ref":"name"`; allowed on `cut`, `speed`, `zoom`, `text`, `highlight`, `marker`, `layer`; names are unique per
+batch and do not carry across `edit.apply` calls — use marker labels for that), and `{"shot":"s07","edge":"start"|"end"}`.
+Shot anchors parse today but resolve only through `EditContext.shotTime(id, isEnd) -> source seconds`, which defaults to
+nil, so they return `INVALID_OP: unknown anchor`; the shot-analysis task (`analyze.shots`) sets the hook.
+
+**Every block is addressable.** `edit.remove` removes any block `timeline.get` emits (zoom, text, mask, layout, camera,
+keys, window, layer, audio) or marker, only that block (linked clips and audio stay). `edit.update` covers zoom, text,
+mask, markers and layers (`from`/`to` move both ends of a layer on the output clock, either direction, and fail with the
+reachable limit when a neighbour, the media length or 0.5 s blocks it; `color`). Blocks `update` cannot change are
+emitted with `editable:false` and a `reason`, and an `update` on one says so instead of "unknown block".
 
 ---
 

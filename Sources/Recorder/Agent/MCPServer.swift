@@ -42,6 +42,7 @@ struct AgentDraft {
     private func replayContext(_ context: EditContext, call: Int, indices: [Int]) -> EditContext {
         var context = context
         context.operationSeeds = indices.map { "\(id):\(call):\($0)" }
+        context.refs = context.refs.reduce(into: [:]) { refs, ref in if let position = indices.firstIndex(of: ref.value) { refs[ref.key] = position } }   // excluded ops shift indices
         return context
     }
     func project(from start: Project? = nil, context: EditContext) throws -> Project {

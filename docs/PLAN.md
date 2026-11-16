@@ -690,7 +690,7 @@ acceptance undo, privacy (renders hide key overlays) and existing op semantics; 
 
 | Scope | Tasks | Done |
 |---|---|---|
-| Reliability | T-825…T-826 | 1/2 |
+| Reliability | T-825…T-826 | 2/2 |
 | Perception + feedback core | T-827…T-829 | 0/3 |
 | Intent ops + reframe | T-830…T-831 | 0/2 |
 | Captions + eval harness | T-832…T-833 | 0/2 |
@@ -700,7 +700,7 @@ acceptance undo, privacy (renders hide key overlays) and existing op semantics; 
   `tools:{listChanged:true}`, `notifications/tools/list_changed` on upgrade, `schemaVersion` in `initialize`. R5 one
   source of truth for limits (render.frames 24), server-side `minimum`/`maximum`/`maxItems`/`enum` validation, R6
   annotations + `outputSchema`. Verify: Core draft persistence round-trip tests; schema/handler parity self-test.
-- [ ] **T-826 Addressable blocks, anchors, actionable errors** — R3 update/remove every lane `timeline.get` emits or
+- [x] **T-826 Addressable blocks, anchors, actionable errors** — R3 update/remove every lane `timeline.get` emits or
   mark `editable:false` with reason; layer from/to maps both ends. R4 `{marker:"label"}` when unique,
   `{shot:"s07",edge}` and same-batch `ref`. R7 errors carry `fix` and `current`. Verify: EditOps tests per lane,
   label/ref anchors, snapped-range fix on clip-edge error.
@@ -1685,3 +1685,5 @@ Native verification · 2026-11-16 · Run on explicit user approval ("Run them no
 HUMAN review · 2026-11-16 · The user judged the Claude panel's feel and motion against the design frame and approved it ("i approve finalize it pls"). The remaining `[~]` for this request is closed; T-812…T-824 are complete.
 
 T-825 · 2026-11-17 · Drafts persist in `agent-draft.json` (Core `AgentDraftRecord`; `project.open` re-adopts and returns `draft:{id,status,changes}`, replaces D8); `initialize` advertises `tools.listChanged` + `schemaVersion` and sends `tools/list_changed` after a schema change; limits validated server-side from the tool schemas (render.frames cap 24 = schema, Core `schemaViolation`); annotations, `outputSchema`, `mcp-schema` parity self-test (not run: no-GUI instruction). `make test` passes; selftests and live client not run.
+
+T-826 · 2026-11-17 · `edit.remove` covers every lane `timeline.get` emits, `edit.update` adds layers (both ends), other lanes are `editable:false` + `reason`; anchors `{marker:label}` (unique), same-batch `ref`, `{shot,edge}` via `EditContext.shotTime` (defaults to unknown shot); errors carry `fix` (snapped/clamped op) and `current`. Core tests for lanes, anchors, fix; `make test` passes. The layer timeline view was already correct (connected length), so only update uses both ends.

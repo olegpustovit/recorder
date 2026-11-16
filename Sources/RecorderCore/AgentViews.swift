@@ -14,6 +14,9 @@ public struct AgentTimeline: Codable, Equatable, Sendable {
         public var from: Double
         public var to: Double
         public var label: String
+        /// false: `edit.update` cannot change this block (`edit.remove` still can).
+        public var editable = true
+        public var reason: String? = nil
     }
     public struct Marker: Codable, Equatable, Sendable {
         public var id: String
@@ -45,7 +48,9 @@ public func agentTimeline(_ project: Project, from: Double? = nil, to: Double? =
     var blocks: [AgentTimeline.Block] = []
     func append(_ id: String, _ lane: String, _ start: Double, _ end: Double, _ label: String) {
         guard included(start, end) else { return }
-        blocks.append(.init(id: id, lane: lane, from: agentTime(start), to: agentTime(end), label: label))
+        let editable = ["zoom", "text", "mask", "layer"].contains(lane)
+        blocks.append(.init(id: id, lane: lane, from: agentTime(start), to: agentTime(end), label: label, editable: editable,
+                            reason: editable ? nil : "\(lane) blocks have no edit.update fields; remove with edit.remove or change them in Recorder"))
     }
     func sourceBlock(_ id: String, _ lane: String, _ start: Double, _ end: Double, _ label: String) {
         var offset = 0.0
@@ -138,3 +143,4 @@ public func transcriptID(_ words: [Word]) -> String {
     }
     return String(format: "t-%08x", hash)
 }
+

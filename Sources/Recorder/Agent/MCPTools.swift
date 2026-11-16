@@ -18,8 +18,11 @@ enum MCPTools {
     static let operationSchemas: [[String: Any]] = {
         let number: [String: Any] = ["type": "number", "minimum": 0]
         let string: [String: Any] = ["type": "string"]
-        let time: [String: Any] = ["description": "Numeric seconds use the ifRevision base timeline. A marker anchor resolves on the timeline after earlier operations in this batch; offset is signed output seconds, default 0.", "oneOf": [number,
-            ["type": "object", "properties": ["marker": ["type": "string", "minLength": 1], "offset": ["type": "number", "default": 0]], "required": ["marker"], "additionalProperties": false]]]
+        let offset: [String: Any] = ["type": "number", "default": 0]
+        let time: [String: Any] = ["description": "Numeric seconds use the ifRevision base timeline. Anchors resolve on the timeline after earlier operations in this batch; offset is signed output seconds, default 0. {marker} is a marker id or a label that exactly one marker has; {ref} is the start of an earlier op in this batch that declared ref; {shot, edge} is a shot id from analyze.shots (unknown until shot analysis is available).", "oneOf": [number,
+            ["type": "object", "properties": ["marker": ["type": "string", "minLength": 1], "offset": offset], "required": ["marker"], "additionalProperties": false],
+            ["type": "object", "properties": ["ref": ["type": "string", "minLength": 1], "offset": offset], "required": ["ref"], "additionalProperties": false],
+            ["type": "object", "properties": ["shot": ["type": "string", "minLength": 1], "edge": ["type": "string", "enum": ["start", "end"], "default": "start"]], "required": ["shot"], "additionalProperties": false]]]
         let point: [String: Any] = ["type": "object", "properties": ["x": number, "y": number], "required": ["x", "y"], "additionalProperties": false]
         let center: [String: Any] = ["type": "object", "description": "Normalized 0–1 coordinates in the source frame; origin is the top-left corner.", "properties": ["x": ["type": "number", "minimum": 0, "maximum": 1], "y": ["type": "number", "minimum": 0, "maximum": 1]], "required": ["x", "y"], "additionalProperties": false]
         let follow: [String: Any] = ["type": "string", "enum": ["cursor", "fixed"], "description": "cursor: the camera tracks the cursor (no center); fixed: hold center. Default: cursor when center is omitted, fixed otherwise."]
@@ -30,6 +33,9 @@ enum MCPTools {
         func op(_ name: String, _ properties: [String: Any], _ required: [String]) -> [String: Any] {
             var properties = properties
             for key in ["from", "to", "at"] where properties[key] != nil { properties[key] = time }
+            if ["cut", "speed", "zoom", "text", "highlight", "marker", "layer"].contains(name) {
+                properties["ref"] = ["type": "string", "minLength": 1, "description": "Names this op's start so later ops in the same batch can anchor on {ref:name}. Unique within the batch."]
+            }
             if ["cut", "cutPauses", "cutWords", "speed"].contains(name) {
                 properties["snap"] = ["type": "boolean", "default": name == "cutPauses", "description": "Snap invalid split boundaries to the nearest clip edge. Skips ranges below the clip minimum with a warning; changes[].note reports adjustments."]
             }
@@ -94,7 +100,7 @@ enum MCPTools {
             if name == "edit" { annotations["idempotentHint"] = true }   // ifRevision makes a repeated apply fail instead of repeating
             // Every result also carries the project id and the revision it describes (null before project.open); errors carry error/message.
             let output = (outputFields[name] ?? [:]).merging(["project": ["type": ["string", "null"]], "revision": ["type": ["string", "null"]],
-                "error": ["type": "string"], "message": ["type": "string"]], uniquingKeysWith: { a, _ in a })
+                "error": ["type": "string"], "message": ["type": "string"], "fix": ["type": "object"], "current": ["type": ["object", "null"]]], uniquingKeysWith: { a, _ in a })
             return ["name": name, "description": description, "annotations": annotations,
                     "inputSchema": ["type": "object", "properties": properties, "required": ["action"], "additionalProperties": false],
                     "outputSchema": ["type": "object", "properties": output]]
@@ -104,7 +110,7 @@ enum MCPTools {
             tool("timeline", ["get"], "Read clips, effect blocks and markers in output seconds.", range, read: true),
             tool("transcript", ["get"], "Read up to 2000 spoken words with stable wN ids, or timestamped phrases. Key presses are never returned.", range.merging(["format": ["type": "string", "enum": ["words", "phrases"]]], uniquingKeysWith: { _, b in b }), read: true),
             tool("analyze", ["transcribe", "pauses", "fillers", "activity"], "Transcribe on-device, find mic pauses/fillers, or read activity ranges without key characters.", ["minDuration": number, "threshold": ["type": "number", "minimum": 0, "maximum": 1]], read: true),
-            tool("edit", ["apply", "undo"], "Apply atomic edits using the latest ifRevision; edits land in a draft by default. Numeric times use that revision's output timeline; {marker:id, offset:seconds} anchors resolve after earlier ops in the batch.", ["ifRevision": string, "ops": ["type": "array", "items": ["oneOf": operationSchemas]], "dryRun": boolean]),
+            tool("edit", ["apply", "undo"], "Apply atomic edits using the latest ifRevision; edits land in a draft by default. Numeric times use that revision's output timeline; anchors ({marker:id|label, offset}, {ref:name, offset}, {shot, edge}) resolve after earlier ops in the batch. Declare ref:\"name\" on an op to anchor later ops on its start. Errors carry fix and current.", ["ifRevision": string, "ops": ["type": "array", "items": ["oneOf": operationSchemas]], "dryRun": boolean]),
             tool("draft", ["status", "submit", "discard"], "Read your draft's exclusions, skipped reasons and verdict; submit for review or discard it. A pending submitted draft can receive more edit.apply calls, returning to watching until submitted again.", ["note": string]),
             tool("render", ["frames", "sheet", "clip", "cancel"], "Render frames, a contact sheet or a 540p proxy into the agent cache. Key chips are hidden.", ["at": ["type": "array", "items": number, "maxItems": 24], "from": number, "to": number, "count": ["type": "integer", "minimum": 1, "maximum": 24], "longEdge": ["type": "integer", "minimum": 2, "maximum": 640], "draft": boolean,
                 "grid": ["type": "boolean", "description": "render.frames only: overlay a 0.1-step grid labelled 0–1, origin top-left, matching zoom center and text position coordinates (exact at 1× zoom with no layout padding)."]], read: true),
@@ -142,6 +148,15 @@ enum MCPTools {
     }
     private static func json<T: Encodable>(_ value: T) throws -> Any {
         try JSONSerialization.jsonObject(with: JSONEncoder().encode(value))
+    }
+    /// `ref` names declared on the ops of one batch, as name → op index (the batch is the scope; a duplicate name is an error).
+    static func opRefs(_ value: Any?) throws -> [String: Int] {
+        var refs: [String: Int] = [:]
+        for (index, op) in (value as? [[String: Any]] ?? []).enumerated() {
+            guard let name = op["ref"] as? String else { continue }
+            guard refs.updateValue(index, forKey: name) == nil else { throw MCPFailure(code: "INVALID_OP", message: "ref \(name) is declared twice in this batch; use unique names") }
+        }
+        return refs
     }
     static func decodeOps(_ value: Any?) throws -> [EditOp] {
         guard let values = value as? [[String: Any]] else { throw MCPFailure(code: "INVALID_OP", message: "edit.apply needs ops: [EditOp]; use tools/list for the op schemas") }
@@ -220,6 +235,7 @@ enum MCPTools {
         let ops = resolution.ops
         var context = try await editContext(ops, model: model)
         context.assets = resolution.assets
+        context.refs = try opRefs(args["ops"])
         guard try MCPTools.model(for: session) === model else { throw MCPFailure(code: "NO_PROJECT", message: "Project changed during analysis; reopen it and retry") }
         try requireAccess(model.liveProject, tool: "edit"); try requireEditable(model, draftSession: session, allowInvisible: true)
         guard level == AgentAccess.level(for: model.liveProject.id) else { throw MCPFailure(code: "PERMISSION_DENIED", message: "Access changed during analysis; check access and retry") }
@@ -501,10 +517,34 @@ enum MCPTools {
                 failure = MCPFailure(code: code, message: String(editError.description.dropFirst(code.count + 2)))
             } else { failure = error as? MCPFailure ?? MCPFailure(code: "INVALID_OP", message: "\(error.localizedDescription); check the project in Recorder and retry") }
             errorCode = failure.code
-            return result(["error": failure.code, "message": "\(failure.code): \(failure.message)"], isError: true)
+            // R7: every error says how to fix the call and where the project stands now.
+            var fix: [String: Any] = ["hint": hints[failure.code] ?? "Revise the call using tools/list and retry"]
+            var current: Any = NSNull()
+            if let model = try? model(for: session), let viewed = try? viewedProject(model, session: session) {
+                let clips = agentTimeline(viewed).clips
+                current = ["revision": (try? revision(viewed)) ?? "", "duration": viewed.exportDuration,
+                           "clips": clips.map { ["from": $0.from, "to": $0.to] }]
+                if name == "edit", let editError = error as? EditError, let index = editError.opIndex, let ops = try? decodeOps(args["ops"]),
+                   let corrected = viewed.suggestedFix(for: editError, ops: ops), let object = try? object(corrected) {
+                    fix["index"] = index; fix["op"] = object
+                }
+            }
+            return result(["error": failure.code, "message": "\(failure.code): \(failure.message)", "fix": fix, "current": current], isError: true)
         }
     }
 
+    private static let hints = [
+        "STALE_REVISION": "Retry edit.apply with ifRevision set to current.revision; re-read timeline.get first if times may have moved",
+        "OUT_OF_RANGE": "Use times inside 0–current.duration; clip edges are in current.clips",
+        "INVALID_OP": "Revise the op against tools/list (fields, ranges, enums) and retry",
+        "NO_PROJECT": "Call project.open with an id or .recorder path, then retry",
+        "NOT_TRANSCRIBED": "Call analyze.transcribe (needs a mic recording), then retry",
+        "TRANSCRIPT_CHANGED": "Call transcript.get for the current transcript id and word ids, then retry",
+        "PERMISSION_DENIED": "Ask the user to change this project's access in the Claude tab",
+        "REVIEW_IN_PROGRESS": "Finish or discard the current review/draft, then retry",
+        "RENDER_BUSY": "Wait for the running render or call render.cancel",
+        "NEEDS_APPROVAL": "Request the export again when the user is ready",
+        "DENIED": "Ask the user before requesting this again"]
     // Only fixed tool/kind names and aggregate numbers enter activity, never argument or response text.
     static func activityIntent(_ name: String, _ action: String, _ args: [String: Any]) -> String {
         switch (name, action) {
