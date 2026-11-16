@@ -32,8 +32,8 @@ enum AgentRender {
         return EditorModel(packageURL: model.packageURL, project: project, events: events, paths: paths)
     }
     @MainActor static func frames(model: EditorModel, at times: [Double], longEdge: Int, folder: URL, grid: Bool = false) async throws -> [URL] {
-        guard !times.isEmpty, times.count <= 24, (2...640).contains(longEdge) else {
-            throw MCPFailure(code: "OUT_OF_RANGE", message: "Use 1–24 frame times and longEdge 2–640")
+        guard !times.isEmpty, times.count <= 48, (2...640).contains(longEdge) else {
+            throw MCPFailure(code: "OUT_OF_RANGE", message: "Use 1–48 frame times and longEdge 2–640")
         }
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let images = try await EditorWindowController.renderFramesPNG(model: renderModel(for: model, project: model.project), at: times, longEdge: longEdge)
@@ -85,20 +85,31 @@ enum AgentRender {
         guard CGImageDestinationFinalize(destination) else { throw MCPFailure(code: "INVALID_OP", message: "Could not encode the debug grid frame; retry without grid") }
         return data as Data
     }
-    @MainActor static func sheet(model: EditorModel, at times: [Double], folder: URL) async throws -> URL {
-        let frames = try await frames(model: model, at: times, longEdge: 320, folder: folder)
+    @MainActor static func sheet(model: EditorModel, at times: [Double], labels: [String]? = nil, columns: Int = 4, folder: URL) async throws -> URL {
+        try tiles(try await frames(model: model, at: times, longEdge: 320, folder: folder), labels: labels ?? times.map(timecode), columns: columns, folder: folder)
+    }
+    /// Settled keyframe of a shot in output seconds: just before its end, else its middle/start; nil when the draft dropped it all.
+    static func keyframe(_ shot: Shot, fps: Double, map: TimeMap) -> Double? {
+        [shot.to - 1.5 / max(fps, 1), (shot.from + shot.to) / 2, shot.from].lazy.filter { $0 >= shot.from }.compactMap { map.outputTime(atSource: $0) }.first
+    }
+    static func timecode(_ t: Double) -> String {
+        let tenths = Int((t * 10).rounded())
+        return String(format: "%d:%02d.%d", tenths / 600, tenths / 10 % 60, tenths % 10)
+    }
+    /// Draws rendered frame files (deleted afterwards) into one labelled JPEG grid.
+    @MainActor static func tiles(_ frames: [URL], labels: [String], columns: Int, folder: URL) throws -> URL {
         defer { for frame in frames { try? FileManager.default.removeItem(at: frame) } }
         let images = try frames.map { url -> CGImage in
             guard let source = CGImageSourceCreateWithURL(url as CFURL, nil), let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
-                throw MCPFailure(code: "INVALID_OP", message: "Could not read a rendered frame; retry render.sheet")
+                throw MCPFailure(code: "INVALID_OP", message: "Could not read a rendered frame; retry the render")
             }
             return image
         }
         let cellWidth = 320, cellHeight = (images.map(\.height).max() ?? 200) + 24
-        let width = cellWidth * 4, height = cellHeight * ((images.count + 3) / 4)
+        let width = cellWidth * columns, height = cellHeight * ((images.count + columns - 1) / columns)
         guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
                                       space: VideoColor.space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
-            throw MCPFailure(code: "INVALID_OP", message: "Could not create a contact sheet; retry with fewer frames")
+            throw MCPFailure(code: "INVALID_OP", message: "Could not create a contact sheet; retry with fewer tiles")
         }
         context.setFillColor(Theme.bgWindow.cgColor)
         context.fill(CGRect(x: 0, y: 0, width: width, height: height))
@@ -107,15 +118,13 @@ enum AgentRender {
         NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
         for (i, image) in images.enumerated() {
             try Task.checkCancellation()
-            let x = (i % 4) * cellWidth, y = height - (i / 4 + 1) * cellHeight
+            let x = (i % columns) * cellWidth, y = height - (i / columns + 1) * cellHeight
             context.draw(image, in: CGRect(x: x + (cellWidth - image.width) / 2, y: y + 24, width: image.width, height: image.height))
-            let tenths = Int((times[i] * 10).rounded())
-            let time = String(format: "%d:%02d.%d", tenths / 600, tenths / 10 % 60, tenths % 10)
-            (time as NSString).draw(at: CGPoint(x: x + 8, y: y + 5), withAttributes: [.font: Theme.timecodeFont(11), .foregroundColor: Theme.textPrimary])
+            (labels[i] as NSString).draw(at: CGPoint(x: x + 8, y: y + 5), withAttributes: [.font: Theme.timecodeFont(11), .foregroundColor: Theme.textPrimary])
         }
         let url = folder.appendingPathComponent("sheet-\(UUID().uuidString).jpg")
         guard let image = context.makeImage(), let destination = CGImageDestinationCreateWithURL(url as CFURL, UTType.jpeg.identifier as CFString, 1, nil) else {
-            throw MCPFailure(code: "INVALID_OP", message: "Could not encode the contact sheet; retry render.sheet")
+            throw MCPFailure(code: "INVALID_OP", message: "Could not encode the contact sheet; retry the render")
         }
         CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: 0.8] as CFDictionary)
         guard CGImageDestinationFinalize(destination) else {
@@ -123,6 +132,12 @@ enum AgentRender {
             throw MCPFailure(code: "INVALID_OP", message: "Could not save the contact sheet; check cache disk space and retry")
         }
         return url
+    }
+    /// Base (live) and draft frames side by side, one row per time; each side clamps to its own duration.
+    @MainActor static func compare(base: EditorModel, draft: EditorModel, at times: [Double], folder: URL) async throws -> URL {
+        let b = try await frames(model: base, at: times.map { min($0, base.project.exportDuration) }, longEdge: 320, folder: folder)
+        let d = try await frames(model: draft, at: times, longEdge: 320, folder: folder)
+        return try tiles(zip(b, d).flatMap { [$0, $1] }, labels: times.flatMap { ["base " + timecode($0), "draft " + timecode($0)] }, columns: 2, folder: folder)
     }
     @MainActor static func clip(model: EditorModel, from: Double, to: Double, folder: URL, progress: @escaping (Double) -> Void) async throws -> URL {
         guard from.isFinite, to.isFinite, from >= 0, to > from, to <= model.project.exportDuration else {

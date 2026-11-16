@@ -129,9 +129,11 @@ Nine tools, each with an `action` string (Resolve's MCP shows that grouping keep
 | `analyze` | `transcribe` (async, progress) · `pauses {minDuration=0.6,threshold=0.02}` → `[{from,to}]` · `fillers` → `[{word,from,to,text}]` · `activity` → `{idle:[…],typing:[…],clicks:[t…]}` (ranges only, never characters) |
 | `edit` | `apply {ifRevision, ops:[EditOp], dryRun=false}` → `{revision, mode:"draft"\|"live", changes:[EditChange], duration:{before,after}, warnings:[…]}` · `undo` (live only: `model.undo()` if the top undo name starts with `Claude:`) |
 | `draft` | `status` → `{base, ops, changes, submitted, verdict?}` · `submit {note}` → opens review in the editor · `discard` |
-| `render` | `frames {at:[t…] ≤6, draft=true, longEdge=640, grid=false}` (grid: 0.1-step magenta overlay labelled 0–1, origin top-left, the coordinates zoom `center` and text `position` use) → images + links · `sheet {count=12 ≤24 \| at:[…], draft=true}` → 1 JPEG + link · `clip {from,to, draft=true}` → job, then link (async, progress) · `cancel` |
+| `render` | `frames {at:[t…] ≤6, draft=true, longEdge=640, grid=false}` (grid: 0.1-step magenta overlay labelled 0–1, origin top-left, the coordinates zoom `center` and text `position` use) → images + links · `sheet {count=12 ≤24 \| at:[…], draft=true}` → 1 JPEG + link · `clip {from,to, draft=true}` → job, then link (async, progress) · `storyboard {shots?:[id], page=1, draft=true}` → 1 JPEG, one 320 px tile per shot at its settled keyframe (just before `to`), labelled `id duration`, ≤48 per page (`page`/`pages` returned), shots the draft dropped are skipped; needs `analyze.shots` (until it lands: `NO_STORYBOARD`, "run analyze.shots first") · `strip {from,to,fps=6 (4–8)}` → 1 filmstrip JPEG, ≤48 tiles · `compare {at:[t…] ≤6}` → 1 JPEG, one row per time, live base left, draft right (each side clamped to its own duration) · `cancel` |
 | `export` | `final {destination?, shortEdge?, fps?, srt=false}` → waits for approval → `{path, seconds, bytes}` or `DENIED` |
 | `ui` | `show {at, select?:[id]}` → moves the playhead / selection in the editor |
+
+Optional shot captions (T-832): `AgentCaptions.captionShots(storyboard, model:)` fills `Shot.caption` (6–10 words, Vision OCR on the shot's focus crop, classifier label fallback, shaped by Core `ShotCaption.shape`); `null` on any failure. Wired as `captions:true` on `analyze.shots` by the integrator (`loadStoryboard(…, captions:)`).
 
 `draft=true` renders the project with the session's draft applied (or the live project when there is no draft).
 
