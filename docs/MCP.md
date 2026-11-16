@@ -474,7 +474,7 @@ tab) · `EditorWindowController.swift` (document bar status) · `TimelineView.sw
 `MCPServer.swift`/`MCPTools.swift` (review replay, session observation, status) · `PreviewView.swift`, `MediaImport.swift`,
 `VoiceoverRecorder.swift` (review edit guards) · `SelfTest.swift`.
 
-Layout (inspector, 320 pt, same insets as the Canvas panel):
+Layout (inspector, 320 pt; updated by T-812 to the [panel redesign](https://artifacts.microapps.space/a/crsebftafkp3)):
 
 ```
  Whole project   Selection   [Claude]              ← existing header tabs + "Claude" (white = selected)
@@ -482,21 +482,25 @@ Layout (inspector, 320 pt, same insets as the Canvas panel):
  Claude                                Draft ▾     ← headingFont(28) · access menu Off/Read/Draft/Live
  claude-code · reviewing                           ← labelFont, textSecondary
  “Removed 6 long pauses and 3 fillers.”            ← the note, bodyFont
- Changes                                  8 of 9   ← headingFont(22)
- [x] Cut pause                0:08.3    −1.7 s     ← checkbox rows, mono, timecodes tabular
- [ ] Cut “um”                 0:14.0    −0.6 s
- …
- [ Discard ]                    [ Accept 8 ]       ← secondary + white primary button (UIComponents)
- Activity                                           ← headingFont(22)
- 14:03:02  project.open                    12 ms   ← last 50 rows, captionFont, errors in Theme.danger + "error" text
+ 8 changes                        89.0 s −9.6 s   ← selected count, resulting duration and delta
+ ▸ [-] ▪ Cuts                         6 −9.6 s    ← collapsed, native tri-state checkbox + lane swatch
+ ▸ [x] ▪ Text                         3      —
+ ▸ Activity                                  12   ← last 50 rows, newest first, collapsed
+ ───────────────────────────────────────────
+                                  [ Accept 8 ]    ← pinned outside scroll area, shared white button
 ```
 
 - The `Claude` tab appears when any session has this project open or a draft exists; otherwise hidden.
 - Document bar: left of `Saved`, `Claude · drafting|reviewing|rendering|idle` in `labelFont`/`textSecondary`; click
   selects the Claude tab. No animation loops.
 - Review: on `draft.submit`, `model.beginReview()` and `updateReview { $0 = try draft.project(context:) }`. Toggling a
-  checkbox recomputes with that op excluded (Esc does **not** discard; only the buttons do). Accept →
-  `endReview(commit: true, name: "Claude: <note, 40 chars>")` = one undo step. Discard → `endReview(commit: false, …)`.
+  checkbox recomputes with that op excluded. Group toggles validate all row ids and replay once atomically.
+  Groups use fixed Cuts/Speed/Zoom/Text/Markers/Other order, omit empty kinds and start collapsed. Expanded
+  rows retain individual checkboxes/skipped reasons; a row click maps its original call's clock through the
+  current draft and seeks there, using the cut seam when its footage was removed.
+  Accept → `endReview(commit: true, name: "Claude: <note, 40 chars>")` = one undo step. Untick everything then
+  Accept 0 to close without changing the project or creating undo. `draft.discard` still restores the base;
+  Escape does not discard a submitted review. No separate Discard button in the T-812 panel.
   The session's `draft.status` reports the verdict.
 - Review previews replace `model.project`; `model.liveProject` retains the saved human base until acceptance.
   Autosave/Save Now/close write only that base. Other sessions and explicit `render {draft:false}` read the live
@@ -514,7 +518,12 @@ Layout (inspector, 320 pt, same insets as the Canvas panel):
   timeline. Free-retiming gaps are retained space, not cut marks; adjacent cuts at one output position share a chip.
 - While reviewing, timeline/inspector edits are inert (EditorModel guard) and playback/scrubbing still work.
   Destructive menus, preview gestures, media imports, voiceover, crop and export entry points are also gated.
-- Accessibility: checkboxes are real `Toggle`s with labels (`"Cut pause at 0:08.3, minus 1.7 seconds"`); buttons have names.
+- The summary/error/stale content scrolls while Accept stays pinned, including in a420pt panel. Disclosures
+  open over320ms with55ms child stagger/4pt entrance, cancellable on close or motion-mode change. Reduce Motion
+  uses140ms opacity with immediate layout changes. A prototype-only environment override supplements (never
+  disables) the system Reduce Motion preference; it also permits a deterministic native reduced-motion selftest.
+- Accessibility: groups use native mixed-state NSButton checkboxes, rows use labelled Toggle checkboxes, and
+  disclosures/seek/Accept are named buttons with keyboard semantics.
 
 **Verify.** Selftest `mcp-review <package>`: submit a 3-op draft, untick one via the model API, accept → project equals
 `base.applying(2 ops)` with the same operation seeds, undo restores base, `draft.status` says `accepted 2 of 3`.
@@ -618,7 +627,7 @@ The Makefile selects Testing paths from
 - Human edits while a draft exists → next `edit.apply` with the old revision gets `STALE_REVISION`; the draft itself
   still replays on review because review applies calls to the **current** project only if `base` still equals the
   current revision; otherwise review shows `Draft is based on an older version` with `Replay on current` (replays
-  `calls` on `model.project`; ops that now throw are listed as skipped) and `Discard`.
+  `calls` on `model.project`; ops that now throw are listed as skipped). The client can still `draft.discard`.
 - Voiceover recording active → every edit/review tool returns `REVIEW_IN_PROGRESS`-style `PERMISSION_DENIED: recording a voiceover`.
 - Project without mic → `transcript`/`cutWords`/`cutPauses`/`captions` return `NOT_TRANSCRIBED` with a clear message.
 - Imported clips (`Clip.file != nil`) are never cut by `cutPauses`/`cutWords` (no transcript there).

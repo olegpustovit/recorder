@@ -609,6 +609,76 @@ Core tasks (T-801…T-803) are pure and unit-tested; app tasks use `--selftest` 
 
 ---
 
+## Claude panel redesign and MCP gaps — 2026-11-16
+
+Source: https://artifacts.microapps.space/a/crsebftafkp3 (version 6). The user's request is **the full design,
+including prototype motion and every listed task**; the source's earlier "deferred until you ask" labels do
+not remove T-817/T-821…T-824 from this request. Work in order, one verified task/commit at a time.
+T-813 is included in T-812; T-816 is included in T-815, as the source specifies. Preserve native project
+editing, read-only review guards, frozen autosave, stable replay IDs, privacy and one-step acceptance undo.
+
+| Scope | Tasks | Done |
+|---|---|---|
+| Grouped review + pinned footer | T-812 (includes T-813) | 1/1 |
+| Status, activity and finite motion | T-814 | 0/1 |
+| Live preview + timeline motion | T-815 (includes T-816) | 0/1 |
+| Iteration, boundary snapping, anchors | T-817…T-819 | 0/3 |
+| Zoom documentation/grid + follow/ease | T-820…T-821 | 0/2 |
+| Text styling, assets, draft playback | T-822…T-824 | 0/3 |
+
+- [x] **T-812 Grouped Changes and pinned Accept (includes T-813)** — Core pure row grouping, fixed
+  Cuts/Speed/Zoom/Text/Markers/Other order, drop empty groups, sum deltas. Collapsed group disclosures with
+  lane swatches, counts, native tri-state checkboxes; individual rows retain skipped reasons and seek on click.
+  Summary shows selected count, resulting duration and delta. Stale/error notices above the summary.
+  Panel owns its scroll area; only Accept N is pinned below it (latest source design rule supersedes the
+  older T-813 Discard/Accept footer wording). Untick all then Accept 0 to exit without modifying the project.
+  Disclosure: 320 ms, 55 ms child stagger, 4 pt slide; Reduce Motion: no movement, 140 ms opacity only.
+  Verify: `make test FILTER=AgentDraft`; `make test`; `--selftest inspector-panels`; `--selftest mcp-review <fixture>`
+  (exclude/reinclude whole groups, seeded remaining result, zero-op acceptance); inspect 17- and 5-op panel
+  PNGs at 320×640 plus 420 pt short/stale/error/long-note variants. Exercise native checkbox/disclosure/seek.
+- [ ] **T-814 Status strip, activity feed and panel motion** — Intent/result strings at existing tool-response
+  sites, in-flight current call; privacy-safe status over a finite 1 px progress rail. Collapsed newest-first
+  Activity N; errors keep codes. New group wipe 320 ms with 700 ms fading 2 px edge; press 80/hover160;
+  disclosure/replay cancellation and Reduce Motion opacity140. Provide replayable native prototype using
+  the real panel/widgets. Verify `mcp-edit` intent/result/privacy, working/idle/error PNGs and intermediate
+  motion samples, rapid reversal/replay cancellation and Reduce Motion.
+- [ ] **T-815 Live draft preview (includes T-816 marks)** — First successful draft apply begins watching,
+  later calls update the frozen-safe review once per call; submit switches to reviewing and enables checkboxes.
+  Guard gestures with "Claude is editing, Esc to take over"; second session stays invisible with notice.
+  Auto-select Claude on first draft/live apply when key. Reuse existing cut chips/dashed added blocks, wipe
+  320 ms staggered60–90 ms by lane, accepted outlines settle220; Reduce Motion opacity only. Update MCP.md
+  D1/T-807 and SPEC §10. Verify new `mcp-live`: three unsubmitted calls, project/frames/marks per call,
+  unchanged liveProject/disk, notice/gesture/Escape/discard, session conflict; real-client recorded sequence.
+- [ ] **T-817 Iterate after submit** — Pending submitted draft accepts more applies, returns to watching,
+  preserves unchanged exclusions/IDs and nil verdict; draft.status reports exclusions and reasons.
+  Verify `mcp-review` submit/exclude/apply/status/accept count and undo.
+- [ ] **T-818 Snap idle-derived edits to clip edges** — `snap:true` option, default for idle-derived operations;
+  clamp nearest valid boundary, report adjustments in changes[].note, warn/skip collapsed operations rather
+  than failing batch; retain strict validation otherwise. Include normalized source-frame zoom descriptions
+  from T-820 here. Verify EditOps edge/minimum/batch/atomicity cases, `mcp-edit`, full Core suite.
+- [ ] **T-819 Marker anchors** — Accept numeric times or `{marker:"id", offset}`; resolve anchors after earlier
+  ops in batch while numeric times retain documented base-time semantics. Verify EditOps cuts/speed/marker
+  create/update/delete/offset/missing-anchor cases, stable replay/exclusions and MCP schema/native checks.
+- [ ] **T-820 Zoom coordinates and debug grid** — Document normalized0–1 source-frame coordinates, top-left
+  origin (schema description done in T-818); reject out-of-range values; optional debug grid in render.frames.
+  Verify coordinate validation, grid geometry/render output and normal-frame parity/privacy.
+- [ ] **T-821 Cursor-follow zoom and easing** — Zoom op `follow:"cursor"` and existing Spring presets;
+  reuse CursorPath and 240Hz camera paths. Verify Core mapping/follow/preset/persistence/replay and actual
+  preview/export parity including cut/speed edges; MCP schema and native editing checks.
+- [ ] **T-822 Existing text styling fields** — Text op accepts inspector size/position/palette colour; no new
+  fonts or animation options. Verify flat JSON/validation/persistence/replay, inspector agreement and native
+  render parity for all styles and aspect ratios.
+- [ ] **T-823 Assets and layer operations** — Start with SPEC design: `project.assets` lists imported layers
+  and library recordings; `layer` op adds an image or another project's clip using existing layer machinery.
+  Verify trusted-path/import/clock/copy validation, immutable media and atomic failure, draft isolation,
+  replay/undo/save/reopen and preview/export parity; update schemas/docs/client smoke tool assumptions.
+- [ ] **T-824 Play draft** — Footer Play draft uses existing 540p render.clip proxy; cancellation/progress,
+  stale/current draft identity and native playable preview. Audio ops remain outside the source's scope.
+  Verify native playback with audio, errors/cancellation/repeated requests/review acceptance/close and
+  final full-reference requirement audit (including all replay/reduced-motion and native-app evidence).
+
+---
+
 ## Requested Nudge fixes — 2026-09-22
 
 User-requested fixes are handled individually in this order, separately from the outstanding HUMAN milestone gates.
@@ -1540,3 +1610,5 @@ T-809 · 2026-11-16 · Added export.final with native NSAlert approval, ten-minu
 T-810 · 2026-11-16 · Added SPEC §10 Agents (access/review, privacy, protocol/tools, clocks and limits), corrected all §5 format rules to conditional v5/v4/v3, documented connection/default workflow in README and --mcp/mcp-smoke in CLAUDE.md. Added a timed stdio smoke that pipes initialize + tools/list through the same-binary shim, asserting protocol and exactly nine tools including edit. Fixed the shared Makefile toolchain selection/Testing paths and selected the native SwiftPM engine so the Verify commands run without manual flags; Xcode/CLT path selection and smoke Python syntax checked. Plain make build release passes; gracefully quit the owned idle source-build app before assembling the Developer ID signed bundle. Plain make mcp-smoke passes (auto-launch and piped-EOF reply drain); plain make test passes190/190; packaged release --selftest menu-actions passes; diff check clean. Logs /tmp/recorder-t810-{build,smoke,core,menu}.log. Fresh prototype version2 audit maps all decisions, nine tools,19 in-scope capabilities and ten tasks to tests/native real-client evidence in MCP.md §9; T-801…T-810 complete. No new dependency, installation, permission reset, release/push, wake or unlock. Existing real-client/native-review/generated-media evidence retained; fresh mic capture and positive on-device speech were not repeated, drafts remain memory-only and native SwiftPM is deprecated upstream. Unrelated backlog unchanged.
 
 T-811 · 2026-11-16 · User report: on the MacBook Air the installed build had MCP but nothing showed how to connect it (Claude Code had no server configured). Added Recorder ▸ Connect an Agent… (⇧⌘A, also in the status menu) modelled on dbman's Agents window: Start here guide + prompts, eight clients with Live/Connected/Update/Off/Not found status, Connect/Update/Disconnect/Reveal Config, copyable CLI commands and per-client snippets, Other client JSON, and an agentpack pane (init/mcp add/sync, copy as script, launch agents in Terminal). Core AgentConfig ported from dbman, user scope only (JSON merge / one TOML table, refuses commented JSON and inline TOML, keeps one .recorder-backup). Settings ▸ Agents now links to the window and lists live sessions; old AgentClient JSON/args moved to AgentConfig and the mcp-export check updated. make test FILTER=AgentConfig 3/3, make test 193/193, --selftest menus OK, settings-png renders for guide/claude-code/codex/agentpack inspected. Client paths other than Claude Code/Codex come from public docs (shortcut comment). mcp-export/mcp-smoke not re-run (unchanged logic; would replace the running source-build app).
+
+T-812 · 2026-11-16 · Read panel-redesign artifact crsebftafkp3 version6 and added its entire requested roadmap, including formerly deferred tasks, to this tracker. Grouped pure Core rows in fixed kind order with stable call/index IDs and summed deltas; native tri-state group checkboxes validate/replay a whole group atomically through the existing inclusion path. Panel now owns its scroll area, collapsed groups/activity, current duration/delta summary, top stale/error notices and pinned Accept-only footer; Accept0 closes without modifying the project or adding undo. Named disclosures use320ms expansion/chevron rotation,55ms child stagger/4pt entrance, cancellable tasks and140ms opacity-only reduced motion; prototype environment override never disables the system preference. Change-row seeks remap each call's base clock through the current draft, including removed-footage seams and speed changes. make test FILTER=AgentDraft2/2 and full make test195/195 pass. Native mcp-review normal and --reduce-motion both pass actual checkbox/disclosure/seek/footer clicks, rapid reversals, exact seeded group replay/atomic invalid-ID rejection, zero-op acceptance, one-step undo and existing disk/client/close protections. inspector-panels passes; inspected 17-/5-op320×640,420pt short, stale/error/long-note, expanded/intermediate/reduced and integrated minimum editor PNGs. make -o app gallery and gallery-png CONFIG=debug pass using the already verified assembled binary; opened/inspected the actual gallery image. Agent visual judgment uses the existing user waiver, not a claimed human comparison. Evidence /tmp/recorder-t812-{group,core,review,reduced,panels,gallery,gallery-png}.log and /tmp/recorder-t812-*.png. No dependencies, project format change, install, permission reset, release or push. T-814 onward remain unfinished; full live propagation/prototype sequence is not claimed.

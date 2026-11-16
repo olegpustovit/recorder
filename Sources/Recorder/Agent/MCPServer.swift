@@ -18,8 +18,11 @@ struct AgentDraft {
     var skipped: [[Int]: String] = [:]
     var cutRanges: [(start: Double, end: Double, duration: Double)] = []
     var revision: String
+    private(set) var duration: Double
 
-    init(base: String, baseProject: Project) { self.base = base; self.baseProject = baseProject; revision = base }
+    init(base: String, baseProject: Project) {
+        self.base = base; self.baseProject = baseProject; revision = base; duration = baseProject.exportDuration
+    }
     private func replayContext(_ context: EditContext, call: Int, indices: [Int]) -> EditContext {
         var context = context
         context.operationSeeds = indices.map { "\(id):\(call):\($0)" }
@@ -93,17 +96,18 @@ struct AgentDraft {
             }
         }
         revision = try MCPTools.revision(result.project)
+        duration = result.project.exportDuration
         return result.project
     }
     var selectedCount: Int {
         calls.enumerated().reduce(0) { count, call in count + call.element.indices.filter { !excluded.contains([call.offset, $0]) && skipped[[call.offset, $0]] == nil }.count }
     }
-    struct Row: Identifiable {
-        let call: Int
-        let index: Int
-        let op: EditOp
-        let change: EditChange
-        var id: [Int] { [call, index] }
+    typealias Row = AgentDraftRow
+    var groups: [AgentChangeGroup] { AgentChangeGroup.groups(rows) }
+    func seekTime(_ row: Row, in project: Project) throws -> Double {
+        var prefix = self
+        prefix.calls = Array(calls.prefix(row.call))
+        return try row.outputTime(before: prefix.project(context: EditContext()), after: project)
     }
     var rows: [Row] {
         calls.enumerated().flatMap { call, ops in
@@ -122,6 +126,7 @@ struct AgentDraft {
         let nextRevision = try MCPTools.revision(result.project)
         calls.append(ops); changes.append(result.changes); contexts.append(context)
         revision = nextRevision
+        duration = result.project.exportDuration
         return result
     }
 }
@@ -391,12 +396,17 @@ enum AgentAccess: String, CaseIterable {
         updateMarks(model, base: draft.baseProject)
     }
     func include(_ row: [Int], in session: MCPSession, included: Bool) throws {
+        try include([row], in: session, included: included)
+    }
+    func include(_ rows: [[Int]], in session: MCPSession, included: Bool) throws {
         let model = try MCPTools.model(for: session)
-        guard model.reviewSessionID == session.id, var draft = session.draft, row.count == 2,
-              draft.calls.indices.contains(row[0]), draft.calls[row[0]].indices.contains(row[1]) else {
+        guard model.reviewSessionID == session.id, var draft = session.draft,
+              rows.allSatisfy({ $0.count == 2 && draft.calls.indices.contains($0[0]) && draft.calls[$0[0]].indices.contains($0[1]) }) else {
             throw MCPFailure(code: "REVIEW_IN_PROGRESS", message: "Start this draft's review before changing its checkboxes")
         }
-        if included { draft.excluded.remove(row) } else { draft.excluded.insert(row) }
+        for row in rows {
+            if included { draft.excluded.remove(row) } else { draft.excluded.insert(row) }
+        }
         let proposed = try draft.refreshReview(context: EditContext(words: model.transcript ?? []))
         try model.updateReview { $0 = proposed }
         session.draft = draft; session.reviewError = nil

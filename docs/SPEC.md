@@ -1153,9 +1153,15 @@ binary (e.g. a source build). The agentpack pane runs `init` (if needed) → `mc
 
 Per-project access is **Off**, **Read**, **Draft** (default) or **Live**, selected in the Claude inspector.
 Draft edits stay in app memory and do not change the saved project. `draft.submit` opens the Claude tab:
-review the rendered preview and timeline cut marks, untick individual operations, then Accept or Discard.
+review the rendered preview and timeline cut marks, untick individual operations or whole groups, then Accept.
+Changes are collapsed by kind (Cuts, Speed, Zoom, Text, Markers, Other), with a native tri-state checkbox,
+lane swatch, count and selected duration delta. Expanding shows individual changes and skipped reasons;
+clicking a change seeks to its output time. The summary shows selected count, resulting duration and delta.
+Accept N stays pinned outside the scroll area; unticking all and Accept 0 closes without a project mutation.
+Stale/error notices stay above the summary; a stale draft offers Replay on current. Activity is collapsed.
+Disclosures open in320ms, with55ms child stagger/4pt entrance; Reduce Motion uses140ms opacity without movement.
 Accept creates one named `Claude: …` undo step; Live mode applies each call directly as one named undo step.
-A stale draft offers **Replay on current** or Discard; replay reports invalid/dependent operations as skipped.
+A stale draft offers **Replay on current**; replay reports invalid/dependent operations as skipped.
 Only one review can be active per project. Quitting Recorder loses pending drafts; disconnecting a client does
 not automatically accept them. Human gestures, active review and voiceover recording guard conflicting edits.
 

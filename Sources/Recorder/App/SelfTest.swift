@@ -1507,6 +1507,15 @@ enum SelfTest {
                 var draft = AgentDraft(base: try MCPTools.revision(project), baseProject: project)
                 _ = try draft.append([.cut(from: 8.3, to: 10), .cut(from: 14, to: 14.6),
                     .text(from: 20, to: 23, style: .title, text: "A clearer introduction", position: nil, size: nil)], context: EditContext())
+                if ["agent-17", "agent-short", "agent-5"].contains(variant) {
+                    let count = variant == "agent-5" ? 2 : 14
+                    _ = try draft.append((0..<count).map { index in
+                        if index < 5 { return .speed(from: Double(index * 2), to: Double(index * 2 + 1), speed: 2) }
+                        if index < 10 { return .text(from: Double(25 + (index - 5) * 2), to: Double(26 + (index - 5) * 2),
+                            style: .label, text: "Chapter \(index - 4)", position: nil, size: nil) }
+                        return .marker(at: Double(index), label: "Section \(index - 9)")
+                    }, context: EditContext())
+                }
                 draft.note = variant == "agent-long" ? String(repeating: "Removed long pauses and tightened the introduction. ", count: 8) : "Removed long pauses and tightened the introduction."
                 draft.submitted = true; draft.excluded = [[0, 1]]
                 let proposed = try draft.refreshReview(context: EditContext())
@@ -1546,7 +1555,7 @@ enum SelfTest {
                 model.edit("Text fixture") { $0.texts = [text] }; model.selection = [UUID(uuidString: text.id)!]
             }
 
-            let height: CGFloat = variant == "agent-short" ? 420 : 760
+            let height: CGFloat = variant == "agent-short" ? 420 : ["agent-17", "agent-5"].contains(variant) ? 640 : 760
             let hosting = NSHostingView(rootView: InspectorView(model: model, initialTab: initialTab))
             hosting.appearance = NSAppearance(named: .darkAqua)
             hosting.frame = NSRect(x: 0, y: 0, width: InspectorView.width, height: height)
@@ -4498,6 +4507,10 @@ private final class MCPTestClient {
     guard let controller = await EditorWindowController.open(package: package).value else { throw MCPTestFailure(description: "Could not open review fixture") }
     let model = controller.model, session = MCPSession()
     session.agentName = "claude-code"; session.projectURL = model.packageURL.standardizedFileURL
+    let reducedMotion = args.contains("--reduce-motion")
+    if reducedMotion {
+        controller.inspectorView = NSHostingView(rootView: InspectorView(model: model).environment(\.agentReduceMotionPreview, true))
+    }
     server.register(session)
     defer {
         controller.close(); session.draft = nil; session.connected = false; server.removeFinishedSessions()
@@ -4541,6 +4554,65 @@ private final class MCPTestClient {
     guard let draft = session.draft else { throw MCPTestFailure(description: "Lost review draft") }
     let expected = try base.applying([ops[0], ops[2]], context: EditContext(operationSeeds: ["\(draft.id):0:0", "\(draft.id):0:2"])).project
     guard model.project == expected, draft.selectedCount == 2, model.liveProject == base else { throw MCPTestFailure(description: "Checkbox did not replay two operations") }
+    try await Task.sleep(for: .milliseconds(400))
+    func buttons(_ view: NSView) -> [NSButton] { (view as? NSButton).map { [$0] } ?? view.subviews.flatMap(buttons) }
+    guard let cutCheckbox = buttons(controller.inspectorView).first(where: { $0.accessibilityLabel() == "Include cuts" }),
+          cutCheckbox.state == .on, cutCheckbox.isEnabled else { throw MCPTestFailure(description: "Native group checkbox missing or disabled") }
+    cutCheckbox.performClick(nil)
+    try await Task.sleep(for: .milliseconds(60))
+    guard session.draft?.excluded.contains([0, 0]) == true, model.project.clips == base.clips, cutCheckbox.state == .off else {
+        throw MCPTestFailure(description: "Native group checkbox did not exclude its cut")
+    }
+    cutCheckbox.performClick(nil)
+    try await Task.sleep(for: .milliseconds(60))
+    guard model.project == expected, cutCheckbox.state == .on else { throw MCPTestFailure(description: "Native group checkbox did not recover the seeded result") }
+    func clickInspector(_ point: NSPoint) {
+        let window = controller.window!, location = controller.inspectorView.convert(point, to: nil)
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            window.sendEvent(NSEvent.mouseEvent(with: type, location: location, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!)
+        }
+    }
+    let groupFrame = cutCheckbox.convert(cutCheckbox.bounds, to: controller.inspectorView)
+    let disclosurePoint = NSPoint(x: groupFrame.minX - 9, y: groupFrame.midY)
+    let inspectorCapture = controller.inspectorView
+    func capturePanel(_ stage: String) throws {
+        guard let rep = inspectorCapture.bitmapImageRepForCachingDisplay(in: inspectorCapture.bounds) else { throw MCPTestFailure(description: "Panel bitmap") }
+        inspectorCapture.cacheDisplay(in: inspectorCapture.bounds, to: rep)
+        guard let png = rep.representation(using: .png, properties: [:]) else { throw MCPTestFailure(description: "Panel PNG") }
+        try png.write(to: URL(fileURLWithPath: "/tmp/recorder-t812-\(reducedMotion ? "reduced-" : "")\(stage).png"))
+    }
+    clickInspector(disclosurePoint)
+    try await Task.sleep(for: .milliseconds(100))
+    try capturePanel("expanded-mid")
+    try await Task.sleep(for: .milliseconds(400))
+    try capturePanel("expanded")
+    clickInspector(NSPoint(x: 150, y: groupFrame.midY + (inspectorCapture.isFlipped ? 32 : -32)))
+    guard abs(model.playhead - 0.5) < 1e-9 else { throw MCPTestFailure(description: "Native change-row click did not seek") }
+    clickInspector(disclosurePoint)
+    try await Task.sleep(for: .milliseconds(400))
+    guard let textCheckbox = buttons(inspectorCapture).first(where: { $0.accessibilityLabel() == "Include text" }) else {
+        throw MCPTestFailure(description: "Text group missing")
+    }
+    let textFrame = textCheckbox.convert(textCheckbox.bounds, to: inspectorCapture)
+    let textDisclosure = NSPoint(x: textFrame.minX - 9, y: textFrame.midY)
+    clickInspector(textDisclosure)
+    try await Task.sleep(for: .milliseconds(500))
+    clickInspector(NSPoint(x: 150, y: textFrame.midY + (inspectorCapture.isFlipped ? 32 : -32)))
+    guard abs(model.playhead - 0.7) < 1e-9 else { throw MCPTestFailure(description: "Seek did not remap the text row after a cut") }
+    clickInspector(textDisclosure)
+    try await Task.sleep(for: .milliseconds(400))
+    for _ in 0..<3 {
+        clickInspector(disclosurePoint)
+        try await Task.sleep(for: .milliseconds(35))
+        clickInspector(disclosurePoint)
+        try await Task.sleep(for: .milliseconds(35))
+    }
+    try await Task.sleep(for: .milliseconds(500))
+    let settledTextFrame = textCheckbox.convert(textCheckbox.bounds, to: inspectorCapture)
+    guard abs(settledTextFrame.midY - textFrame.midY) < 1 else {
+        throw MCPTestFailure(description: "Rapid disclosure reversal left stale rows or layout")
+    }
     controller.previewView.stepFrame(0.1)
     guard model.playhead > 0 else { throw MCPTestFailure(description: "Review blocked scrubbing") }
     // Capture the integrated document bar, panel and timeline with the same rendered frame as the preview.
@@ -4570,7 +4642,9 @@ private final class MCPTestClient {
     }
     guard model.isPlaying, model.playhead > playbackStart + 0.05 else { throw MCPTestFailure(description: "Review blocked playback") }
     controller.previewView.togglePlayPause()
-    try server.finishReview(session, commit: true)
+    let inspector = controller.inspectorView
+    clickInspector(NSPoint(x: inspector.bounds.maxX - 50, y: inspector.isFlipped ? inspector.bounds.maxY - 24 : 24))
+    try await Task.sleep(for: .milliseconds(80))
     let status = try await tool("status")
     guard model.project == expected, !model.isReviewingDraft, model.undoStepNames == ["Claude: Tighten the introduction"],
           status["verdict"] as? String == "accepted 2 of 3", model.reviewCuts.isEmpty, model.reviewAddedIDs.isEmpty else {
@@ -4578,6 +4652,36 @@ private final class MCPTestClient {
     }
     model.undo()
     guard model.project == base else { throw MCPTestFailure(description: "Accepted review undo did not restore base") }
+    session.draft = try proposal(ops, base: base); _ = try await tool("submit")
+    guard let grouped = session.draft,
+          let cutGroup = grouped.groups.first(where: { $0.kind == .cuts }),
+          let otherGroup = grouped.groups.first(where: { $0.kind == .other }) else {
+        throw MCPTestFailure(description: "Missing cut/style groups")
+    }
+    try server.include(cutGroup.rows.map(\.id) + otherGroup.rows.map(\.id), in: session, included: false)
+    let groupedExpected = try base.applying([ops[2]], context: EditContext(operationSeeds: ["\(grouped.id):0:2"])).project
+    guard model.project == groupedExpected, session.draft?.selectedCount == 1,
+          session.draft?.duration == groupedExpected.exportDuration,
+          session.draft?.excluded == Set([[0, 0], [0, 1]]), model.liveProject == base else {
+        throw MCPTestFailure(description: "Group exclusion did not preserve the exact seeded remaining result")
+    }
+    try server.include(cutGroup.rows.map(\.id), in: session, included: true)
+    guard session.draft?.selectedCount == 2, model.project.frame.padding == base.frame.padding else {
+        throw MCPTestFailure(description: "Reincluding one group changed another group's exclusion")
+    }
+    let beforeInvalidGroup = model.project
+    do {
+        try server.include([[0, 0], [100, 0]], in: session, included: false)
+        throw MCPTestFailure(description: "Invalid group was accepted")
+    } catch is MCPFailure { }
+    guard model.project == beforeInvalidGroup, session.draft?.selectedCount == 2 else {
+        throw MCPTestFailure(description: "Invalid group exclusion was not atomic")
+    }
+    try server.include(grouped.rows.map(\.id), in: session, included: false)
+    guard model.project == base, session.draft?.selectedCount == 0 else { throw MCPTestFailure(description: "Unticking all groups did not restore the base") }
+    try server.finishReview(session, commit: true)
+    guard !model.isReviewingDraft, model.project == base, model.undoStepNames.isEmpty,
+          session.lastDraftVerdict == "accepted 0 of 3" else { throw MCPTestFailure(description: "Accept 0 mutated the project or added undo") }
     session.draft = try proposal(ops, base: base)
     model.edit("Human") { $0.frame.shadow = 0.8 }
     let human = model.project
@@ -4612,7 +4716,7 @@ private final class MCPTestClient {
     controller.close()
     guard model.project == base, !model.isReviewingDraft, session.draft?.submitted == false,
           try Project.load(from: file) == base else { throw MCPTestFailure(description: "Closing review saved a proposal or lost its pending state") }
-    print("MCP review: partial acceptance/verdict, one undo, preview/disk/client isolation, edit/Escape guards, scrubbing, stale replay/discard, dependency recovery, disconnect and close verified; /tmp/recorder-mcp-review.png")
+    print("MCP review: native group/disclosure/seek/footer clicks, rapid reversal, \(reducedMotion ? "reduced" : "normal") motion samples, partial/group/zero-op acceptance, atomic group validation, seeded result, one undo, preview/disk/client isolation, edit/Escape guards, scrubbing, stale replay/discard, dependency recovery, disconnect and close verified; /tmp/recorder-mcp-review.png")
 }
 
 @MainActor private func checkMCPEdit(_ args: [String]) async throws {
