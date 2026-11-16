@@ -60,8 +60,8 @@ enum MCPTools {
             tool("edit", ["apply", "undo"], "Apply atomic edits using the latest ifRevision; edits land in a draft by default. All times in a call refer to that revision's output timeline.", ["ifRevision": string, "ops": ["type": "array", "items": ["oneOf": operationSchemas]], "dryRun": boolean]),
             tool("draft", ["status", "submit", "discard"], "Read or submit your draft for review, or discard it.", ["note": string]),
             tool("render", ["frames", "sheet", "clip", "cancel"], "Render frames, a contact sheet or a 540p proxy into the agent cache. Key chips are hidden.", ["at": ["type": "array", "items": number, "maxItems": 24], "from": number, "to": number, "count": ["type": "integer", "minimum": 1, "maximum": 24], "longEdge": ["type": "integer", "minimum": 1, "maximum": 640], "draft": boolean]),
-            tool("export", ["final"], "Export an MP4 after the user's native approval, optionally with SRT subtitles.", ["destination": string, "shortEdge": ["type": "integer", "minimum": 1], "fps": ["type": "integer", "minimum": 1], "srt": boolean]),
-            tool("ui", ["show"], "Move the editor playhead and select blocks by id.", ["at": number, "select": ["type": "array", "items": string]])
+            tool("export", ["final"], "Export an MP4 after the user's native approval, optionally with SRT subtitles.", ["destination": string, "shortEdge": ["type": "integer", "enum": [720, 1080, 2160]], "fps": ["type": "integer", "enum": [24, 30, 60]], "srt": boolean]),
+            tool("ui", ["show"], "Move the editor playhead and select blocks by id.", ["at": ["type": "number"], "select": ["type": "array", "items": string]])
         ]
     }()
 
@@ -156,7 +156,7 @@ enum MCPTools {
         let ops = try decodeOps(args["ops"])
         let originalDraftID = session.draft?.id
         let context = try await editContext(ops, model: model)
-        guard try self.model(for: session) === model else { throw MCPFailure(code: "NO_PROJECT", message: "Project changed during analysis; reopen it and retry") }
+        guard try MCPTools.model(for: session) === model else { throw MCPFailure(code: "NO_PROJECT", message: "Project changed during analysis; reopen it and retry") }
         try requireAccess(model.liveProject, tool: "edit"); try requireEditable(model)
         guard level == AgentAccess.level(for: model.liveProject.id) else { throw MCPFailure(code: "PERMISSION_DENIED", message: "Access changed during analysis; check access and retry") }
         guard liveRevision == (try revision(model.liveProject)), originalDraftID == session.draft?.id,
@@ -227,7 +227,9 @@ enum MCPTools {
         if let draft, draft.verdict == nil { payload["revision"] = draft.revision }
         return payload
     }
-    @MainActor static func call(_ name: String, _ args: [String: Any], session: MCPSession, progress: @escaping (Double) -> Void = { _ in }) async -> [String: Any] {
+    @MainActor static func call(_ name: String, _ args: [String: Any], session: MCPSession, progress: @escaping (Double) -> Void = { _ in },
+                                approveExport: (@MainActor (AgentExportRequest) async throws -> Bool)? = nil,
+                                approvalTimeout: Duration = .seconds(600)) async -> [String: Any] {
         let began = Date()
         var action = "invalid", errorCode: String?
         defer {
@@ -351,6 +353,23 @@ enum MCPTools {
                     (payload, extraContent) = try await render(action, args, model: model, session: session, progress: progress)
                 case ("edit", _): payload = try await edit(action, args, model: model, session: session)
                 case ("draft", _): payload = try await draft(action, args, model: model, session: session)
+                case ("export", "final"):
+                    (payload, extraContent) = try await exportFinal(args, model: model, session: session, progress: progress,
+                        approve: approveExport, approvalTimeout: approvalTimeout)
+                case ("ui", "show"):
+                    if let selected = args["select"] {
+                        guard let ids = selected as? [String] else { throw MCPFailure(code: "INVALID_OP", message: "select must be an array of block ids from timeline.get") }
+                        let project = model.project
+                        let existing = Set(project.zooms.map(\.id) + project.texts.map(\.id) + project.masks.map(\.id)
+                            + project.layouts.map(\.id) + project.cameraClips.map(\.id) + project.keystrokeClips.map(\.id)
+                            + project.windowShots.map(\.id) + project.layers.map(\.id) + project.audioClips.map(\.id))
+                        model.selectedClips = []
+                        model.selection = Set(ids.filter { existing.contains($0) }.compactMap(UUID.init(uuidString:)))
+                        if !model.selection.isEmpty { model.inspectorShowsAgent = false }
+                    }
+                    if args["at"] != nil { model.playhead = min(model.project.exportDuration, max(0, try number(args, "at", default: model.playhead))) }
+                    _ = await EditorWindowController.open(package: model.packageURL).value
+                    payload = ["at": model.playhead, "select": model.selection.map(\.uuidString).sorted()]
                 default: throw MCPFailure(code: "INVALID_OP", message: "\(name).\(action) is not available in this build; use Recorder's editor")
                 }
                 if ["project", "timeline", "transcript", "analyze"].contains(name) { payload["revision"] = try revision(viewed) }
@@ -374,6 +393,105 @@ enum MCPTools {
             errorCode = failure.code
             return result(["error": failure.code, "message": "\(failure.code): \(failure.message)"], isError: true)
         }
+    }
+
+    @MainActor private static func exportFinal(_ args: [String: Any], model: EditorModel, session: MCPSession,
+            progress: @escaping (Double) -> Void, approve: (@MainActor (AgentExportRequest) async throws -> Bool)?,
+            approvalTimeout: Duration) async throws -> ([String: Any], [[String: Any]]) {
+        try requireEditable(model)
+        guard session.renderTask == nil else { throw MCPFailure(code: "RENDER_BUSY", message: "Wait for the current render/export or call render.cancel") }
+        guard let controller = EditorWindowController.allOpen.first(where: { $0.model === model }), controller.window?.attachedSheet == nil else {
+            throw MCPFailure(code: "RENDER_BUSY", message: "Close the editor's current sheet before exporting")
+        }
+        let project = model.liveProject, revision = try revision(model.liveProject)
+        guard project.exportDuration > 0 else { throw MCPFailure(code: "OUT_OF_RANGE", message: "Add media before exporting") }
+        var settings = ExportSettings.loadDefault()
+        settings.format = .mp4
+        if ![24, 30, 60].contains(settings.fps) { settings.fps = 30 }
+        if ![720, 1080, 2160].contains(settings.shortEdge) { settings.shortEdge = 1080 }
+        let edge = try number(args, "shortEdge", default: Double(settings.shortEdge)), fps = try number(args, "fps", default: Double(settings.fps))
+        guard [720.0, 1080, 2160].contains(edge), [24.0, 30, 60].contains(fps) else {
+            throw MCPFailure(code: "OUT_OF_RANGE", message: "Use shortEdge 720, 1080 or 2160 and fps 24, 30 or 60")
+        }
+        settings.shortEdge = Int(edge); settings.fps = Int(fps)
+        let includeSRT = args["srt"] as? Bool ?? false
+        let fm = FileManager.default
+        func exists(_ url: URL) -> Bool { (try? fm.attributesOfItem(atPath: url.path)) != nil }
+        func used(_ url: URL) -> Bool { exists(url) || (includeSRT && exists(url.deletingPathExtension().appendingPathExtension("srt"))) }
+        let destination: URL
+        if let path = args["destination"] as? String {
+            guard !path.isEmpty else { throw MCPFailure(code: "INVALID_OP", message: "Choose a local .mp4 destination or omit destination for a unique name") }
+            destination = URL(fileURLWithPath: (path as NSString).expandingTildeInPath).standardizedFileURL.resolvingSymlinksInPath()
+        } else {
+            let folder = fm.homeDirectoryForCurrentUser.appendingPathComponent("Movies/Recorder/Exports", isDirectory: true)
+            let title = project.title.replacingOccurrences(of: "/", with: "-").trimmingCharacters(in: .whitespacesAndNewlines)
+            let name = title.isEmpty ? "Untitled" : title
+            var candidate = folder.appendingPathComponent(name).appendingPathExtension("mp4"), suffix = 2
+            while used(candidate) { candidate = folder.appendingPathComponent("\(name) \(suffix)").appendingPathExtension("mp4"); suffix += 1 }
+            destination = candidate.resolvingSymlinksInPath()
+        }
+        guard destination.pathExtension.lowercased() == "mp4", !used(destination) else {
+            throw MCPFailure(code: "INVALID_OP", message: "Destination must be an unused .mp4 path (and unused .srt path when requested); choose another name")
+        }
+        let request = AgentExportRequest(project: project, settings: settings, destination: destination, includeSRT: includeSRT, client: session.agentName)
+        let frozen = EditorModel(packageURL: model.packageURL, project: project, events: model.events, paths: (model.cursorPath, model.cameraPath))
+        let job = UUID()
+        let task = Task { @MainActor () throws -> [URL] in
+            let granted = try await withThrowingTaskGroup(of: Bool.self) { group in
+                group.addTask { @MainActor in
+                    if let approve { return try await approve(request) }
+                    return try await controller.approveAgentExport(request)
+                }
+                group.addTask {
+                    try await Task.sleep(for: approvalTimeout)
+                    throw MCPFailure(code: "NEEDS_APPROVAL", message: "Export approval timed out after ten minutes; request it again when the user is ready")
+                }
+                defer { group.cancelAll() }
+                return try await group.next() ?? false
+            }
+            try Task.checkCancellation()
+            guard granted else { throw MCPFailure(code: "DENIED", message: "The user denied this export; ask them before requesting it again") }
+            guard try MCPTools.model(for: session) === model else { throw MCPFailure(code: "NO_PROJECT", message: "The project changed; reopen it before requesting an export") }
+            try requireAccess(model.liveProject, tool: "export"); try requireEditable(model)
+            guard revision == (try MCPTools.revision(model.liveProject)) else { throw MCPFailure(code: "STALE_REVISION", message: "The project changed during approval; request approval for its latest revision") }
+            guard !used(destination) else { throw MCPFailure(code: "INVALID_OP", message: "The destination appeared during approval; choose another name") }
+            try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let staging = destination.deletingLastPathComponent().appendingPathComponent(".recorder-export-\(UUID().uuidString)", isDirectory: true)
+            try fm.createDirectory(at: staging, withIntermediateDirectories: false)
+            defer { try? fm.removeItem(at: staging) }
+            let movie = staging.appendingPathComponent(destination.lastPathComponent)
+            let exporter = Exporter(model: frozen, settings: settings, destination: movie)
+            exporter.progress = { value, _, _ in Task { @MainActor in progress(value) } }
+            progress(0)
+            try await withTaskCancellationHandler { try await exporter.run() } onCancel: { exporter.cancel() }
+            try Task.checkCancellation()
+            guard try MCPTools.model(for: session) === model else { throw MCPFailure(code: "NO_PROJECT", message: "The editor changed or closed during export; reopen it and retry") }
+            try requireAccess(model.liveProject, tool: "export")
+            let subtitles = destination.deletingPathExtension().appendingPathExtension("srt")
+            let stagedSRT = staging.appendingPathComponent(subtitles.lastPathComponent)
+            if includeSRT { try RecorderCore.srt(project).write(to: stagedSRT, atomically: true, encoding: .utf8) }
+            // Moving from staging never overwrites a destination created by another export.
+            try fm.moveItem(at: movie, to: destination)
+            if includeSRT {
+                do { try fm.moveItem(at: stagedSRT, to: subtitles) }
+                catch { try? fm.removeItem(at: destination); throw error }
+            }
+            progress(1)
+            return includeSRT ? [destination, subtitles] : [destination]
+        }
+        session.renderTask = task; session.renderJobID = job
+        defer { if session.renderJobID == job { session.renderTask = nil; session.renderJobID = nil }; MCPServer.shared.removeFinishedSessions() }
+        let files: [URL]
+        do { files = try await task.value }
+        catch is CancellationError { throw MCPFailure(code: "DENIED", message: "Export cancelled; request another export when ready") }
+        catch Exporter.ExportError.cancelled { throw MCPFailure(code: "DENIED", message: "Export cancelled; request another export when ready") }
+        var payload: [String: Any] = ["project": project.id, "revision": revision, "path": destination.path,
+            "seconds": try await AVURLAsset(url: destination).load(.duration).seconds,
+            "bytes": (try fm.attributesOfItem(atPath: destination.path)[.size] as? NSNumber)?.intValue ?? 0]
+        if includeSRT { payload["srtPath"] = files[1].path }
+        let links = files.map { ["type": "resource_link", "uri": $0.absoluteString, "name": $0.lastPathComponent,
+                                "mimeType": $0.pathExtension == "srt" ? "application/x-subrip" : "video/mp4"] }
+        return (payload, links)
     }
 
     @MainActor private static func render(_ action: String, _ args: [String: Any], model: EditorModel, session: MCPSession,
@@ -419,7 +537,7 @@ enum MCPTools {
             }
         }
         session.renderTask = task; session.renderJobID = jobID
-        defer { if session.renderJobID == jobID { session.renderTask = nil; session.renderJobID = nil } }
+        defer { if session.renderJobID == jobID { session.renderTask = nil; session.renderJobID = nil }; MCPServer.shared.removeFinishedSessions() }
         let files: [URL]
         do { files = try await task.value }
         catch is CancellationError { throw MCPFailure(code: "DENIED", message: "Render cancelled; request another render when ready") }

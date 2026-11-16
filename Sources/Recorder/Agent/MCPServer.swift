@@ -365,7 +365,7 @@ enum AgentAccess: String, CaseIterable {
         return "idle"
     }
     func removeFinishedSessions() {
-        sessions.removeAll { !$0.connected && ($0.draft == nil || $0.draft?.verdict != nil) }
+        sessions.removeAll { !$0.connected && $0.renderJobID == nil && ($0.draft == nil || $0.draft?.verdict != nil) }
     }
     func review(_ session: MCPSession, rebase: Bool = false) throws {
         let model = try MCPTools.model(for: session)

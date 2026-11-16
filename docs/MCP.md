@@ -130,7 +130,7 @@ Nine tools, each with an `action` string (Resolve's MCP shows that grouping keep
 | `edit` | `apply {ifRevision, ops:[EditOp], dryRun=false}` → `{revision, mode:"draft"\|"live", changes:[EditChange], duration:{before,after}, warnings:[…]}` · `undo` (live only: `model.undo()` if the top undo name starts with `Claude:`) |
 | `draft` | `status` → `{base, ops, changes, submitted, verdict?}` · `submit {note}` → opens review in the editor · `discard` |
 | `render` | `frames {at:[t…] ≤6, draft=true, longEdge=640}` → images + links · `sheet {count=12 ≤24 \| at:[…], draft=true}` → 1 JPEG + link · `clip {from,to, draft=true}` → job, then link (async, progress) · `cancel` |
-| `export` | `final {destination?, shortEdge=1080, fps=60, srt=false}` → waits for approval → `{path, seconds, bytes}` or `DENIED` |
+| `export` | `final {destination?, shortEdge?, fps?, srt=false}` → waits for approval → `{path, seconds, bytes}` or `DENIED` |
 | `ui` | `show {at, select?:[id]}` → moves the playhead / selection in the editor |
 
 `draft=true` renders the project with the session's draft applied (or the live project when there is no draft).
@@ -561,23 +561,44 @@ visual waiver permits agent inspection; no human-performed comparison is claimed
 
 ### T-809 App: `export.final`, SRT sidecar, `ui.show`, Settings ▸ Agents
 
-**Files.** `MCPTools.swift`, `EditorWindowController.swift` (approval sheet), `App/SettingsView.swift` (Agents section).
+**Files.** `MCPTools.swift`, `MCPServer.swift` (keep active jobs until resolved), `EditorWindowController.swift`
+(approval sheet), `App/SettingsView.swift` (Agents section), `SelfTest.swift` (export/UI/connection checks).
 
 - `export.final`: build the same `ExportSettings` the Export sheet uses (read `ExportSheet.swift` for defaults);
   destination default `~/Movies/Recorder/Exports/<title>.mp4` (unique name). Show a native `NSAlert` **sheet** on the
   editor window: title `"claude-code wants to export"`, informative text with duration, size, preset, destination;
   buttons `Export` (default) and `Deny`. Pending > 10 min → `NEEDS_APPROVAL` timeout result. On Export run `Exporter` with
   progress notifications; if `srt` write `<name>.srt` with `srt(project)`.
+  Uses the accepted live project, never an unaccepted draft; defaults come from the native Export sheet's saved
+  settings, with MP4 format and valid MP4 frame rates. Overrides accept the same 720/1080/2160 short edges and
+  24/30/60 fps choices. Capture the approved project/settings, then recheck access, editor identity, revision and
+  review/gesture/import/voiceover state after approval. Render the frozen approved snapshot into a sibling staging
+  directory; publish completed movie/SRT by non-overwriting moves, cleaning staging on denial, cancellation or
+  failure. Existing movies, sidecars and destinations that appear while approval is pending are preserved.
+  `render.cancel` cancels a pending approval or export; timeout also dismisses its sheet. Closing the editor during
+  approval returns `NO_PROJECT`. Replies identify the exported revision and include `path`, `seconds`, `bytes`,
+  optional `srtPath`, and resource links. Final exports retain the native project's configured effects/keys; agent
+  inspection renders still hide key overlays.
 - `ui.show {at, select}`: `model.playhead = at` (clamped), `model.selection = ids that exist`.
+  Omitted fields preserve their current values; unknown ids are ignored, non-string ids are rejected. Selection
+  uses the actual editor project (including an active review preview), with the usual session revision in replies.
 - Settings ▸ Agents: one row per known client — v1 only **Claude Code**: status (`claude` found on PATH via
   `/usr/bin/env which claude`; installed if `claude mcp get recorder` exits 0), `Connect` runs
   `claude mcp add recorder -s user -- <Bundle.main.executablePath> --mcp` and shows its output; `Copy JSON` copies
   `{"mcpServers":{"recorder":{"command":"<path>","args":["--mcp"]}}}` for other clients. Live session list (agent name,
-  project, connected since).
+  project, connected since). Lookup also adds the standard user-local/Homebrew bin directories to Finder's sparse
+  PATH. CLI operations run off the UI thread; termination is requested if their own child is still running after 30 seconds.
+  Configured clients cannot be connected twice; Copy JSON stays available. Only connected sessions appear in this list.
 
-**Verify.** Selftest `mcp-export <package>` with an injected auto-approve closure (never shows UI in selftests) writes an
-MP4 + SRT; deny path returns `DENIED`. **HUMAN:** in Settings ▸ Agents press Connect, then in a terminal run `claude`,
-`/mcp` shows `recorder · connected · 9 tools`; ask it to "tighten this recording" on a real project and accept the draft.
+**Verify.** Selftest `mcp-export <package>` injects approval callbacks, never presents an approval sheet, writes and
+loads an MP4 + exact output-time SRT, and checks deny/timeout/cancel/busy, stale revision, changed access, editor close,
+existing/racing destinations, unchanged project/defaults, staging cleanup, `ui.show`, draft-revision consistency, and
+connection JSON/arguments. `settings-png <out.png> agents` captures the real Agents pane with a session fixture.
+**Real-client/visual check:** connect from Settings, confirm nine Recorder tools in Claude Code, then run §8 on a
+disposable recording: read/analyze/edit/render/submit, untick one change, accept, Undo/Redo, then approve and deny
+native export sheets. Verify default unique destinations and MP4 + SRT, plus recovery from a rejected overlapping edit.
+The user's 2026-11-15 waiver permits agent-driven review of this disposable workflow; do not claim a person approved
+it or that generated/cached speech proves live microphone capture/on-device transcription.
 
 ### T-810 Docs and smoke
 

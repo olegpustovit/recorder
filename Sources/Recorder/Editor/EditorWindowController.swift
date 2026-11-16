@@ -10,6 +10,24 @@ import SwiftUI
 import UniformTypeIdentifiers
 import RecorderCore
 
+struct AgentExportRequest {
+    let project: Project
+    let settings: ExportSettings
+    let destination: URL
+    let includeSRT: Bool
+    let client: String
+
+    @MainActor func makeAlert() -> NSAlert {
+        let size = ExportSettings.outputSize(project: project, shortEdge: settings.shortEdge)
+        let alert = NSAlert()
+        alert.messageText = "\(client) wants to export"
+        alert.informativeText = "\(project.title) · \(String(format: "%.1f", project.exportDuration)) seconds\n\(Int(size.width)) × \(Int(size.height)) · MP4 · \(settings.shortEdge)p · \(settings.fps) fps · \(settings.codec == .h264 ? "H.264" : "HEVC") · \(settings.quality.rawValue.capitalized)\n\(destination.path)" + (includeSRT ? "\nIncludes SRT subtitles." : "")
+        alert.addButton(withTitle: "Export")
+        alert.addButton(withTitle: "Deny").keyEquivalent = "\u{1b}"
+        return alert
+    }
+}
+
 /// The editor's main window: document/navigation bars above preview + transport + timeline,
 /// with a full-height inspector alongside. The timeline fits its lanes and can be enlarged; `window` is
 /// `.fullSizeContentView` so that top bar draws under the native titlebar strip (T-307 fix).
@@ -32,6 +50,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
     private var titleField: NSTextField!
     private var saveStatusButton: NSButton!
     private var agentStatusButton: NSButton!
+    private var agentExportAlert: NSAlert?
     private var editableHeaderControls: [NSControl] = []
     // Typed handles onto the two swappable views above, kept alongside them so the menu actions
     // (T-311) below can reach real API (`InspectorView.init(initialTab:)`, `TimelineView.setZoom`)
@@ -212,10 +231,32 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
     func windowWillClose(_ notification: Notification) {
         model.voiceover.discard()
+        if let alert = agentExportAlert { window?.endSheet(alert.window, returnCode: .abort) }
         MCPServer.shared.editorClosing(model)
         model.saveNow()
         Self.openWindows.removeValue(forKey: model.packageURL)
         Self.liveControllers.removeAll { $0.value == nil || $0.value === self }
+    }
+
+    @MainActor func approveAgentExport(_ request: AgentExportRequest) async throws -> Bool {
+        guard let window, Self.allOpen.contains(where: { $0 === self }) else { throw MCPFailure(code: "NO_PROJECT", message: "Open the project before exporting") }
+        guard window.attachedSheet == nil else { throw MCPFailure(code: "RENDER_BUSY", message: "Close the current sheet before requesting an export") }
+        try Task.checkCancellation()
+        let alert = request.makeAlert()
+        agentExportAlert = alert
+        defer { if agentExportAlert === alert { agentExportAlert = nil } }
+        let response = await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                alert.beginSheetModal(for: window) { continuation.resume(returning: $0) }
+            }
+        } onCancel: {
+            Task { @MainActor in
+                if alert.window.sheetParent === window { window.endSheet(alert.window, returnCode: .cancel) }
+            }
+        }
+        try Task.checkCancellation()
+        guard Self.allOpen.contains(where: { $0 === self }) else { throw MCPFailure(code: "NO_PROJECT", message: "The editor closed; reopen it before exporting") }
+        return response == .alertFirstButtonReturn
     }
 
     // MARK: - Document bar (Projects, title, save status, Export)

@@ -30,6 +30,7 @@ enum SelfTest {
         "mcp-render": { args in try await checkMCPRender(args) },
         "mcp-edit": { args in try await checkMCPEdit(args) },
         "mcp-review": { args in try await checkMCPReview(args) },
+        "mcp-export": { args in try await checkMCPExport(args) },
         "motion-text": { _ in try await Compositor.runMotionTextSelfTest() },
         "layers": { args in try await SelfTest.cases["make-layers-fixture"]!(args) },
         "capture-exclusion": { _ in
@@ -176,16 +177,25 @@ enum SelfTest {
             try await UIKitGallery.renderPNG(to: URL(fileURLWithPath: path))
             print("wrote \(path)")
         },
-        "settings-png": { args in
+        "settings-png": { @MainActor args in
             struct Fail: Error, CustomStringConvertible { let description: String }
             guard let path = args.first else { throw Fail(description: "usage: settings-png <out.png>") }
-            try await MainActor.run {
+            let session = MCPSession()
+            session.agentName = "claude-code"; session.projectURL = URL(fileURLWithPath: "/tmp/MCP walkthrough.recorder")
+            if args.contains("agents") { MCPServer.shared.register(session) }
+            defer { session.connected = false; MCPServer.shared.removeFinishedSessions() }
+            do {
                 let size = NSSize(width: 520, height: 640)
-                let hosting = NSHostingView(rootView: SettingsView().frame(width: size.width, height: size.height))
+                let content = args.contains("agents")
+                    ? AnyView(VStack(alignment: .leading, spacing: 16) { TechSectionLabel(index: "03", title: "Agents"); AgentsPane(); Spacer(minLength: 0) }.padding(20).frame(width: size.width, height: size.height).signalWindow())
+                    : AnyView(SettingsView().frame(width: size.width, height: size.height))
+                let hosting = NSHostingView(rootView: content)
                 hosting.frame = NSRect(origin: .zero, size: size)
                 hosting.appearance = NSAppearance(named: .darkAqua)
                 let window = NSWindow(contentRect: hosting.frame, styleMask: [.borderless], backing: .buffered, defer: false)
                 window.contentView = hosting
+                hosting.layoutSubtreeIfNeeded()
+                try await Task.sleep(for: .seconds(2))
                 hosting.layoutSubtreeIfNeeded()
                 guard let rep = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) else {
                     throw Fail(description: "no bitmap rep")
@@ -4306,7 +4316,7 @@ private extension Array {
 
 // MARK: - T-416: a synthetic `mic.m4a` fixture (used by "timeline-png") so the waveform draws.
 
-private struct MCPTestFailure: Error, CustomStringConvertible { let description: String }
+private struct MCPTestFailure: Error, CustomStringConvertible, LocalizedError { let description: String; var errorDescription: String? { description } }
 
 /// A blocking client on a worker thread, independent of the server's newline reader and session handler.
 private final class MCPTestClient {
@@ -4357,6 +4367,121 @@ private final class MCPTestClient {
         }
         return structured
     }
+}
+
+@MainActor private func checkMCPExport(_ args: [String]) async throws {
+    guard let path = args.first else { throw MCPTestFailure(description: "usage: mcp-export <fixture.recorder>") }
+    let fm = FileManager.default, root = fm.temporaryDirectory.appendingPathComponent("recorder-mcp-export-\(UUID().uuidString)").resolvingSymlinksInPath()
+    try fm.createDirectory(at: root, withIntermediateDirectories: true)
+    let package = root.appendingPathComponent("Fixture.recorder"), file = package.appendingPathComponent("project.json")
+    try fm.copyItem(at: URL(fileURLWithPath: path), to: package)
+    var fixture = try Project.load(from: file)
+    fixture.id = UUID().uuidString; fixture.title = "MCP Export \(UUID().uuidString.prefix(8))"
+    fixture.clips = [Clip(sourceStart: 0, sourceEnd: 1), Clip(sourceStart: 1.5, sourceEnd: 3, speed: 2)]
+    fixture.texts = [TextBlock(start: 0.2, end: 0.8, text: "Hello", style: .caption),
+                     TextBlock(start: 1.6, end: 2.6, text: "World", style: .caption),
+                     TextBlock(start: 0, end: 1, text: "Sam Lee\nRecorder", style: .lowerThird)]
+    try fixture.save(to: file)
+    NSApplication.shared.setActivationPolicy(.accessory); NSApplication.shared.finishLaunching()
+    guard let controller = await EditorWindowController.open(package: package).value else { throw MCPTestFailure(description: "Export fixture failed to open") }
+    let model = controller.model, session = MCPSession()
+    session.agentName = "claude-code"; session.projectURL = model.packageURL.standardizedFileURL
+    MCPServer.shared.register(session)
+    defer {
+        controller.close(); session.connected = false; session.draft = nil; MCPServer.shared.removeFinishedSessions()
+        UserDefaults.standard.removeObject(forKey: "agentAccess.\(fixture.id)")
+        try? fm.removeItem(at: root)
+    }
+    let base = model.project, saved = try Data(contentsOf: file)
+    let defaults = UserDefaults.standard.data(forKey: "export.settings")
+    let destination = root.appendingPathComponent("Final export.mp4"), sidecar = root.appendingPathComponent("Final export.srt")
+    var approvals = 0, progress: [Double] = []
+    func tool(_ name: String, _ args: [String: Any], error: String? = nil,
+              timeout: Duration = .seconds(600), approval: @escaping @MainActor (AgentExportRequest) async throws -> Bool = { _ in false }) async throws -> [String: Any] {
+        let result = await MCPTools.call(name, args, session: session, progress: { progress.append($0) }, approveExport: approval, approvalTimeout: timeout)
+        let payload = result["structuredContent"] as? [String: Any] ?? [:]
+        if let error {
+            guard result["isError"] as? Bool == true, payload["error"] as? String == error else { throw MCPTestFailure(description: "Expected \(error), got \(payload)") }
+        } else {
+            guard result["isError"] as? Bool == false else { throw MCPTestFailure(description: "\(name) failed: \(payload)") }
+        }
+        return payload
+    }
+    let exportArgs: [String: Any] = ["action": "final", "destination": destination.path, "shortEdge": 720, "fps": 24, "srt": true]
+    AgentAccess.set(.read, for: base.id)
+    _ = try await tool("export", exportArgs, error: "PERMISSION_DENIED") { _ in approvals += 1; return true }
+    guard approvals == 0 else { throw MCPTestFailure(description: "Read access reached export approval") }
+    AgentAccess.set(.draft, for: base.id)
+    _ = try await tool("export", exportArgs, error: "DENIED") { request in
+        approvals += 1
+        guard request.project == base, request.settings.format == .mp4, request.settings.shortEdge == 720,
+              request.settings.fps == 24, request.destination == destination, request.includeSRT else { throw MCPTestFailure(description: "Approval did not describe the requested export") }
+        let alert = request.makeAlert(); alert.layout()
+        guard alert.messageText == "claude-code wants to export", alert.buttons.map(\.title) == ["Export", "Deny"],
+              alert.informativeText.contains(destination.path), alert.informativeText.contains("1280 × 720"), !alert.window.isVisible else {
+            throw MCPTestFailure(description: "Native approval contents or selftest showed UI")
+        }
+        return false
+    }
+    guard !fm.fileExists(atPath: destination.path), !fm.fileExists(atPath: sidecar.path), controller.window?.attachedSheet == nil else { throw MCPTestFailure(description: "Denied export wrote files or left a sheet") }
+    _ = try await tool("export", exportArgs, error: "NEEDS_APPROVAL", timeout: .milliseconds(30)) { _ in
+        try await Task.sleep(for: .seconds(5)); return true
+    }
+    _ = try await tool("export", exportArgs, error: "STALE_REVISION") { _ in model.edit("Human") { $0.frame.shadow = 0.8 }; return true }
+    model.undo()
+    _ = try await tool("export", exportArgs, error: "PERMISSION_DENIED") { _ in AgentAccess.set(.read, for: base.id); return true }
+    AgentAccess.set(.draft, for: base.id)
+    try Data("Keep existing subtitles".utf8).write(to: sidecar)
+    _ = try await tool("export", exportArgs, error: "INVALID_OP")
+    guard try String(contentsOf: sidecar, encoding: .utf8) == "Keep existing subtitles" else { throw MCPTestFailure(description: "Export overwrote an existing sidecar") }
+    try fm.removeItem(at: sidecar)
+    _ = try await tool("export", exportArgs, error: "INVALID_OP") { request in try Data("Race".utf8).write(to: request.destination); return true }
+    guard try String(contentsOf: destination, encoding: .utf8) == "Race" else { throw MCPTestFailure(description: "Export overwrote a file created during approval") }
+    try fm.removeItem(at: destination)
+    let cancel = Task { try await tool("export", exportArgs, error: "DENIED") { _ in try await Task.sleep(for: .seconds(5)); return true } }
+    while session.renderTask == nil { await Task.yield() }
+    _ = try await tool("export", exportArgs, error: "RENDER_BUSY")
+    guard try await tool("render", ["action": "cancel"])["cancelled"] as? Bool == true else { throw MCPTestFailure(description: "Pending export was not cancellable") }
+    _ = try await cancel.value
+    let result = try await tool("export", exportArgs) { _ in approvals += 1; return true }
+    let asset = AVURLAsset(url: destination)
+    guard let track = try await asset.loadTracks(withMediaType: .video).first,
+          abs(try await asset.load(.duration).seconds - base.exportDuration) < 0.05,
+          try await track.load(.naturalSize) == CGSize(width: 1280, height: 720),
+          abs(try await track.load(.nominalFrameRate) - 24) < 0.01,
+          (result["bytes"] as? Int ?? 0) > 0, result["path"] as? String == destination.path,
+          result["srtPath"] as? String == sidecar.path, result["revision"] as? String == (try MCPTools.revision(base)),
+          try String(contentsOf: sidecar, encoding: .utf8) == RecorderCore.srt(base),
+          progress.contains(0), progress.contains(1) else { throw MCPTestFailure(description: "Approved MP4/SRT, preset, revision or progress") }
+    _ = try await AVAssetImageGenerator(asset: asset).image(at: .zero)
+    try fm.removeItem(at: destination); try fm.removeItem(at: sidecar)
+    // A default export is still approval-gated; a denied request creates no directory or movie.
+    _ = try await tool("export", ["action": "final"], error: "DENIED") { request in
+        let expected = fm.homeDirectoryForCurrentUser.appendingPathComponent("Movies/Recorder/Exports", isDirectory: true).resolvingSymlinksInPath()
+        guard request.destination.deletingLastPathComponent().path == expected.path,
+              request.destination.pathExtension == "mp4", request.settings.format == .mp4 else { throw MCPTestFailure(description: "Default export destination or format") }
+        return false
+    }
+    let shown = try await tool("ui", ["action": "show", "at": 100, "select": [base.texts[0].id, UUID().uuidString]])
+    guard model.playhead == base.exportDuration, model.selection == [UUID(uuidString: base.texts[0].id)!],
+          (shown["select"] as? [String]) == [base.texts[0].id] else { throw MCPTestFailure(description: "ui.show did not clamp/select existing blocks") }
+    _ = try await tool("ui", ["action": "show", "at": -1])
+    _ = try await tool("ui", ["action": "show", "select": [1]], error: "INVALID_OP")
+    guard model.playhead == 0, model.project == base, model.undoStepNames.isEmpty,
+          try Data(contentsOf: file) == saved, defaults == UserDefaults.standard.data(forKey: "export.settings"),
+          !(try fm.contentsOfDirectory(atPath: root.path)).contains(where: { $0.hasPrefix(".recorder-export-") }) else { throw MCPTestFailure(description: "Export/UI mutated the project/defaults or leaked staging files") }
+    let proposed = try await tool("edit", ["action": "apply", "ifRevision": try MCPTools.revision(base),
+        "ops": [["op": "style", "patch": ["frame": ["padding": 0.04]]]]])
+    let revealed = try await tool("ui", ["action": "show", "at": 0.4])
+    guard proposed["revision"] as? String == revealed["revision"] as? String, model.project == base else { throw MCPTestFailure(description: "ui.show lost the session's draft revision or applied it") }
+    _ = try await tool("draft", ["action": "discard"])
+    let configuration = try JSONSerialization.jsonObject(with: Data(AgentClient.configurationJSON().utf8)) as? [String: Any]
+    let server = (configuration?["mcpServers"] as? [String: Any])?["recorder"] as? [String: Any]
+    guard server?["command"] as? String == Bundle.main.executableURL?.path, server?["args"] as? [String] == ["--mcp"],
+          AgentClient.connectArguments == ["mcp", "add", "recorder", "-s", "user", "--", Bundle.main.executableURL!.path, "--mcp"] else { throw MCPTestFailure(description: "Agent connection command/JSON") }
+    _ = try await tool("export", exportArgs, error: "NO_PROJECT") { _ in controller.close(); return true }
+    guard !fm.fileExists(atPath: destination.path) else { throw MCPTestFailure(description: "Closed project exported") }
+    print("MCP export: native approval contents, allow/deny/timeout/cancel/busy, stale/access/close checks, non-overwriting MP4/SRT, preset/progress, ui.show and connection JSON/arguments verified")
 }
 
 @MainActor private func checkMCPReview(_ args: [String]) async throws {
