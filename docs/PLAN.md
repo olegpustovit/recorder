@@ -1686,4 +1686,4 @@ HUMAN review · 2026-11-16 · The user judged the Claude panel's feel and motion
 
 T-828 · 2026-11-17 · `render.storyboard/strip/compare` (AgentRender `tiles`/`keyframe`/`compare`, MCPTools render branch; storyboard via `loadStoryboard` stub until T-827 merges) · verified: `make test` all pass, `make build` · not verified: rendered output (no GUI run; needs `--selftest`/HUMAN on a fixture once analyze.shots exists).
 
-T-832 · 2026-11-17 · opt-in shot captions: Core `ShotCaption.shape` + `ShotCaptionTests`, app `AgentCaptions.captionShots` (Vision OCR on focus crop, classifier fallback, nil on failure) · verified: `make test` all pass, `make build` · not verified: Vision output on a real recording; `captions:true` on analyze.shots is wired by the integrator.
+T-832 · 2026-11-17 · opt-in shot captions: Core `ShotCaption.shape` + `ShotCaptionTests`, app `AgentCaptions.captionShots` (Vision OCR on focus crop, classifier fallback, nil on failure) · verified: `make test` all pass, `make build` · not verified: Vision output on a real recording; `captions:true` on analyze.shots is wired by the integrator. captions wiring into analyze.shots done at integration

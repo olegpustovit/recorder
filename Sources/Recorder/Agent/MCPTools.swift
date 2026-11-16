@@ -485,6 +485,9 @@ enum MCPTools {
         case ("analyze", "transcribe"): return "Transcribing speech"
         case ("render", "frames"): return "Rendering frames"
         case ("render", "sheet"): return "Rendering contact sheet"
+        case ("render", "storyboard"): return "Rendering shot storyboard"
+        case ("render", "strip"): return "Rendering filmstrip"
+        case ("render", "compare"): return "Rendering base vs draft"
         case ("render", "clip"): return "Rendering preview"
         case ("render", "cancel"): return "Cancelling render"
         case ("draft", "submit"): return "Preparing review"
@@ -511,6 +514,9 @@ enum MCPTools {
         case ("analyze", "transcribe"): return "\(payload["words"] as? Int ?? 0) words"
         case ("render", "frames"): return "\((payload["files"] as? [Any])?.count ?? 0) frames"
         case ("render", "sheet"): return "Contact sheet ready"
+        case ("render", "storyboard"): return "Storyboard ready"
+        case ("render", "strip"): return "Filmstrip ready"
+        case ("render", "compare"): return "Comparison ready"
         case ("render", "clip"), ("export", "final"): return String(format: "%.1f s video ready", payload["seconds"] as? Double ?? 0)
         case ("render", "cancel"): return payload["cancelled"] as? Bool == true ? "Cancelled" : "Nothing to cancel"
         case ("project", "list"): return "\((payload["projects"] as? [Any])?.count ?? 0) recordings"
@@ -637,27 +643,30 @@ enum MCPTools {
         guard (2...640).contains(edge) else { throw MCPFailure(code: "OUT_OF_RANGE", message: "longEdge must be 2–640 pixels") }
         var labels: [String]?
         var extra: [String: Any] = [:]
+        if action == "compare", args["draft"] as? Bool == false { throw MCPFailure(code: "INVALID_OP", message: "render.compare compares the live project with the draft; draft:false leaves nothing to compare") }
         if action == "storyboard" {
             let board = try await loadStoryboard(model: model)
+            if args["shots"] != nil, !(args["shots"] is [String]) { throw MCPFailure(code: "INVALID_OP", message: "shots must be an array of shot id strings") }
             let wanted = args["shots"] as? [String]
             if let wanted, let unknown = wanted.first(where: { id in !board.shots.contains { $0.id == id } }) {
                 throw MCPFailure(code: "INVALID_OP", message: "Unknown shot id \(unknown); run analyze.shots and use its ids")
             }
             let map = TimeMap(frozen.project.clips)
             let kept = board.shots.filter { wanted?.contains($0.id) ?? true }.compactMap { shot in
-                AgentRender.keyframe(shot, fps: board.fps, map: map).map { (shot, $0) }
+                AgentRender.keyframe(shot, fps: board.fps, map: map).map { (shot, $0.output, $0.kept) }
             }
-            let page = Int(try number(args, "page", default: 1)), pages = max(1, (kept.count + 47) / 48)
-            guard (1...pages).contains(page) else { throw MCPFailure(code: "OUT_OF_RANGE", message: "page must be 1–\(pages)") }
+            let pages = max(1, (kept.count + 47) / 48)
+            let rawPage = try number(args, "page", default: 1)
+            guard rawPage >= 1, rawPage <= Double(pages), rawPage == rawPage.rounded(), case let page = Int(rawPage) else { throw MCPFailure(code: "OUT_OF_RANGE", message: "page must be 1–\(pages)") }
             let slice = kept[(page - 1) * 48 ..< min(kept.count, page * 48)]
             times = slice.map(\.1)
-            labels = slice.map { String(format: "%@ %.1fs", $0.0.id, $0.0.duration) }
+            labels = slice.map { String(format: "%@ %.1fs", $0.0.id, $0.2) }
             extra = ["page": page, "pages": pages, "shots": slice.map(\.0.id)]
             guard !times.isEmpty else { throw MCPFailure(code: "OUT_OF_RANGE", message: "The draft keeps none of these shots") }
         } else if action == "strip" {
             let fps = try number(args, "fps", default: 6)
             let from = try number(args, "from", default: -1), to = try number(args, "to", default: -1)
-            guard (4...8).contains(fps), from >= 0, to > from, to <= duration, (to - from) * fps <= 48 else {
+            guard (4...8).contains(fps), fps == fps.rounded(), from >= 0, to > from, to <= duration, (to - from) * fps <= 48 else {
                 throw MCPFailure(code: "OUT_OF_RANGE", message: "render.strip needs fps 4–8 and 0 ≤ from < to ≤ \(duration) with at most 48 tiles (\(Int(48 / fps)) s at \(Int(fps)) fps)")
             }
             times = (0..<max(1, Int(((to - from) * fps).rounded(.down)))).map { from + Double($0) / fps }
@@ -716,7 +725,7 @@ enum MCPTools {
         return (payload, content)
     }
 
-    // ponytail: stub until T-827 merge; the real one returns analyze.shots' cached storyboard and, when `captions`, runs AgentCaptions.captionShots on it.
+    // ponytail: stub until T-827 merge; the real one returns analyze.shots' cached storyboard and, when `captions`, runs `try await AgentCaptions.captionShots` on it.
     @MainActor private static func loadStoryboard(model: EditorModel, captions: Bool = false) async throws -> Storyboard {
         throw MCPFailure(code: "NO_STORYBOARD", message: "run analyze.shots first")
     }

@@ -86,11 +86,22 @@ enum AgentRender {
         return data as Data
     }
     @MainActor static func sheet(model: EditorModel, at times: [Double], labels: [String]? = nil, columns: Int = 4, folder: URL) async throws -> URL {
-        try tiles(try await frames(model: model, at: times, longEdge: 320, folder: folder), labels: labels ?? times.map(timecode), columns: columns, folder: folder)
+        let portrait = model.project.source.pixelHeight > model.project.source.pixelWidth
+        return try tiles(try await frames(model: model, at: times, longEdge: 320, folder: folder), labels: labels ?? times.map(timecode), columns: portrait ? 8 : columns, folder: folder)
     }
-    /// Settled keyframe of a shot in output seconds: just before its end, else its middle/start; nil when the draft dropped it all.
-    static func keyframe(_ shot: Shot, fps: Double, map: TimeMap) -> Double? {
-        [shot.to - 1.5 / max(fps, 1), (shot.from + shot.to) / 2, shot.from].lazy.filter { $0 >= shot.from }.compactMap { map.outputTime(atSource: $0) }.first
+    /// Settled keyframe of a shot: output seconds just before the end of its last kept piece, plus the KEPT duration; nil when the draft dropped it all.
+    static func keyframe(_ shot: Shot, fps: Double, map: TimeMap) -> (output: Double, kept: Double)? {
+        var spans: [(Double, Double)] = [], output = 0.0, mapped: [Double] = []
+        for clip in map.clips {
+            defer { output += clip.outputDuration }
+            guard !clip.isEmpty, clip.file == nil else { continue }   // recording clips only, like sourceRanges
+            let a = max(shot.from, clip.sourceStart), b = min(shot.to, clip.sourceEnd)
+            guard b > a else { continue }
+            spans.append((a, b))
+            mapped.append(output + (min(b, max(a, b - 1.5 / max(fps, 1))) - clip.sourceStart) / clip.timeScale)
+        }
+        guard let last = mapped.last else { return nil }
+        return (last, spans.reduce(0) { $0 + $1.1 - $1.0 })
     }
     static func timecode(_ t: Double) -> String {
         let tenths = Int((t * 10).rounded())
@@ -105,7 +116,7 @@ enum AgentRender {
             }
             return image
         }
-        let cellWidth = 320, cellHeight = (images.map(\.height).max() ?? 200) + 24
+        let cellWidth = max(120, images.map(\.width).max() ?? 320), cellHeight = (images.map(\.height).max() ?? 200) + 24
         let width = cellWidth * columns, height = cellHeight * ((images.count + columns - 1) / columns)
         guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
                                       space: VideoColor.space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
@@ -136,7 +147,9 @@ enum AgentRender {
     /// Base (live) and draft frames side by side, one row per time; each side clamps to its own duration.
     @MainActor static func compare(base: EditorModel, draft: EditorModel, at times: [Double], folder: URL) async throws -> URL {
         let b = try await frames(model: base, at: times.map { min($0, base.project.exportDuration) }, longEdge: 320, folder: folder)
-        let d = try await frames(model: draft, at: times, longEdge: 320, folder: folder)
+        let d: [URL]
+        do { d = try await frames(model: draft, at: times, longEdge: 320, folder: folder) }
+        catch { for url in b { try? FileManager.default.removeItem(at: url) }; throw error }
         return try tiles(zip(b, d).flatMap { [$0, $1] }, labels: times.flatMap { ["base " + timecode($0), "draft " + timecode($0)] }, columns: 2, folder: folder)
     }
     @MainActor static func clip(model: EditorModel, from: Double, to: Double, folder: URL, progress: @escaping (Double) -> Void) async throws -> URL {
