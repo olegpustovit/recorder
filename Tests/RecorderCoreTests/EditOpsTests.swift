@@ -231,7 +231,7 @@ import Testing
         #expect(result.project.markers.count == 1 && result.project.checkInvariants() == nil)
         let all = try base.applying([.cut(from: 0.01, to: 19.99, snap: true)], context: EditContext())
         #expect(all.project == base && all.changes[0].skipped && all.changes[0].note != nil)
-        #expect(throws: EditError.self) { try base.applying([.cut(from: .nan, to: 2, snap: true)], context: EditContext()) }
+        #expect(throws: EditError.self) { try base.applying([.cut(from: .seconds(.nan), to: 2, snap: true)], context: EditContext()) }
         #expect(throws: EditError.self) { try base.applying([.cut(from: 2, to: 1, snap: true)], context: EditContext()) }
         #expect(throws: EditError.self) { try base.applying([.cut(from: 0.01, to: 2, snap: true), .style(patch: ["typo": .bool(true)])], context: EditContext()) }
         #expect(base.clips == project().clips)
@@ -272,5 +272,70 @@ import Testing
         let wordCut = try project().applying([.cutWords(transcript: transcriptID(words.words), words: ["w0"], snap: true)], context: words)
         #expect(wordCut.project.clips[0].sourceStart == 1 && wordCut.changes[0].note != nil)
         #expect(result.project.checkInvariants() == nil)
+    }
+
+    @Test func anchorsFollowEarlierCutsAndSpeedWhileNumbersKeepBaseTime() throws {
+        var base = project()
+        base.markers = [Marker(id: "anchor", time: 10, label: "Anchor")]
+        let ops: [EditOp] = [.cut(from: 2, to: 4), .speed(from: 4, to: 8, speed: 2),
+            .marker(at: .marker("anchor", offset: -1), label: "Relative"), .marker(at: 5, label: "Numeric"),
+            .text(from: .marker("anchor", offset: -1), to: .marker("anchor"), style: .title, text: "Anchored", position: nil, size: nil),
+            .cut(from: .marker("anchor", offset: 1), to: .marker("anchor", offset: 2))]
+        let result = try base.applying(ops, context: EditContext(operationSeeds: ops.indices.map { "anchor-\($0)" }))
+        #expect(result.project.markers.first { $0.label == "Relative" }?.time == 9)
+        #expect(result.project.markers.first { $0.label == "Numeric" }?.time == 5)
+        #expect(result.project.texts[0].start == 9 && result.project.texts[0].end == 10)
+        #expect(!result.project.clips.contains { $0.sourceStart < 12 && $0.sourceEnd > 11 })
+        #expect(TimeMap(result.project.clips).outputDuration == 15)
+        #expect(result.changes[4].sourceAt == 9 && result.project.checkInvariants() == nil)
+    }
+
+    @Test func anchorsUseCreatedUpdatedAndDeletedMarkersInOrder() throws {
+        let base = project()
+        let create = EditOp.marker(at: 2, label: "Created")
+        let id = try base.applying([create], context: EditContext(operationSeeds: ["created"])).project.markers[0].id
+        let ops: [EditOp] = [create, .update(id: id, from: 4, to: nil, text: "Updated", position: nil, size: nil, scale: nil, center: nil),
+            .marker(at: .marker(id, offset: 1), label: "Relative"), .remove(id: id)]
+        let context = EditContext(operationSeeds: ["created", "update", "relative", "remove"])
+        let result = try base.applying(ops, context: context)
+        #expect(result.project.markers.count == 1 && result.project.markers[0].time == 5)
+        #expect(try base.applying(ops, context: context).project == result.project)
+        #expect(throws: EditError.self) {
+            try base.applying(ops + [.marker(at: .marker(id), label: "Deleted")], context: EditContext(operationSeeds: context.operationSeeds + ["deleted"]))
+        }
+        #expect(base.markers.isEmpty && result.project.checkInvariants() == nil)
+    }
+
+    @Test func anchorsSupportOffsetsAfterUnlinkedExtensionAndSeekTheSourcePoint() throws {
+        var base = project(); base.linkVideoEdits = false
+        base.markers = [Marker(id: "anchor", time: 15, label: "Anchor")]
+        let op = EditOp.text(from: .marker("anchor", offset: 10), to: .marker("anchor", offset: 11), style: .title, text: "Extended", position: nil, size: nil)
+        let result = try base.applying([.speed(from: 0, to: 20, speed: 0.5), op], context: EditContext())
+        #expect(result.project.texts[0].start == 25 && result.project.texts[0].end == 26)
+        #expect(TimeMap(result.project.clips).outputDuration == 40)
+        let row = AgentDraftRow(call: 0, index: 1, op: op, change: result.changes[1])
+        #expect(row.outputTime(before: base, after: result.project) == 25)
+        #expect(result.project.checkInvariants() == nil)
+    }
+
+    @Test func anchorJSONAndInvalidReferencesAreAtomic() throws {
+        let json = #"[{"op":"marker","at":{"marker":"m","offset":-1},"label":"Relative"},{"op":"cut","from":{"marker":"m"},"to":{"marker":"m","offset":1}}]"#
+        let ops = try JSONDecoder().decode([EditOp].self, from: Data(json.utf8))
+        #expect(try JSONDecoder().decode([EditOp].self, from: JSONEncoder().encode(ops)) == ops)
+        let base = project()
+        do {
+            _ = try base.applying([.style(patch: ["frame": .object(["padding": .number(0.04)])]), ops[0]], context: EditContext())
+            Issue.record("missing anchor accepted")
+        } catch let error as EditError {
+            guard case .invalidOp(let index, _) = error else { Issue.record("wrong error"); return }
+            #expect(index == 1)
+        }
+        #expect(throws: DecodingError.self) { try JSONDecoder().decode(EditTime.self, from: Data(#"{"marker":"m","typo":1}"#.utf8)) }
+        #expect(throws: DecodingError.self) { try JSONDecoder().decode(EditTime.self, from: Data(#"{"marker":"m","offset":true}"#.utf8)) }
+        var marked = base; marked.markers = [Marker(id: "m", time: 3, label: "")]
+        #expect(throws: EditError.self) { try marked.applying([.marker(at: .marker("m", offset: .nan), label: "")], context: EditContext()) }
+        #expect(throws: EditError.self) { try marked.applying([.marker(at: .marker("m", offset: -4), label: "")], context: EditContext()) }
+        #expect(throws: EditError.self) { try marked.applying([.cut(from: 2, to: 4), .marker(at: .marker("m"), label: "Removed")], context: EditContext()) }
+        #expect(base.frame.padding == project().frame.padding)
     }
 }

@@ -808,13 +808,13 @@ private struct GalleryReveal: ViewModifier {
     func run() async throws {
         reset()
         let speedStarts: [Double] = [2, 6, 10, 14, 18]
-        let speeds: [EditOp] = speedStarts.map { EditOp.speed(from: $0, to: $0 + 2, speed: 2) }
+        let speeds: [EditOp] = speedStarts.map { EditOp.speed(from: .seconds($0), to: .seconds($0 + 2), speed: 2) }
         let times: [Double] = [0.3, 4.3, 8.3, 12.3, 18.3, 24.3]
         let labels = ["Project walkthrough", "Prepare", "Record", "Review", "Export", "Recap"]
         let texts: [EditOp] = times.enumerated().map { index, time in
-            EditOp.text(from: time, to: time + 1, style: .lowerThird, text: labels[index], position: nil, size: nil)
+            EditOp.text(from: .seconds(time), to: .seconds(time + 1), style: .lowerThird, text: labels[index], position: nil, size: nil)
         }
-        let markers: [EditOp] = times.dropFirst().enumerated().map { index, time in EditOp.marker(at: time, label: "Section \(index + 1)") }
+        let markers: [EditOp] = times.dropFirst().enumerated().map { index, time in EditOp.marker(at: .seconds(time), label: "Section \(index + 1)") }
         let steps: [[EditOp]] = [speeds, texts, [.zoom(from: 10.3, to: 13.3, scale: 1.8, center: NormPoint(x: 0.6, y: 0.4))], markers]
         let reading = AgentActivity.shared.begin(.init(time: Date(), agent: session.agentName, tool: "timeline.get", intent: "Reading timeline",
             projectID: base.id, sessionID: session.id))

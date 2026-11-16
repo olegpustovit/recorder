@@ -18,11 +18,14 @@ enum MCPTools {
     static let operationSchemas: [[String: Any]] = {
         let number: [String: Any] = ["type": "number", "minimum": 0]
         let string: [String: Any] = ["type": "string"]
+        let time: [String: Any] = ["description": "Numeric seconds use the ifRevision base timeline. A marker anchor resolves on the timeline after earlier operations in this batch; offset is signed output seconds, default 0.", "oneOf": [number,
+            ["type": "object", "properties": ["marker": ["type": "string", "minLength": 1], "offset": ["type": "number", "default": 0]], "required": ["marker"], "additionalProperties": false]]]
         let point: [String: Any] = ["type": "object", "properties": ["x": number, "y": number], "required": ["x", "y"], "additionalProperties": false]
         let center: [String: Any] = ["type": "object", "description": "Normalized 0–1 coordinates in the source frame; origin is the top-left corner.", "properties": ["x": ["type": "number", "minimum": 0, "maximum": 1], "y": ["type": "number", "minimum": 0, "maximum": 1]], "required": ["x", "y"], "additionalProperties": false]
         let rect: [String: Any] = ["type": "object", "properties": ["x": number, "y": number, "w": number, "h": number], "required": ["x", "y", "w", "h"], "additionalProperties": false]
         func op(_ name: String, _ properties: [String: Any], _ required: [String]) -> [String: Any] {
             var properties = properties
+            for key in ["from", "to", "at"] where properties[key] != nil { properties[key] = time }
             if ["cut", "cutPauses", "cutWords", "speed"].contains(name) {
                 properties["snap"] = ["type": "boolean", "default": name == "cutPauses", "description": "Snap invalid split boundaries to the nearest clip edge. Skips ranges below the clip minimum with a warning; changes[].note reports adjustments."]
             }
@@ -62,7 +65,7 @@ enum MCPTools {
             tool("timeline", ["get"], "Read clips, effect blocks and markers in output seconds.", range, read: true),
             tool("transcript", ["get"], "Read up to 2000 spoken words with stable wN ids, or timestamped phrases. Key presses are never returned.", range.merging(["format": ["type": "string", "enum": ["words", "phrases"]]], uniquingKeysWith: { _, b in b }), read: true),
             tool("analyze", ["transcribe", "pauses", "fillers", "activity"], "Transcribe on-device, find mic pauses/fillers, or read activity ranges without key characters.", ["minDuration": number, "threshold": number], read: true),
-            tool("edit", ["apply", "undo"], "Apply atomic edits using the latest ifRevision; edits land in a draft by default. All times in a call refer to that revision's output timeline.", ["ifRevision": string, "ops": ["type": "array", "items": ["oneOf": operationSchemas]], "dryRun": boolean]),
+            tool("edit", ["apply", "undo"], "Apply atomic edits using the latest ifRevision; edits land in a draft by default. Numeric times use that revision's output timeline; {marker:id, offset:seconds} anchors resolve after earlier ops in the batch.", ["ifRevision": string, "ops": ["type": "array", "items": ["oneOf": operationSchemas]], "dryRun": boolean]),
             tool("draft", ["status", "submit", "discard"], "Read your draft's exclusions, skipped reasons and verdict; submit for review or discard it. A pending submitted draft can receive more edit.apply calls, returning to watching until submitted again.", ["note": string]),
             tool("render", ["frames", "sheet", "clip", "cancel"], "Render frames, a contact sheet or a 540p proxy into the agent cache. Key chips are hidden.", ["at": ["type": "array", "items": number, "maxItems": 24], "from": number, "to": number, "count": ["type": "integer", "minimum": 1, "maximum": 24], "longEdge": ["type": "integer", "minimum": 1, "maximum": 640], "draft": boolean]),
             tool("export", ["final"], "Export an MP4 after the user's native approval, optionally with SRT subtitles.", ["destination": string, "shortEdge": ["type": "integer", "enum": [720, 1080, 2160]], "fps": ["type": "integer", "enum": [24, 30, 60]], "srt": boolean]),

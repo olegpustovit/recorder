@@ -27,7 +27,7 @@ public struct AgentDraftRow: Identifiable, Sendable {
     }
 
     public func outputTime(before: Project, after: Project) -> Double {
-        let source = TimeMap(before.clips).sourceTime(atOutput: change.at)
+        let source = change.sourceAt ?? TimeMap(before.clips).sourceTime(atOutput: change.at)
         var output = 0.0
         for clip in after.clips {
             if source < clip.sourceStart { return output }

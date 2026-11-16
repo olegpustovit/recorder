@@ -6,7 +6,7 @@ import Testing
         let base = Project(source: Source(duration: 20), clips: [Clip(sourceStart: 0, sourceEnd: 20)])
         let edited = try base.applying([.cut(from: 2, to: 4), .speed(from: 8, to: 12, speed: 2)], context: EditContext()).project
         func row(at: Double) -> AgentDraftRow {
-            AgentDraftRow(call: 0, index: 0, op: .marker(at: at, label: ""), change: EditChange(op: 0, summary: "", at: at, delta: 0))
+            AgentDraftRow(call: 0, index: 0, op: .marker(at: .seconds(at), label: ""), change: EditChange(op: 0, summary: "", at: at, delta: 0))
         }
         #expect(row(at: 1).outputTime(before: base, after: edited) == 1)
         #expect(row(at: 3).outputTime(before: base, after: edited) == 2)

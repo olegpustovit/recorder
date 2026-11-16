@@ -1513,10 +1513,10 @@ enum SelfTest {
                 if ["agent-17", "agent-short", "agent-5"].contains(variant) {
                     let count = variant == "agent-5" ? 2 : 14
                     _ = try draft.append((0..<count).map { index in
-                        if index < 5 { return .speed(from: Double(index * 2), to: Double(index * 2 + 1), speed: 2) }
-                        if index < 10 { return .text(from: Double(25 + (index - 5) * 2), to: Double(26 + (index - 5) * 2),
+                        if index < 5 { return .speed(from: .seconds(Double(index * 2)), to: .seconds(Double(index * 2 + 1)), speed: 2) }
+                        if index < 10 { return .text(from: .seconds(Double(25 + (index - 5) * 2)), to: .seconds(Double(26 + (index - 5) * 2)),
                             style: .label, text: "Chapter \(index - 4)", position: nil, size: nil) }
-                        return .marker(at: Double(index), label: "Section \(index - 9)")
+                        return .marker(at: .seconds(Double(index)), label: "Section \(index - 9)")
                     }, context: EditContext())
                 }
                 draft.note = variant == "agent-long" ? String(repeating: "Removed long pauses and tightened the introduction. ", count: 8) : "Removed long pauses and tightened the introduction."
@@ -4784,7 +4784,27 @@ private final class MCPTestClient {
             _ = try MCPTools.decodeOps([["op": "cut", "from": 0, "to": 1, "snap": "yes"]])
             throw MCPTestFailure(description: "Invalid snap value accepted")
         } catch is MCPFailure { }
-        print("MCP edit headless: snap schema/default/boolean validation, decoded boundary adjustment, warnings, stable replay and skipped selection verified; no application windows created")
+        var anchored = AgentDraft(base: try MCPTools.revision(base), baseProject: base)
+        _ = try anchored.append([.marker(at: 2, label: "Anchor")], context: EditContext())
+        let markerID = try anchored.project(context: EditContext()).markers[0].id
+        let anchorOps = try MCPTools.decodeOps([["op": "marker", "at": ["marker": markerID, "offset": 0.5], "label": "Dependent"]])
+        _ = try anchored.append(anchorOps, context: EditContext())
+        let expected = try anchored.refreshReview(context: EditContext())
+        guard expected.markers.last?.time == 2.5,
+              ((MCPTools.operationSchemas[8]["properties"] as? [String: Any])?["at"] as? [String: Any])?["oneOf"] != nil else {
+            throw MCPTestFailure(description: "MCP marker schema/decode/current-time anchor")
+        }
+        anchored.excluded.insert([0, 0])
+        let excluded = try anchored.refreshReview(context: EditContext())
+        guard excluded == base, anchored.skipped[[1, 0]]?.contains(markerID) == true, anchored.selectedCount == 0 else {
+            throw MCPTestFailure(description: "Excluded anchor did not skip its dependent with a reason")
+        }
+        anchored.excluded.remove([0, 0])
+        guard try anchored.refreshReview(context: EditContext()) == expected,
+              try anchored.project(context: EditContext()) == expected, anchored.selectedCount == 2, anchored.skipped.isEmpty else {
+            throw MCPTestFailure(description: "Re-included marker anchor lost stable replay ids")
+        }
+        print("MCP edit headless: snap/anchor schemas and decoding, warnings, current-time offsets, frozen replay, exclusions/dependent reasons and stable recovery verified; no application windows created")
         return
     }
     guard let path = args.first else { throw MCPTestFailure(description: "usage: mcp-edit <fixture.recorder>") }
