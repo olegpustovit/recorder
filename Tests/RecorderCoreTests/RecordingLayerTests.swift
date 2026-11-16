@@ -198,15 +198,15 @@ private func recordingFixture(speeds: [Double] = [1, 1, 1], withAudio: Bool = tr
     #expect(emptyScene.zooms.isEmpty && emptyScene.masks.isEmpty && emptyScene.hideCursor == nil)
     let future = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".json")
     defer { try? FileManager.default.removeItem(at: future) }
-    try Data(#"{"version":5,"layers":[{"kind":"future-unknown-kind"}]}"#.utf8).write(to: future)
-    #expect(throws: ProjectError.newerVersion(5)) { try Project.load(from: future) }
+    try Data(#"{"version":6,"layers":[{"kind":"future-unknown-kind"}]}"#.utf8).write(to: future)
+    #expect(throws: ProjectError.newerVersion(6)) { try Project.load(from: future) }
 }
 
 @Test func savesV3WithoutRecordingLayers() throws {
     var project = recordingFixture(withAudio: false)
     let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".json")
     defer { try? FileManager.default.removeItem(at: path) }
-    #expect(Project.currentVersion == 4)
+    #expect(Project.currentVersion == 5)
     try project.save(to: path)
     #expect(try Project.load(from: path) == project)
     let originalVersion = project.version

@@ -130,7 +130,7 @@ public extension Project {
         if let error = checkInvariants() { throw EditError.invariant(error) }
         let baseMap = TimeMap(clips)
         let duration = baseMap.outputDuration
-        let baseBlocks = zooms.map { ($0.id, $0.start, $0.end) } + texts.map { ($0.id, $0.start, $0.end) } + masks.map { ($0.id, $0.start, $0.end) }
+        let baseBlocks = zooms.map { ($0.id, $0.start, $0.end) } + texts.map { ($0.id, $0.start, $0.end) } + masks.map { ($0.id, $0.start, $0.end) } + markers.map { ($0.id, $0.time, $0.time) }
         func ranges(_ from: Double, _ to: Double, index: Int, recordedOnly: Bool = false) throws -> [TimeRange] {
             guard from.isFinite, to.isFinite, from >= 0, to <= duration, to > from else {
                 throw EditError.outOfRange(index: index, reason: "expected 0 ≤ from < to ≤ \(duration)")
@@ -194,6 +194,14 @@ public extension Project {
                 let block = baseBlocks.first { $0.0 == id }
                 guard let block else { throw EditError.invalidOp(index: index, reason: "unknown block \(id)") }
                 at = from ?? baseMap.outputTime(atSource: block.1) ?? 0
+                if markers.contains(where: { $0.id == id }) {
+                    if let from {
+                        guard from.isFinite, from >= 0, from <= duration else { throw EditError.outOfRange(index: index, reason: "marker must be inside the timeline") }
+                        let source = baseMap.sourceTime(atOutput: from)
+                        resolved = [TimeRange(start: source, end: source)]
+                    }
+                    break
+                }
                 if from != nil || to != nil {
                     let mapped = try ranges(at, to ?? baseMap.outputTime(atSource: block.2) ?? duration, index: index)
                     guard let first = mapped.first, let last = mapped.last else { throw EditError.invalidOp(index: index, reason: "updated range contains only gaps") }
@@ -269,9 +277,22 @@ public extension Project {
                     throw EditError.invalidOp(index: index, reason: "highlight needs a normalized rect, opacity 0–1 and a free range of at least 0.5 source seconds")
                 }
                 summary = "Highlight \(stamp(item.at))"
-            case .marker: throw EditError.invalidOp(index: index, reason: "markers are not available until T-803")
-            case let .update(id, _, _, text, position, size, scale, center):
+            case let .marker(_, label):
+                result.markers.append(Marker(time: baseMap.sourceTime(atOutput: item.at), label: label))
+                result.markers.sort { $0.time < $1.time }
+                summary = "Marker \(stamp(item.at))"
+            case let .update(id, _, to, text, position, size, scale, center):
                 try point(position, index: index); try point(center, index: index); try positive(size, index: index); try positive(scale, index: index)
+                if let i = result.markers.firstIndex(where: { $0.id == id }) {
+                    guard to == nil, position == nil, size == nil, scale == nil, center == nil else {
+                        throw EditError.invalidOp(index: index, reason: "marker update supports from and text (label) only")
+                    }
+                    if let span { result.markers[i].time = span.start }
+                    if let text { result.markers[i].label = text }
+                    result.markers.sort { $0.time < $1.time }
+                    summary = "Update marker \(stamp(item.at))"
+                    break
+                }
                 if let span, span.end - span.start < 0.5 { throw EditError.invalidOp(index: index, reason: "updated block needs at least 0.5 source seconds") }
                 if let i = result.zooms.firstIndex(where: { $0.id == id }) {
                     guard text == nil, position == nil, size == nil, scale == nil || scale! >= 1 else { throw EditError.invalidOp(index: index, reason: "zoom supports scale/center and times") }
@@ -293,6 +314,11 @@ public extension Project {
                 } else { throw EditError.invalidOp(index: index, reason: "unknown block \(id)") }
                 summary = "Update block \(stamp(item.at))"
             case let .remove(id):
+                if result.markers.contains(where: { $0.id == id }) {
+                    result.markers.removeAll { $0.id == id }
+                    summary = "Remove marker"
+                    break
+                }
                 guard result.zooms.contains(where: { $0.id == id }) || result.texts.contains(where: { $0.id == id }) || result.masks.contains(where: { $0.id == id }) else { throw EditError.invalidOp(index: index, reason: "unknown block \(id)") }
                 result.removeBlock(id: id)
                 summary = "Remove block"

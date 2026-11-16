@@ -3,6 +3,25 @@ import Testing
 @testable import RecorderCore
 
 @Suite struct EditOpsTests {
+    @Test func markerOpsUseBaseTimeAndCanBeUpdatedAndRemoved() throws {
+        let base = project()
+        let result = try base.applying([.cut(from: 2, to: 4), .marker(at: 8, label: "Start"), .marker(at: 3, label: "Cut")], context: EditContext())
+        #expect(result.project.markers.map(\.time) == [3, 8])
+        #expect(agentTimeline(result.project).markers.map(\.at) == [6])
+        let id = try #require(result.project.markers.first { $0.label == "Start" }?.id)
+        let updated = try result.project.applying([
+            .update(id: id, from: 10, to: nil, text: "Updated", position: nil, size: nil, scale: nil, center: nil)
+        ], context: EditContext())
+        #expect(updated.project.markers.first { $0.id == id }?.time == 12)
+        #expect(agentTimeline(updated.project).markers.first?.label == "Updated")
+        let removed = try updated.project.applying([.remove(id: id)], context: EditContext())
+        #expect(!removed.project.markers.contains { $0.id == id })
+        #expect(throws: EditError.self) {
+            try base.applying([.marker(at: -1, label: "Invalid")], context: EditContext())
+        }
+        #expect(result.project.checkInvariants() == nil && updated.project.checkInvariants() == nil && removed.project.checkInvariants() == nil)
+    }
+
     private func project() -> Project {
         Project(source: Source(duration: 20, hasMic: true), clips: [Clip(sourceStart: 0, sourceEnd: 20)])
     }

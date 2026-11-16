@@ -2,6 +2,66 @@ import Foundation
 import Testing
 @testable import RecorderCore
 
+@Suite struct ProjectTests {
+    @Test func markersAndStylesRoundTripWithConditionalVersion() throws {
+        var project = Project(source: Source(duration: 10), clips: [Clip(sourceStart: 0, sourceEnd: 10)],
+            texts: [TextBlock(start: 1, end: 3, text: "Title")], markers: [Marker(id: "chapter", time: 4, label: "Start")])
+        #expect(try JSONDecoder().decode(Project.self, from: JSONEncoder().encode(project)) == project)
+        #expect(try JSONDecoder().decode(Project.self, from: Data("{}".utf8)).markers.isEmpty)
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try project.save(to: url)
+        #expect(try Project.load(from: url).version == 3)
+        project.clips[0].file = "media/import.mov"
+        try project.save(to: url)
+        #expect(try Project.load(from: url).version == 4)
+        for style in [TextBlock.Style.lowerThird, .chapter] {
+            project.texts[0].style = style
+            try project.save(to: url)
+            let loaded = try Project.load(from: url)
+            #expect(loaded.version == 5 && loaded.texts == project.texts && loaded.markers == project.markers)
+            #expect(project.version == 3)
+        }
+        project.texts = []
+        try project.save(to: url)
+        #expect(try Project.load(from: url).version == 4)
+        #expect(project.checkInvariants() == nil)
+    }
+
+    @Test func markerViewsUseOutputTimeAndOmitRemovedFootage() {
+        let project = Project(source: Source(duration: 8), clips: [Clip(sourceStart: 0, sourceEnd: 2), Clip(sourceStart: 4, sourceEnd: 8, speed: 2)],
+            markers: [Marker(id: "first", time: 1.234, label: "First"), Marker(id: "cut", time: 3, label: "Removed"),
+                      Marker(id: "edge", time: 2, label: "Cut edge"), Marker(id: "last", time: 6, label: "Last")])
+        let view = agentTimeline(project)
+        #expect(view.markers.map(\.id) == ["first", "last"])
+        #expect(view.markers.map(\.at) == [1.23, 3])
+        #expect(agentTimeline(project, from: 2, to: 4).markers.map(\.id) == ["last"])
+        var withGap = project
+        var gap = Clip(sourceStart: 8, sourceEnd: 10)
+        gap.isGap = true
+        withGap.clips.append(gap)
+        withGap.markers.append(Marker(id: "gap", time: 10, label: "Gap end"))
+        #expect(!agentTimeline(withGap).markers.contains { $0.id == "gap" })
+        #expect(project.checkInvariants() == nil)
+    }
+
+    @Test func srtUsesCaptionOutputTimeAcrossCutsAndSpeeds() {
+        let project = Project(source: Source(duration: 8), clips: [Clip(sourceStart: 0, sourceEnd: 2), Clip(sourceStart: 4, sourceEnd: 8, speed: 2)],
+            texts: [TextBlock(start: 1, end: 6, text: " hello\n\nworld ", style: .caption),
+                    TextBlock(start: 6.5, end: 7.5, text: "second", style: .caption),
+                    TextBlock(start: 0, end: 1, text: "title", style: .title)])
+        #expect(srt(project) == "1\n00:00:01,000 --> 00:00:03,000\nhello\nworld\n\n2\n00:00:03,250 --> 00:00:03,750\nsecond\n\n")
+        var removed = project
+        removed.texts = [TextBlock(start: 2.25, end: 3.5, text: "removed", style: .caption)]
+        #expect(srt(removed).isEmpty)
+        var long = Project(source: Source(duration: 4000), clips: [Clip(sourceStart: 0, sourceEnd: 4000)],
+                           texts: [TextBlock(start: 3661.234, end: 3662.234, text: "later", style: .caption)])
+        #expect(srt(long) == "1\n01:01:01,234 --> 01:01:02,234\nlater\n\n")
+        long.texts = []
+        #expect(srt(long).isEmpty)
+    }
+}
+
 @Test func projectRoundTrip() throws {
     let p = Project(
         version: 1,
@@ -104,7 +164,7 @@ import Testing
                             rect: NormRect(), backdrop: .none, motion: .scale, fadeIn: nil, fadeOut: nil)])
     #expect(project.checkInvariants(mediaDurations: ["media/video.mov": 8]) == nil)
     #expect(try JSONDecoder().decode(Project.self, from: JSONEncoder().encode(project)) == project)
-    #expect(Project.currentVersion == 4)
+    #expect(Project.currentVersion == 5)
     let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".json")
     defer { try? FileManager.default.removeItem(at: url) }
     try project.save(to: url)

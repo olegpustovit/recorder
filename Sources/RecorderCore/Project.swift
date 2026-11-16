@@ -205,7 +205,7 @@ public struct Word: Codable, Equatable, Sendable {
 }
 
 public struct TextBlock: Codable, Equatable, Sendable {
-    public enum Style: String, Codable, Sendable, CaseIterable { case caption, title, label }
+    public enum Style: String, Codable, Sendable, CaseIterable { case caption, title, label, lowerThird, chapter }
     public var id: String
     public var start: Double
     public var end: Double
@@ -717,8 +717,17 @@ public enum ProjectError: Error, Equatable, Sendable {
 
 /// The editor's entire edit state. See docs/SPEC.md §5. `project.json` is the only file the
 /// editor ever rewrites; media alongside it is never modified after recording.
+public struct Marker: Codable, Equatable, Sendable {
+    public var id: String
+    public var time: Double
+    public var label: String
+    public init(id: String = UUID().uuidString, time: Double, label: String) {
+        self.id = id; self.time = time; self.label = label
+    }
+}
+
 public struct Project: Codable, Equatable, Sendable {
-    public static let currentVersion = 4
+    public static let currentVersion = 5
 
     public var framingEnabled: Bool { frame.enabled ?? true }
 
@@ -745,6 +754,7 @@ public struct Project: Codable, Equatable, Sendable {
     public var layers: [LayerBlock]
     public var masks: [Mask]
     public var texts: [TextBlock]
+    public var markers: [Marker] = []
     public var windowShots: [WindowShot]
     public var cursorHidden: [TimeRange]
     public var crop: NormRect
@@ -783,7 +793,8 @@ public struct Project: Codable, Equatable, Sendable {
         keys: Keys = Keys(),
         audioTracks: [AudioTrack]? = nil,
         audioClips: [AudioClip]? = nil,
-        layers: [LayerBlock] = []
+        layers: [LayerBlock] = [],
+        markers: [Marker] = []
     ) {
         self.version = version; self.id = id; self.title = title; self.createdAt = createdAt
         self.keystrokeClips = keystrokeClips + layouts.filter { $0.kind == .settings }
@@ -793,12 +804,13 @@ public struct Project: Codable, Equatable, Sendable {
         self.frame = frame; self.cursor = cursor; self.animation = animation; self.camera = camera
         self.audio = audio; self.keys = keys
         self.audioTracks = audioTracks ?? []; self.audioClips = audioClips ?? []; self.layers = layers
+        self.markers = markers
         if audioClips == nil { deriveLegacyAudio() }
     }
 
     enum CodingKeys: String, CodingKey {
         case version, id, title, createdAt, source, linkVideoEdits, rippleDelete, clips, zooms, layouts, cameraClips, keystrokeClips, masks, texts, windowShots, cursorHidden, crop, output,
-             background, frame, cursor, animation, camera, audio, keys, audioTracks, audioClips, layers
+             background, frame, cursor, animation, camera, audio, keys, audioTracks, audioClips, layers, markers
     }
 
     public init(from decoder: Decoder) throws {
@@ -818,6 +830,7 @@ public struct Project: Codable, Equatable, Sendable {
         cameraClips = try c.value(.cameraClips, default: source.hasCamera && source.duration > 0 ? [CameraClip(start: 0, end: source.duration)] : [])
         masks = try c.value(.masks, default: [])
         texts = try c.value(.texts, default: [])
+        markers = try c.value(.markers, default: [])
         windowShots = try c.value(.windowShots, default: [])
         cursorHidden = try c.value(.cursorHidden, default: [])
         crop = try c.value(.crop, default: NormRect())
@@ -864,7 +877,45 @@ public struct Project: Codable, Equatable, Sendable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         var saved = self
-        saved.version = layers.contains { $0.kind == .recording } || clips.contains { $0.file != nil } ? 4 : 3
+        if texts.contains(where: { $0.style == .lowerThird || $0.style == .chapter }) { saved.version = 5 }
+        else { saved.version = layers.contains { $0.kind == .recording } || clips.contains { $0.file != nil } ? 4 : 3 }
         try encoder.encode(saved).write(to: url, options: .atomic)
     }
+}
+
+/// Caption cues follow the same source clock as the compositor, including cuts and playback rates.
+public func srt(_ project: Project) -> String {
+    var cues: [(start: Double, end: Double, text: String)] = []
+    let duration = project.exportDuration
+    for caption in project.texts where caption.style == .caption {
+        let text = caption.text.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }.joined(separator: "\n")
+        guard !text.isEmpty else { continue }
+        var output = 0.0
+        var spans: [(start: Double, end: Double)] = []
+        for clip in project.clips {
+            let lo = max(caption.start, clip.sourceStart), hi = min(caption.end, clip.sourceEnd)
+            if hi > lo {
+                let start = output + (lo - clip.sourceStart) / clip.timeScale
+                let end = min(duration, output + (hi - clip.sourceStart) / clip.timeScale)
+                if end > start {
+                    if let last = spans.last, abs(last.end - start) < 1e-9 { spans[spans.count - 1].end = end }
+                    else { spans.append((start, end)) }
+                }
+            }
+            output += clip.outputDuration
+        }
+        cues += spans.map { ($0.start, $0.end, text) }
+    }
+    func timestamp(_ milliseconds: Int) -> String {
+        String(format: "%02d:%02d:%02d,%03d", milliseconds / 3_600_000,
+               milliseconds / 60_000 % 60, milliseconds / 1000 % 60, milliseconds % 1000)
+    }
+    var entries: [String] = []
+    for cue in cues.sorted(by: { $0.start < $1.start }) where cue.start.isFinite && cue.end.isFinite {
+        let start = Int((max(0, cue.start) * 1000).rounded()), end = Int((max(0, cue.end) * 1000).rounded())
+        guard end > start else { continue }
+        entries.append("\(entries.count + 1)\n\(timestamp(start)) --> \(timestamp(end))\n\(cue.text)\n")
+    }
+    return entries.isEmpty ? "" : entries.joined(separator: "\n") + "\n"
 }

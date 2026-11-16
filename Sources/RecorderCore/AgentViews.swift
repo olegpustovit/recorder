@@ -75,8 +75,14 @@ public func agentTimeline(_ project: Project, from: Double? = nil, to: Double? =
             append(block.id, "audio", segment.output.start, segment.output.end, block.file)
         }
     }
+    let markers: [AgentTimeline.Marker] = project.markers.compactMap { marker in
+        guard project.clips.contains(where: { !$0.isEmpty && marker.time >= $0.sourceStart &&
+            (marker.time < $0.sourceEnd || (marker.time == $0.sourceEnd && marker.time == project.clips.last?.sourceEnd)) }),
+              let at = map.outputTime(atSource: marker.time), at >= (from ?? -.infinity), at < (to ?? .infinity) else { return nil }
+        return .init(id: marker.id, at: agentTime(at), label: marker.label)
+    }.sorted { $0.at < $1.at }
     return AgentTimeline(duration: agentTime(project.exportDuration), clips: clips,
-                         blocks: blocks.sorted { $0.from < $1.from }, markers: [])
+                         blocks: blocks.sorted { $0.from < $1.from }, markers: markers)
 }
 
 public struct AgentWord: Codable, Equatable, Sendable {

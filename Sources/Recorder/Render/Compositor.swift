@@ -769,7 +769,8 @@ final class Compositor {
                         }
                     }
                 }
-            case .title:
+            case .title, .lowerThird, .chapter:
+                // shortcut: lowerThird/chapter use title plates until T-808 adds their dedicated rendering.
                 text.addAttributes([.font: Theme.headingFont(px), .foregroundColor: NSColor.white, .paragraphStyle: para], range: all)
                 pad = CGSize(width: px * 0.6, height: px * 0.3)
             case .label:
@@ -782,7 +783,7 @@ final class Compositor {
                 let inner = CGRect(origin: .zero, size: size).insetBy(dx: 4, dy: 4)
                 switch block.style {
                 case .caption: break
-                case .title: NSColor.black.withAlphaComponent(0.85).setFill(); inner.fill()
+                case .title, .lowerThird, .chapter: NSColor.black.withAlphaComponent(0.85).setFill(); inner.fill()
                 case .label: NSColor.white.setFill(); inner.fill()
                 }
                 let rect = inner.insetBy(dx: pad.width, dy: pad.height)
