@@ -46,7 +46,7 @@ enum CropSheet {
     /// One `EditorModel.edit` call = one undo step (AC-CROP-1).
     @MainActor
     static func confirm(_ newCrop: NormRect, on model: EditorModel) {
-        model.edit("Crop") { $0.crop = newCrop }
+        model.edit("Crop") { $0.crop = newCrop; $0.cropKeys = [] }
     }
 
     /// Decodes the source frame nearest `sourceTime` from `screen.mov` (the raw, cursor-less capture —

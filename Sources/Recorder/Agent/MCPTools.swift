@@ -52,7 +52,8 @@ enum MCPTools {
                 "recording": ["type": "string", "description": "A library recording id from project.assets; its screen video becomes a video layer."],
                 "rect": rect], ["from"]),
             op("remove", ["id": string], ["id"]),
-            op("style", ["patch": ["type": "object"]], ["patch"])
+            op("style", ["patch": ["type": "object"]], ["patch"]),
+            op("reframe", ["aspect": ["type": "string", "enum": ["4:5", "1:1", "9:16", "16:9"]], "mode": ["type": "string", "enum": ["perShot", "static"], "default": "perShot", "description": "perShot: one stationary or pan crop per shot aimed at its focus and cursor; static: one crop over every focus. Needs analyze.shots."]], ["aspect"])
         ]
     }()
     static let list: [[String: Any]] = {
@@ -142,6 +143,22 @@ enum MCPTools {
             }
         }
     }
+    // ponytail: stub until T-827 merge
+    @MainActor private static func loadStoryboard(model: EditorModel) async throws -> Storyboard {
+        throw MCPFailure(code: "INVALID_OP", message: "run analyze.shots first")
+    }
+    /// Fills each `reframe` op's crop keys from the storyboard so the stored op replays without it.
+    @MainActor private static func reframed(_ ops: [EditOp], model: EditorModel) async throws -> [EditOp] {
+        var storyboard: Storyboard?, out: [EditOp] = []
+        for op in ops {
+            guard case let .reframe(aspect, mode, nil) = op else { out.append(op); continue }
+            if storyboard == nil { storyboard = try await loadStoryboard(model: model) }
+            let board = storyboard!
+            let source = model.liveProject.source
+            out.append(.reframe(aspect: aspect, mode: mode, keys: reframePlan(storyboard: board, aspect: aspect, mode: mode, sourceSize: CGSize(width: source.pixelWidth, height: source.pixelHeight))))
+        }
+        return out
+    }
     @MainActor private static func editContext(_ ops: [EditOp], model: EditorModel) async throws -> EditContext {
         var needsWords = false, needsSilence = false
         for op in ops {
@@ -183,7 +200,7 @@ enum MCPTools {
                                                      known: session.draft?.assets ?? [:])
         var keepImported = false
         defer { if !keepImported || dryRun { MCPAssets.removeFiles(resolution.created) } }
-        let ops = resolution.ops
+        let ops = try await reframed(resolution.ops, model: model)
         var context = try await editContext(ops, model: model)
         context.assets = resolution.assets
         guard try MCPTools.model(for: session) === model else { throw MCPFailure(code: "NO_PROJECT", message: "Project changed during analysis; reopen it and retry") }

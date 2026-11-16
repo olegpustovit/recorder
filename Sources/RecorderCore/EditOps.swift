@@ -111,9 +111,11 @@ public enum EditOp: Codable, Equatable, Sendable {
     case remove(id: String)
     case style(patch: [String: JSONValue])
     case layer(from: EditTime, to: EditTime?, source: LayerSource, rect: NormRect?)
+    /// T-831. `keys` is `reframePlan`'s result; the app fills it from the storyboard before the op is stored (like `layer` media), so replay is self-contained.
+    case reframe(aspect: Output.Aspect, mode: ReframeMode = .perShot, keys: [CropKey]? = nil)
 
     private enum CodingKeys: String, CodingKey {
-        case op, from, to, minDuration, keepTail, transcript, words, speed, scale, center, style, text, position, size, maxWords, rect, opacity, at, label, id, patch, snap, follow, ease, color, asset, path, recording
+        case op, from, to, minDuration, keepTail, transcript, words, speed, scale, center, style, text, position, size, maxWords, rect, opacity, at, label, id, patch, snap, follow, ease, color, asset, path, recording, aspect, mode, keys
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -139,6 +141,7 @@ public enum EditOp: Codable, Equatable, Sendable {
                 throw DecodingError.dataCorruptedError(forKey: .op, in: c, debugDescription: "layer needs exactly one of asset, path or recording")
             }
             self = try .layer(from: get(.from), to: optional(.to), source: given[0], rect: optional(.rect))
+        case "reframe": self = try .reframe(aspect: get(.aspect), mode: optional(.mode) ?? .perShot, keys: optional(.keys))
         default: throw DecodingError.dataCorruptedError(forKey: .op, in: c, debugDescription: "Unknown edit op; use an op from edit.apply's schema")
         }
     }
@@ -167,6 +170,7 @@ public enum EditOp: Codable, Equatable, Sendable {
             try optional(position, .position); try optional(size, .size); try optional(scale, .scale); try optional(center, .center); try optional(follow, .follow); try optional(ease, .ease); try optional(color, .color)
         case let .remove(id): try put("remove", .op); try put(id, .id)
         case let .style(patch): try put("style", .op); try put(patch, .patch)
+        case let .reframe(aspect, mode, keys): try put("reframe", .op); try put(aspect, .aspect); try put(mode, .mode); try optional(keys, .keys)
         case let .layer(from, to, source, rect):
             try put("layer", .op); try put(from, .from); try optional(to, .to); try optional(rect, .rect)
             switch source {
@@ -425,7 +429,7 @@ public extension Project {
                     guard end.source > start.source else { throw EditError.outOfRange(index: index, reason: "layer range must have from < to") }
                     resolved = [TimeRange(start: start.source, end: end.source)]
                 }
-            case .captions, .style: break
+            case .captions, .style, .reframe: break
             }
             prepared.append((op, mergedEditRanges(resolved), at, note, sourceAt))
         }
@@ -591,6 +595,11 @@ public extension Project {
                     guard result.zooms.contains(where: { $0.id == id }) || result.texts.contains(where: { $0.id == id }) || result.masks.contains(where: { $0.id == id }) else { throw EditError.invalidOp(index: index, reason: "unknown block \(id)") }
                     result.removeBlock(id: id)
                     summary = "Remove block"
+                case let .reframe(aspect, _, keys):
+                    guard [.r4x5, .r1x1, .r9x16, .r16x9].contains(aspect) else { throw EditError.invalidOp(index: index, reason: "reframe aspect must be 4:5, 1:1, 9:16 or 16:9") }
+                    guard let keys, !keys.isEmpty else { throw EditError.invalidOp(index: index, reason: "reframe needs a storyboard; run analyze.shots first") }
+                    result.output.aspect = aspect; result.cropKeys = keys
+                    summary = "Reframe \(aspect.rawValue)"
                 case let .style(patch):
                     do {
                         let encoder = JSONEncoder(), decoder = JSONDecoder()

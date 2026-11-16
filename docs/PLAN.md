@@ -692,7 +692,7 @@ acceptance undo, privacy (renders hide key overlays) and existing op semantics; 
 |---|---|---|
 | Reliability | T-825…T-826 | 0/2 |
 | Perception + feedback core | T-827…T-829 | 0/3 |
-| Intent ops + reframe | T-830…T-831 | 0/2 |
+| Intent ops + reframe | T-830…T-831 | 1/2 |
 | Captions + eval harness | T-832…T-833 | 0/2 |
 
 - [ ] **T-825 Persistent drafts, listChanged, schema parity** — R1 `agent-draft.json` in the package (base revision,
@@ -715,7 +715,7 @@ acceptance undo, privacy (renders hide key overlays) and existing op semantics; 
   tinyShot, orphanEffect, edgeContent, each naming a shot and a suggested op. Verify: Core report/lint tests.
 - [ ] **T-830 Intent ops** — keepShots, pace, fitDuration, speed `ramp`, autoZoom exposure; each lowers to
   cut/speed/zoom in one undo step and returns lowered ops. Verify: Core lowering tests, one-step undo.
-- [ ] **T-831 reframe** — `output.aspect` plus per-shot stationary/pan crop aimed at focus and cursor
+- [x] **T-831 reframe** — `output.aspect` plus per-shot stationary/pan crop aimed at focus and cursor
   (time-varying crop on the camera lane); edgeContent lint clean. Verify: Core crop-path tests, focus kept in frame.
 - [ ] **T-832 Optional per-shot captions** — on-device (Vision OCR/classification) 6–10 word captions; `null`
   when unavailable, everything works without them. Verify: caption present/absent paths.
@@ -1683,3 +1683,5 @@ Final audit against https://artifacts.microapps.space/a/crsebftafkp3 · 2026-11-
 Native verification · 2026-11-16 · Run on explicit user approval ("Run them now", overriding the earlier no-test-windows request for this pass). Debug app assembled; on /tmp/M6Fixture.recorder all pass: mcp-edit, mcp-render, mcp-review normal and --reduce-motion, mcp-live, mcp-panel-motion, mcp-roundtrip, mcp-export, project-navigation, inspector-panels, mcp-edit --headless, plus new `mcp-layer-playback` (real MCPTools layer edit on an open editor: draft isolation of live state/project.json, preview and export-proxy frames show the layer exactly in its range, real AVKit Play draft window with audio+video tracks that plays, cancel, edit.apply invalidation, window-close cleanup, discard purge, accept keeps exactly the used media as one undo) and `zoom-ease-parity` (zoom ease changes both preview and proxy frames and converges). Native run exposed and fixed two defects the headless tests could not: show() deleted the just-rendered preview file, and mcp-edit still asserted 12 op schemas. Actual authenticated Claude Code via `mcp-live-client` (evidence /tmp/recorder-t824-client) passed with the new tool schemas. Panel PNGs /tmp/recorder-t824-motion/{ready,editor-ready}.png inspected: Play draft sits left of Accept N in the pinned footer at 320 pt without clipping. make test 212/212. Still HUMAN: judging panel feel/motion against the design frame (mark [~] until looked at).
 
 HUMAN review · 2026-11-16 · The user judged the Claude panel's feel and motion against the design frame and approved it ("i approve finalize it pls"). The remaining `[~]` for this request is closed; T-812…T-824 are complete.
+
+T-831 · 2026-11-17 · `reframe` op (`aspect` 4:5|1:1|9:16|16:9, `mode` perShot|static). Core `reframePlan(storyboard:aspect:mode:sourceSize:) -> [CropKey]` (AutoFlip-style: stationary on focus ∪ cursor when it fits the largest aspect window, else linear pan between focus edges, clamped inside the frame; static = one window over all focus). Model: additive `Project.cropKeys` (source-time linear keys, empty = static `crop`; `Project.cropSample(atSource:)`), `Output.Aspect.r4x5` + `.ratio` (replaced three duplicate switches); format version 6 saved only when 4:5 or cropKeys is used (SPEC §5; `currentVersion` 6). Preview and export both sample the crop in `makeFrameState` (one line), so the existing Compositor consumes a per-frame crop of constant aspect; the Crop sheet clears keys. The MCP edit handler fills the op's `keys` from `loadStoryboard` before the op is stored (draft replay needs no storyboard); `loadStoryboard` is a stub throwing "run analyze.shots first" until T-827 merges (`// ponytail:`). Tests: ReframeTests (focus kept ≥95% of frames, stationary vs pan, clamp/aspect, static, cut at boundaries, old-project decode, op + version). make test and make build pass. NOT verified (no GUI): native preview/export pixel parity of a keyed crop, editor overlays (zoom-target/mask rect) while keys are active still map through the static `crop`; edgeContent lint is T-829.

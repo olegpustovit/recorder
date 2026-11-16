@@ -289,6 +289,7 @@ extension EnvironmentValues {
         case .remove: "Remove block"
         case .style: "Styling"
         case .layer: "Add layer"
+        case .reframe: "Reframe"
         }
     }
 }

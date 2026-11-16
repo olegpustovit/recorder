@@ -83,7 +83,7 @@ func makeFrameState(model: EditorModel, outputTime: Double, screen: FrameState.T
     var project = model.project
     if clip?.file != nil, let screen {
         project.source.pixelWidth = screen.luma.width; project.source.pixelHeight = screen.luma.height; project.crop = NormRect()
-    }
+    } else { project.crop = project.cropSample(atSource: sourceTime) } // T-831: the one place both preview and export sample the crop
     let (layoutKind, layoutAmount) = layoutMix(layouts: model.project.layouts, atSource: sourceTime)
     // T-602: the active key chip, if the Keys tab's "Show keyboard shortcuts" is on and a `.key`
     // event is within `activeKeyChip`'s hold window (`RecorderCore/KeyChips.swift`, already merged).

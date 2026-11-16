@@ -168,7 +168,7 @@ import Testing
                             rect: NormRect(), backdrop: .none, motion: .scale, fadeIn: nil, fadeOut: nil)])
     #expect(project.checkInvariants(mediaDurations: ["media/video.mov": 8]) == nil)
     #expect(try JSONDecoder().decode(Project.self, from: JSONEncoder().encode(project)) == project)
-    #expect(Project.currentVersion == 5)
+    #expect(Project.currentVersion == 6)
     let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".json")
     defer { try? FileManager.default.removeItem(at: url) }
     try project.save(to: url)
