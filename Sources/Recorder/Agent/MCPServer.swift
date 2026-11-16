@@ -99,6 +99,7 @@ enum MCPShim {
 /// Owns the fd until the read loop ends, so shutdown cannot race descriptor reuse.
 private final class MCPConnection: @unchecked Sendable {
     let fd: Int32
+    let pending = DispatchGroup()
     private let writer = DispatchQueue(label: "Recorder.MCP.write")
     private let lifecycle = NSLock()
     private var isClosed = false
@@ -113,7 +114,7 @@ private final class MCPConnection: @unchecked Sendable {
     }
     func shutdown() { lifecycle.withLock { if !isClosed { Darwin.shutdown(fd, SHUT_RDWR) } } }
     func readLines(_ handle: (Data) -> Void) {
-        defer { writer.sync {}; lifecycle.withLock { isClosed = true; close(fd) } }
+        defer { pending.wait(); writer.sync {}; lifecycle.withLock { isClosed = true; close(fd) } }
         var pending = Data(), buffer = [UInt8](repeating: 0, count: 16_384)
         while true {
             let count = Darwin.read(fd, &buffer, buffer.count)
@@ -207,7 +208,7 @@ enum AgentAccess: String, CaseIterable {
         sessions.append(session)
         DispatchQueue.global(qos: .utility).async {
             connection.readLines { line in
-                let done = DispatchSemaphore(value: 0)
+                connection.pending.enter()
                 Task { @MainActor in
                     let response: [String: Any]?
                     do {
@@ -215,10 +216,9 @@ enum AgentAccess: String, CaseIterable {
                         if let request = object as? [String: Any] { response = await session.handle(request) }
                         else { response = MCPSession.error(-32600, "Expected a JSON-RPC object", id: NSNull()) }
                     } catch { response = MCPSession.error(-32700, "Invalid JSON; send one UTF-8 JSON object per line", id: NSNull()) }
-                    if let response { connection.send(response, completed: { done.signal() }) }
-                    else { done.signal() }
+                    if let response { connection.send(response, completed: { connection.pending.leave() }) }
+                    else { connection.pending.leave() }
                 }
-                done.wait()
             }
             Task { @MainActor in self.sessions.removeAll { $0 === session } }
         }
@@ -226,7 +226,7 @@ enum AgentAccess: String, CaseIterable {
     func stop() {
         guard listener >= 0 else { return }
         shutdown(listener, SHUT_RDWR); close(listener); listener = -1
-        for session in sessions { session.disconnect() }
+        for session in sessions { session.renderTask?.cancel(); session.disconnect() }
         sessions = []
         if let path { unlink(path) }
         path = nil
@@ -238,10 +238,10 @@ enum AgentAccess: String, CaseIterable {
     let connectedSince = Date()
     var agentName = "MCP client"
     var projectURL: URL?
+    var renderTask: Task<[URL], Error>?
+    var renderJobID: UUID?
     private let send: ([String: Any]) -> Void
     let disconnect: () -> Void
-    private var progressToken: Any?
-    private var lastProgress = Date.distantPast
     init(send: @escaping ([String: Any]) -> Void = { _ in }, disconnect: @escaping () -> Void = {}) {
         self.send = send; self.disconnect = disconnect
     }
@@ -271,18 +271,19 @@ enum AgentAccess: String, CaseIterable {
             guard let name = params["name"] as? String, params["arguments"] == nil || params["arguments"] is [String: Any] else {
                 return Self.error(-32602, "tools/call needs name and object arguments", id: id)
             }
-            progressToken = (params["_meta"] as? [String: Any])?["progressToken"]
-            lastProgress = .distantPast
-            defer { progressToken = nil }
-            result = await MCPTools.call(name, params["arguments"] as? [String: Any] ?? [:], session: self)
+            let token = (params["_meta"] as? [String: Any])?["progressToken"]
+            result = await MCPTools.call(name, params["arguments"] as? [String: Any] ?? [:], session: self, progress: progressReporter(token: token))
         default: return Self.error(-32601, "Unknown method \(method); call initialize or tools/list", id: id)
         }
         return ["jsonrpc": "2.0", "id": id, "result": result]
     }
     func notify(_ method: String, _ params: [String: Any]) { send(["jsonrpc": "2.0", "method": method, "params": params]) }
-    func progress(_ value: Double) {
-        guard let token = progressToken, Date().timeIntervalSince(lastProgress) >= 0.25 else { return }
-        lastProgress = Date()
-        notify("notifications/progress", ["progressToken": token, "progress": value, "total": 1])
+    private func progressReporter(token: Any?) -> (Double) -> Void {
+        var last = Date.distantPast
+        return { [weak self] value in
+            guard let self, let token, Date().timeIntervalSince(last) >= 0.25 else { return }
+            last = Date()
+            self.notify("notifications/progress", ["progressToken": token, "progress": value, "total": 1])
+        }
     }
 }

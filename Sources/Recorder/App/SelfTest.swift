@@ -27,6 +27,7 @@ enum SelfTest {
         .merging(timelineCases, uniquingKeysWith: { _, latest in latest })
     private static let captureCases: [String: Case] = [
         "mcp-roundtrip": { args in try await checkMCPRoundtrip(args) },
+        "mcp-render": { args in try await checkMCPRender(args) },
         "capture-exclusion": { _ in
             struct Fail: Error { let description: String }
             let first = await MainActor.run { () -> NSWindow in
@@ -4294,9 +4295,12 @@ private final class MCPTestClient {
         guard MCPSocket.write(Data(data.prefix(half)), to: fd), MCPSocket.write(Data(data.dropFirst(half)), to: fd) else {
             throw MCPTestFailure(description: "MCP request write failed")
         }
-        let reply = try read()
-        guard reply["id"] as? Int == id else { throw MCPTestFailure(description: "MCP response id did not match") }
-        return reply
+        while true {
+            let reply = try read()
+            if reply["method"] is String { continue }
+            guard reply["id"] as? Int == id else { throw MCPTestFailure(description: "MCP response id did not match") }
+            return reply
+        }
     }
     func tool(_ name: String, _ args: [String: Any], error: String? = nil) throws -> [String: Any] {
         let reply = try request("tools/call", ["name": name, "arguments": args])
@@ -4311,6 +4315,139 @@ private final class MCPTestClient {
         }
         return structured
     }
+}
+
+@MainActor private func checkMCPRender(_ args: [String]) async throws {
+    guard let path = args.first else { throw MCPTestFailure(description: "usage: mcp-render <fixture.recorder>") }
+    let root = URL(fileURLWithPath: "/tmp/recorder-mcp-render-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let package = root.appendingPathComponent("Fixture.recorder")
+    try FileManager.default.copyItem(at: URL(fileURLWithPath: path), to: package)
+    let folder = AgentRender.cacheFolder(session: UUID().uuidString)
+    var project = try Project.load(from: package.appendingPathComponent("project.json"))
+    project.id = UUID().uuidString; project.keys.show = true; project.source.hasMic = true
+    project.keystrokeClips = [Layout(start: 0, end: project.source.duration, kind: .settings, keys: Keys(show: true))]
+    project.audioTracks = [AudioTrack(name: "Mic")]
+    project.audioClips = [AudioClip(start: 0, end: project.source.duration, file: "mic.m4a", link: .screen)]
+    try synthesizeSineM4A(at: package.appendingPathComponent("mic.m4a"), duration: project.source.duration)
+    let events = EventLog(events: [InputEvent(t: 0.3, k: .key, keyCode: 0, ch: "PRIVATE_RENDER_KEYS")])
+    let model = EditorModel(packageURL: package, project: project, events: events)
+    defer {
+        for controller in EditorWindowController.allOpen where controller.model.project.id == project.id { controller.close() }
+        MCPServer.shared.stop()
+        try? FileManager.default.removeItem(at: root)
+        try? FileManager.default.removeItem(at: folder)
+    }
+    let original = model.project
+    let times = [1.7, 0.7, 1.7]
+    let batch = try await EditorWindowController.renderFramesPNG(model: model, at: times, longEdge: nil)
+    for (i, time) in times.enumerated() {
+        model.playhead = time
+        guard batch[i] == (try await EditorWindowController.renderCurrentFramePNG(model: model)) else { throw MCPTestFailure(description: "Batch/Copy Frame PNG parity at \(time)") }
+    }
+    let safe = AgentRender.renderModel(for: model, project: project)
+    guard makeFrameState(model: model, outputTime: 0.7, screen: nil, camera: nil, size: CGSize(width: 640, height: 360)).keyChip != nil,
+          makeFrameState(model: safe, outputTime: 0.7, screen: nil, camera: nil, size: CGSize(width: 640, height: 360)).keyChip == nil,
+          safe.events.events.allSatisfy({ $0.k != .key }) else { throw MCPTestFailure(description: "Agent render exposed keyboard overlay settings/events") }
+    let files = try await AgentRender.frames(model: model, at: times, longEdge: 320, folder: folder)
+    for file in files {
+        guard let source = CGImageSourceCreateWithURL(file as CFURL, nil), let image = CGImageSourceCreateImageAtIndex(source, 0, nil),
+              max(image.width, image.height) == 320, let pixels = image.dataProvider?.data,
+              Set(Data(referencing: pixels as NSData)).count > 8 else { throw MCPTestFailure(description: "Agent frame blank or incorrectly sized") }
+    }
+    let safePNG = try await EditorWindowController.renderFramesPNG(model: safe, at: times, longEdge: 320)
+    guard try files.map({ try Data(contentsOf: $0) }) == safePNG, model.project == original, model.undoStepNames.isEmpty else {
+        throw MCPTestFailure(description: "Agent frame parity or live model mutation")
+    }
+    let sheet = try await AgentRender.sheet(model: model, at: times, folder: folder)
+    guard let sheetSource = CGImageSourceCreateWithURL(sheet as CFURL, nil), let sheetImage = CGImageSourceCreateImageAtIndex(sheetSource, 0, nil), sheetImage.width == 1280 else { throw MCPTestFailure(description: "Agent contact sheet") }
+    try? FileManager.default.removeItem(atPath: "/tmp/recorder-t805-sheet.jpg")
+    try FileManager.default.copyItem(at: sheet, to: URL(fileURLWithPath: "/tmp/recorder-t805-sheet.jpg"))
+    func checkVideo(_ file: URL) async throws {
+        let asset = AVURLAsset(url: file)
+        let duration = try await asset.load(.duration).seconds
+        guard abs(duration - 2) < 0.1, let track = try await asset.loadTracks(withMediaType: .video).first else { throw MCPTestFailure(description: "Agent proxy duration/video") }
+        let size = try await track.load(.naturalSize)
+        guard min(size.width, size.height) == 540 else { throw MCPTestFailure(description: "Agent proxy must be 540p") }
+        guard let audio = try await asset.loadTracks(withMediaType: .audio).first,
+              abs(try await audio.load(.timeRange).start.seconds) < 0.05 else { throw MCPTestFailure(description: "Agent proxy audio is missing or shifted") }
+        _ = try await AVAssetImageGenerator(asset: asset).image(at: .zero)
+    }
+    let proxy = try await AgentRender.clip(model: model, from: 0.371, to: 2.371, folder: folder, progress: { _ in })
+    try await checkVideo(proxy)
+    let media = package.appendingPathComponent("media", isDirectory: true)
+    try FileManager.default.createDirectory(at: media, withIntermediateDirectories: true)
+    try FileManager.default.copyItem(at: package.appendingPathComponent("screen.mov"), to: media.appendingPathComponent("import.mov"))
+    var imported = project
+    imported.clips[0].file = "media/import.mov"
+    let importedModel = EditorModel(packageURL: package, project: imported, events: events)
+    try await checkVideo(AgentRender.clip(model: importedModel, from: 0.371, to: 2.371, folder: folder, progress: { _ in }))
+    try synthesizeSineM4A(at: media.appendingPathComponent("tail.m4a"), duration: 6)
+    try FileManager.default.copyItem(at: files[0], to: media.appendingPathComponent("image.png"))
+    var tail = project
+    tail.layers = [LayerBlock(kind: .image, start: 2.5, end: 5.5, file: "media/image.png", rect: NormRect())]
+    tail.audioClips = [AudioClip(start: 1.5, end: 5.5, file: "media/tail.m4a")]
+    let tailModel = EditorModel(packageURL: package, project: tail, events: events)
+    try await checkVideo(AgentRender.clip(model: tailModel, from: 3.25, to: 5.25, folder: folder, progress: { _ in }))
+    project.clips[0].speed = 0.25
+    try project.save(to: package.appendingPathComponent("project.json"))
+    try JSONEncoder().encode(events).write(to: package.appendingPathComponent("events.json"))
+    NSApplication.shared.setActivationPolicy(.accessory)
+    NSApplication.shared.finishLaunching()
+    let socket = root.appendingPathComponent("mcp.sock").path
+    try MCPServer.shared.start(socketPath: socket)
+    let sessionFolder = try await Task.detached { () -> URL in
+        let client = try MCPTestClient(path: socket)
+        _ = try client.request("initialize", ["clientInfo": ["name": "render-test"]])
+        let opened = try client.tool("project", ["action": "open", "path": package.path])
+        _ = MCPSocket.write(try JSONSerialization.data(withJSONObject: ["jsonrpc": "2.0", "id": 101, "method": "tools/call", "params": ["name": "render", "arguments": ["action": "clip", "from": 0, "to": 12], "_meta": ["progressToken": "proxy-test"]]]) + Data([10]), to: client.fd)
+        var sessionID: String?
+        let deadline = Date().addingTimeInterval(3)
+        while Date() < deadline {
+            sessionID = await MainActor.run { MCPServer.shared.sessions.first { $0.agentName == "render-test" && $0.renderTask != nil }?.id }
+            if sessionID != nil { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        guard let sessionID else { throw MCPTestFailure(description: "Proxy job did not start") }
+        for (id, action) in [(102, "frames"), (103, "cancel")] {
+            _ = MCPSocket.write(try JSONSerialization.data(withJSONObject: ["jsonrpc": "2.0", "id": id, "method": "tools/call", "params": ["name": "render", "arguments": ["action": action, "at": [1]]]]) + Data([10]), to: client.fd)
+        }
+        var replies: [Int: [String: Any]] = [:], notified = false
+        while replies.count < 3 {
+            let reply = try client.read()
+            if let id = reply["id"] as? Int { replies[id] = reply["result"] as? [String: Any] }
+            else if let params = reply["params"] as? [String: Any] {
+                guard params["progressToken"] as? String == "proxy-test" else { throw MCPTestFailure(description: "Proxy progress token crossed requests") }
+                notified = true
+            }
+        }
+        guard notified, (replies[101]?["structuredContent"] as? [String: Any])?["error"] as? String == "DENIED",
+              (replies[102]?["structuredContent"] as? [String: Any])?["error"] as? String == "RENDER_BUSY",
+              (replies[103]?["structuredContent"] as? [String: Any])?["cancelled"] as? Bool == true else { throw MCPTestFailure(description: "Same-connection busy/cancel/progress contract") }
+        let frame = try client.request("tools/call", ["name": "render", "arguments": ["action": "frames", "at": [0.7], "longEdge": 320]])
+        let result = frame["result"] as? [String: Any], content = result?["content"] as? [[String: Any]] ?? []
+        guard content.filter({ $0["type"] as? String == "image" }).count == 1,
+              content.filter({ $0["type"] as? String == "resource_link" }).count == 1,
+              (result?["structuredContent"] as? [String: Any])?["revision"] as? String == opened["revision"] as? String else { throw MCPTestFailure(description: "Agent image/link/revision response") }
+        let sheetReply = try client.request("tools/call", ["name": "render", "arguments": ["action": "sheet", "count": 4]])
+        let sheetContent = (sheetReply["result"] as? [String: Any])?["content"] as? [[String: Any]] ?? []
+        guard sheetContent.filter({ $0["type"] as? String == "image" && $0["mimeType"] as? String == "image/jpeg" }).count == 1,
+              sheetContent.filter({ $0["type"] as? String == "resource_link" }).count == 1 else { throw MCPTestFailure(description: "Agent sheet inline/link response") }
+        let clipReply = try client.request("tools/call", ["name": "render", "arguments": ["action": "clip", "from": 0.371, "to": 2.371]])
+        let clipResult = clipReply["result"] as? [String: Any], clipContent = clipResult?["content"] as? [[String: Any]] ?? []
+        let clipInfo = clipResult?["structuredContent"] as? [String: Any] ?? [:]
+        guard clipContent.filter({ $0["type"] as? String == "image" }).isEmpty,
+              clipContent.filter({ $0["type"] as? String == "resource_link" }).count == 1,
+              abs((clipInfo["seconds"] as? Double ?? 0) - 2) < 0.1, (clipInfo["bytes"] as? Int ?? 0) > 1000 else { throw MCPTestFailure(description: "Agent proxy link/seconds/bytes response") }
+        return AgentRender.cacheFolder(session: sessionID)
+    }.value
+    defer { try? FileManager.default.removeItem(at: sessionFolder) }
+    guard try FileManager.default.contentsOfDirectory(at: sessionFolder, includingPropertiesForKeys: nil).filter({ $0.pathExtension == "mp4" }).count == 1 else { throw MCPTestFailure(description: "Cancelled proxy left a partial MP4") }
+    let expired = AgentRender.cacheFolder(session: UUID().uuidString)
+    try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-8 * 86_400)], ofItemAtPath: expired.path)
+    AgentRender.purgeOldCaches()
+    guard !FileManager.default.fileExists(atPath: expired.path), FileManager.default.fileExists(atPath: folder.path) else { throw MCPTestFailure(description: "Agent cache retention") }
+    print("MCP render: multi-frame parity/order, key privacy, sheet, 540p proxies/audio/imports/tails, same-connection cancel/busy/progress, links/revision and cache retention verified")
 }
 
 @MainActor private func checkMCPRoundtrip(_ args: [String]) async throws {

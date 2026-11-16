@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.appearance = NSAppearance(named: .darkAqua)
         do { try MCPServer.shared.start() }
         catch { NSLog("Recorder MCP listener unavailable: %@", error.localizedDescription) }
+        Task.detached(priority: .utility) { AgentRender.purgeOldCaches() }
         NSApp.mainMenu = Self.buildMainMenu()
         statusItem = buildStatusItem()
         wireNewRecording()

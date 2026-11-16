@@ -44,6 +44,7 @@ final class Exporter {
     private let model: EditorModel
     private let settings: ExportSettings
     private let destination: URL
+    private let outputRange: TimeRange?
 
     /// fraction, frame, total. Called on whatever thread the frame just finished on — T-506 hops to
     /// the main actor itself if it touches UI state.
@@ -53,8 +54,8 @@ final class Exporter {
     private var cancelled = false
     private var isCancelled: Bool { cancellationLock.withLock { cancelled } }
 
-    init(model: EditorModel, settings: ExportSettings, destination: URL) {
-        self.model = model; self.settings = settings; self.destination = destination
+    init(model: EditorModel, settings: ExportSettings, destination: URL, outputRange: TimeRange? = nil) {
+        self.model = model; self.settings = settings; self.destination = destination; self.outputRange = outputRange
     }
 
     func cancel() { cancellationLock.withLock { cancelled = true } }
@@ -63,11 +64,18 @@ final class Exporter {
         // T-507: GIF is a wholly separate encode path (ImageIO, not AVAssetWriter) — kept out of
         // this method below (see `runGIF()` at the bottom of this file) so it doesn't disturb the
         // MP4 loop.
-        guard settings.format == .mp4 else { return try await runGIF() }
+        guard settings.format == .mp4 else {
+            guard outputRange == nil else { throw ExportError.unsupportedFormat }
+            return try await runGIF()
+        }
 
         let packageURL = model.packageURL
         let project = await model.project
-        let outputDuration = project.exportDuration
+        let range = outputRange ?? TimeRange(start: 0, end: project.exportDuration)
+        guard range.start.isFinite, range.end.isFinite, range.start >= 0, range.end <= project.exportDuration,
+              range.end > range.start else { throw ExportError.failed("Export range is outside the project.") }
+        let outputDuration = range.end - range.start
+        let sessionStart = CMTime(seconds: range.start, preferredTimescale: 600_000)
         guard outputDuration > 0 else { throw ExportError.failed("No media to export.") }
 
         // T-504: `denoise` is applied EXPORT ONLY (preview always plays the raw mic) — pre-process
@@ -117,7 +125,8 @@ final class Exporter {
         // MARK: Reader (SPEC §6.8: `AVAssetReaderTrackOutput`, not a video-composition output)
 
         let reader = try AVAssetReader(asset: composition)
-        reader.timeRange = CMTimeRange(start: .zero, duration: CMTime(seconds: outputDuration, preferredTimescale: 600))
+        // shortcut: decode from zero to preserve held frames; add seek/preroll after profiling long range exports.
+        reader.timeRange = CMTimeRange(start: .zero, duration: CMTime(seconds: range.end, preferredTimescale: 600_000))
         let decodeSettings: [String: Any] = [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
             kCVPixelBufferMetalCompatibilityKey as String: true,
@@ -181,7 +190,7 @@ final class Exporter {
         guard writer.startWriting() else {
             throw ExportError.failed("writer failed to start: \(writer.error?.localizedDescription ?? "?")")
         }
-        writer.startSession(atSourceTime: .zero)
+        writer.startSession(atSourceTime: sessionStart)
         defer {
             if writer.status != .completed {
                 reader.cancelReading()
@@ -226,6 +235,7 @@ final class Exporter {
                         audioFinished = true
                         break
                     }
+                    if CMSampleBufferGetPresentationTimeStamp(sample) + CMSampleBufferGetDuration(sample) <= sessionStart { continue }
                     guard audioInput.append(sample) else {
                         throw ExportError.failed("audio append failed: \(writer.error?.localizedDescription ?? "?")")
                     }
@@ -238,7 +248,7 @@ final class Exporter {
                 continue
             }
 
-            let t = Double(n) / Double(settings.fps)
+            let t = range.start + Double(n) / Double(settings.fps)
             let screenTexture = screenHold.imageBuffer(upTo: t).flatMap { textureCache.texture(from: $0) }
             let cameraTexture = cameraHold?.imageBuffer(upTo: t).flatMap { textureCache.texture(from: $0) }
             let layers = layerHolds.compactMapValues { $0.imageBuffer(upTo: t).flatMap { textureCache.texture(from: $0) } }
@@ -254,7 +264,7 @@ final class Exporter {
             compositor.render(state, to: target, commandBuffer: commandBuffer)
             try await commandBuffer.commitAndWait()
 
-            let pts = CMTime(value: Int64(n), timescale: CMTimeScale(settings.fps))
+            let pts = sessionStart + CMTime(value: Int64(n), timescale: CMTimeScale(settings.fps))
             guard adaptor.append(pixelBuffer, withPresentationTime: pts) else {
                 throw ExportError.failed("append failed: \(writer.error?.localizedDescription ?? "?")")
             }
@@ -264,7 +274,7 @@ final class Exporter {
             if n == totalFrames { videoInput.markAsFinished() }
         }
 
-        writer.endSession(atSourceTime: CMTime(value: Int64(totalFrames), timescale: CMTimeScale(settings.fps)))
+        writer.endSession(atSourceTime: sessionStart + CMTime(value: Int64(totalFrames), timescale: CMTimeScale(settings.fps)))
         writer.finishWriting {}
         let finishStart = clock.now
         while writer.status == .writing {

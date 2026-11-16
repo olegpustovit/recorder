@@ -356,7 +356,8 @@ prints one `result` line. `make test` still green.
 ### T-805 App: render tools (frames, contact sheet, proxy clip, cache)
 
 **Files.** `Sources/Recorder/Agent/AgentRender.swift` (new) · `EditorWindowController.swift` (generalise the frame
-renderer) · `MCPTools.swift` · `SelfTest.swift`.
+renderer) · `MCPTools.swift` · `MCPServer.swift` (concurrent cancel + request-local progress) · `AppDelegate.swift`
+(cache purge) · `Render/Exporter.swift` (optional output range) · `SelfTest.swift`.
 
 ```swift
 // EditorWindowController: replace the body of renderCurrentFramePNG with a call to the new function.
@@ -375,19 +376,27 @@ enum AgentRender {
 - `renderFramesPNG`: same reader setup as today, but **sort** the times and reuse one `AVAssetReader` + `FrameHold`
   per track, calling `imageBuffer(upTo:)` in increasing order (FrameHold only moves forward). Scale the output size to
   `longEdge` when given. `copyFrameAsImage` keeps calling it with `[model.playhead]`, `nil`.
-- `renderModel`: `EditorModel(packageURL:project:events:)` with the given project and `keys.show = false` (D3).
-  Draft renders pass the draft project; live renders pass `model.project`.
+- `renderModel`: `EditorModel(packageURL:project:events:)` with the given project, `keys.show = false`, every
+  keystroke-clip override disabled and key/typing events removed (D3). Reuse existing motion paths when the supplied
+  project matches. Draft renders pass the draft project; live renders pass `model.project`.
 - `sheet`: render each time at long edge 320, draw into one `CGContext` grid (4 columns), burn the timecode
   (`m:ss.s`, `Theme.timecodeFont(11)` metrics are fine via `NSAttributedString.draw` in an `NSGraphicsContext`),
   encode JPEG quality 0.8 with `CGImageDestination`.
-- `clip`: project = draft/live project with everything outside `[from,to]` removed (`removeSourceRanges` on the
-  complement, converted with `timeMap`), then `Exporter(model: renderModel, settings: ExportSettings(shortEdge: 540,
-  fps: 30, quality: .web, codec: .h264), destination:)`. Forward `exporter.progress` to the session's progress token.
-  One job per session; a second call → `RENDER_BUSY` unless `cancel` first.
+- `clip`: freeze the draft/live project and use `Exporter(model: renderModel, settings: ExportSettings(shortEdge: 540,
+  fps: 30, quality: .web, codec: .h264), destination:, outputRange: TimeRange(start: from, end: to))`. Keep frame state
+  and mix ramps on their original output clock; start the native writer session at `from`, append original-time
+  samples and end at `from + rendered duration`. Decode video from zero to preserve frames held across idle spans;
+  skip audio packets entirely before `from`. The earlier proposed `removeSourceRanges` complement cannot reliably
+  trim imported clips, sub-minimum slices or connected tails, and rebuilding paths would change zooms at the cut.
+  Forward progress through a request-local token (at most every 0.25 s). One job per session; a second call →
+  `RENDER_BUSY` unless `cancel` first. The socket accepts concurrent requests so `cancel` on that connection can
+  cancel and await the job, remove its partial MP4, then allow another render.
 - Tool result: images inline only for `frames` (≤ 6, long edge ≤ 640) and `sheet` (1); `clip` returns a `resource_link`
   plus `{seconds, bytes}`. Every file is also listed as `resource_link`.
 - Selftest `mcp-render <package>`: frames at 3 times are non-blank PNGs of the requested size; the frame at t equals
   `renderCurrentFramePNG` with playhead t (bytes identical — parity); sheet exists; 2 s clip plays (AVURLAsset duration ±0.1 s).
+  Also checks imported footage and connected-tail proxies with audio, overriding key chips, same-connection
+  cancel/busy/progress, PNG/JPEG inline plus file links, proxy duration/bytes, original project revision and cache expiry.
 
 **Verify.** `--selftest mcp-render <fixture>`, `--selftest parity <fixture>` (unchanged), `--selftest menu-actions`
 (Copy Frame still works), `make test`.

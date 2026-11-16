@@ -384,10 +384,18 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
     }
 
     @MainActor static func renderCurrentFramePNG(model: EditorModel) async throws -> Data {
+        try await renderFramesPNG(model: model, at: [model.playhead], longEdge: nil)[0]
+    }
+
+    @MainActor static func renderFramesPNG(model: EditorModel, at times: [Double], longEdge: Int?) async throws -> [Data] {
         struct RenderFail: Error, CustomStringConvertible { let description: String }
         let project = model.project
         let packageURL = model.packageURL
-        let outputTime = model.playhead
+        let duration = max(project.exportDuration, TimeMap(project.clips).outputDuration)
+        guard times.allSatisfy({ $0.isFinite && $0 >= 0 && $0 <= duration }), longEdge == nil || longEdge! >= 2 else {
+            throw RenderFail(description: "frame times or size outside the project range")
+        }
+        if times.isEmpty { return [] }
 
         guard let device = MTLCreateSystemDefaultDevice() else { throw RenderFail(description: "no Metal device") }
         let compositor = try Compositor(device: device, package: packageURL)
@@ -397,8 +405,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
         // involved here) — the same `croppedSource` maths `Compositor.outputSize` uses internally.
         let croppedW = Double(project.source.pixelWidth) * project.crop.w
         let croppedH = Double(project.source.pixelHeight) * project.crop.h
-        let longEdge = max(2, Int(max(croppedW, croppedH).rounded()))
-        let outputSize = compositor.outputSize(for: project, longEdge: longEdge)
+        let edge = longEdge ?? max(2, Int(max(croppedW, croppedH).rounded()))
+        let outputSize = compositor.outputSize(for: project, longEdge: edge)
         let width = Int(outputSize.width), height = Int(outputSize.height)
 
         let (composition, _, _, cameraTrack, layerTracks, layerTransforms) = try await makeComposition(package: packageURL, project: project)
@@ -418,42 +426,48 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
             throw RenderFail(description: "reader failed to start: \(String(describing: reader.error))")
         }
 
-        // Sequential decode up to `outputTime` (`AVAssetReader` has no random access) — the same
-        // "hold the last sample at/before the target, peek one ahead" scan `FrameHold` in
-        // `Render/Exporter.swift` uses for the export loop.
-        let current = FrameHold(output: readerOutput).imageBuffer(upTo: outputTime)
-        let screenTexture = current.flatMap { textureCache.texture(from: $0) }
-        let cameraTexture = cameraOutput.flatMap { FrameHold(output: $0).imageBuffer(upTo: outputTime) }.flatMap { textureCache.texture(from: $0) }
-        let layers = layerOutputs.compactMapValues { FrameHold(output: $0).imageBuffer(upTo: outputTime).flatMap { textureCache.texture(from: $0) } }
-        let state = makeFrameState(model: model, outputTime: outputTime, screen: screenTexture, camera: cameraTexture, size: outputSize, layerTextures: layers, layerTransforms: layerTransforms)
+        defer { reader.cancelReading() }
+        let screenHold = FrameHold(output: readerOutput)
+        let cameraHold = cameraOutput.map(FrameHold.init)
+        let layerHolds = layerOutputs.mapValues(FrameHold.init)
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false)
         descriptor.usage = [.renderTarget, .shaderRead]
         descriptor.storageMode = .shared
-        guard let target = device.makeTexture(descriptor: descriptor),
-              let queue = device.makeCommandQueue(), let commandBuffer = queue.makeCommandBuffer() else {
+        guard let target = device.makeTexture(descriptor: descriptor), let queue = device.makeCommandQueue() else {
             throw RenderFail(description: "failed to set up Metal resources")
         }
-        compositor.render(state, to: target, commandBuffer: commandBuffer)
-        try await commandBuffer.commitAndWait()
-        var bytes = [UInt8](repeating: 0, count: width * height * 4)
-        target.getBytes(&bytes, bytesPerRow: width * 4, from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0)
+        var frames = [Data](repeating: Data(), count: times.count)
+        for (index, outputTime) in times.enumerated().sorted(by: { $0.element < $1.element }) {
+            try Task.checkCancellation()
+            let screen = screenHold.imageBuffer(upTo: outputTime).flatMap { textureCache.texture(from: $0) }
+            let camera = cameraHold?.imageBuffer(upTo: outputTime).flatMap { textureCache.texture(from: $0) }
+            let layers = layerHolds.compactMapValues { $0.imageBuffer(upTo: outputTime).flatMap { textureCache.texture(from: $0) } }
+            guard reader.status != .failed else { throw reader.error ?? RenderFail(description: "frame reader failed") }
+            let state = makeFrameState(model: model, outputTime: outputTime, screen: screen, camera: camera, size: outputSize, layerTextures: layers, layerTransforms: layerTransforms)
+            guard let commandBuffer = queue.makeCommandBuffer() else { throw RenderFail(description: "no command buffer") }
+            compositor.render(state, to: target, commandBuffer: commandBuffer)
+            try await commandBuffer.commitAndWait()
+            var bytes = [UInt8](repeating: 0, count: width * height * 4)
+            target.getBytes(&bytes, bytesPerRow: width * 4, from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0)
 
-        // BGRA8 bytes (as rendered by `Compositor`) -> PNG, same layout `Exporter.gifFrame` uses.
-        let colorSpace = VideoColor.space
-        let bitmapInfo = CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue
-        guard let provider = CGDataProvider(data: Data(bytes) as CFData),
-              let cgImage = CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
-                                     bytesPerRow: width * 4, space: colorSpace, bitmapInfo: CGBitmapInfo(rawValue: bitmapInfo),
-                                     provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent) else {
-            throw RenderFail(description: "CGImage creation failed")
+            // BGRA8 bytes (as rendered by `Compositor`) -> PNG, same layout `Exporter.gifFrame` uses.
+            let colorSpace = VideoColor.space
+            let bitmapInfo = CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue
+            guard let provider = CGDataProvider(data: Data(bytes) as CFData),
+                  let cgImage = CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
+                                         bytesPerRow: width * 4, space: colorSpace, bitmapInfo: CGBitmapInfo(rawValue: bitmapInfo),
+                                         provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent) else {
+                throw RenderFail(description: "CGImage creation failed")
+            }
+            let data = NSMutableData()
+            guard let dest = CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil) else {
+                throw RenderFail(description: "PNG destination creation failed")
+            }
+            CGImageDestinationAddImage(dest, cgImage, nil)
+            guard CGImageDestinationFinalize(dest) else { throw RenderFail(description: "PNG encode failed") }
+            frames[index] = data as Data
         }
-        let data = NSMutableData()
-        guard let dest = CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil) else {
-            throw RenderFail(description: "PNG destination creation failed")
-        }
-        CGImageDestinationAddImage(dest, cgImage, nil)
-        guard CGImageDestinationFinalize(dest) else { throw RenderFail(description: "PNG encode failed") }
-        return data as Data
+        return frames
     }
 
     // MARK: - Menu actions (T-311)

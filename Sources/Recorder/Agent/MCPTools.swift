@@ -1,3 +1,4 @@
+import AVFoundation
 import CryptoKit
 import Foundation
 import RecorderCore
@@ -63,7 +64,7 @@ enum MCPTools {
             throw MCPFailure(code: "PERMISSION_DENIED", message: "\(level.rawValue) access for this project; change access in the Claude tab before retrying \(tool)")
         }
     }
-    @MainActor static func call(_ name: String, _ args: [String: Any], session: MCPSession) async -> [String: Any] {
+    @MainActor static func call(_ name: String, _ args: [String: Any], session: MCPSession, progress: @escaping (Double) -> Void = { _ in }) async -> [String: Any] {
         let began = Date()
         var action = "invalid", errorCode: String?
         defer {
@@ -99,6 +100,7 @@ enum MCPTools {
                 else { _ = try model(for: session) }
             }
             var payload: [String: Any]
+            var extraContent: [[String: Any]] = []
             if name == "project", action == "list" {
                 let items = await libraryItems()
                 payload = ["projects": items.filter { AgentAccess.level(for: $0.projectID) != .off }.map { item in
@@ -171,28 +173,97 @@ enum MCPTools {
                 case ("analyze", "transcribe"):
                     guard model.project.source.hasMic, Waveform.audioURL(in: model.packageURL, file: "mic.m4a") != nil else { throw notTranscribed() }
                     guard !model.isTranscribing else { throw MCPFailure(code: "RENDER_BUSY", message: "Transcription is running; wait and call transcript.get") }
-                    session.progress(0)
+                    progress(0)
                     await model.transcribe()
                     guard let words = model.transcript, !words.isEmpty || model.transcriptStatus == "No speech found." else {
                         throw MCPFailure(code: "NOT_TRANSCRIBED", message: "\(model.transcriptStatus ?? "Transcription failed"); check Speech permission in Recorder and retry analyze.transcribe")
                     }
-                    session.progress(1)
+                    progress(1)
                     payload = ["transcript": transcriptID(words), "words": words.count]
+                case ("render", _):
+                    (payload, extraContent) = try await render(action, args, model: model, session: session, progress: progress)
                 default: throw MCPFailure(code: "INVALID_OP", message: "\(name).\(action) is not available in this build; use Recorder's editor")
                 }
             }
             if session.projectURL != nil {
                 let current = try model(for: session)
                 try requireAccess(current.project, tool: name)
-                payload["project"] = current.project.id
-                payload["revision"] = try revision(current.project)
+                if payload["project"] == nil { payload["project"] = current.project.id }
+                if payload["revision"] == nil { payload["revision"] = try revision(current.project) }
             } else { payload["project"] = NSNull(); payload["revision"] = NSNull() }
-            return result(payload)
+            var reply = result(payload)
+            reply["content"] = (reply["content"] as? [[String: Any]] ?? []) + extraContent
+            return reply
         } catch {
             let failure = error as? MCPFailure ?? MCPFailure(code: "INVALID_OP", message: "\(error.localizedDescription); check the project in Recorder and retry")
             errorCode = failure.code
             return result(["error": failure.code, "message": "\(failure.code): \(failure.message)"], isError: true)
         }
+    }
+
+    @MainActor private static func render(_ action: String, _ args: [String: Any], model: EditorModel, session: MCPSession,
+                                          progress: @escaping (Double) -> Void) async throws -> ([String: Any], [[String: Any]]) {
+        if action == "cancel" {
+            let task = session.renderTask
+            task?.cancel()
+            _ = await task?.result
+            return (["cancelled": task != nil], [])
+        }
+        guard session.renderTask == nil else { throw MCPFailure(code: "RENDER_BUSY", message: "A render is running; call render.cancel or wait for it to finish") }
+        let revision = try revision(model.project)
+        let projectID = model.project.id
+        let frozen = AgentRender.renderModel(for: model, project: model.project)
+        let duration = frozen.project.exportDuration
+        var times: [Double] = []
+        let edge = try number(args, "longEdge", default: 640)
+        guard (2...640).contains(edge) else { throw MCPFailure(code: "OUT_OF_RANGE", message: "longEdge must be 2–640 pixels") }
+        if action == "frames" || action == "sheet" {
+            if let values = args["at"] as? [Any] {
+                guard !values.isEmpty, values.count <= (action == "frames" ? 6 : 24) else { throw MCPFailure(code: "OUT_OF_RANGE", message: "Use 1–6 frame times or 1–24 sheet times") }
+                times = try values.map { try number(["at": $0], "at", default: -1) }
+            } else if action == "sheet" {
+                let count = try number(args, "count", default: 12)
+                guard (1...24).contains(count) else { throw MCPFailure(code: "OUT_OF_RANGE", message: "Contact sheet count must be 1–24") }
+                times = (0..<Int(count)).map { (Double($0) + 0.5) * duration / count }
+            } else { throw MCPFailure(code: "INVALID_OP", message: "render.frames requires at: [output seconds]") }
+            guard duration > 0, times.allSatisfy({ $0 >= 0 && $0 <= duration }) else { throw MCPFailure(code: "OUT_OF_RANGE", message: "Use frame times within 0–\(duration); call project.info") }
+        }
+        let from = try number(args, "from", default: -1), to = try number(args, "to", default: -1)
+        if action == "clip", !(from >= 0 && to > from && to <= duration) { throw MCPFailure(code: "OUT_OF_RANGE", message: "render.clip needs 0 ≤ from < to ≤ \(duration)") }
+        let folder = AgentRender.cacheFolder(session: session.id)
+        if action == "clip" { progress(0) }
+        let jobID = UUID()
+        let requested = times
+        let task = Task { @MainActor in
+            switch action {
+            case "frames": return try await AgentRender.frames(model: frozen, at: requested, longEdge: Int(edge), folder: folder)
+            case "sheet": return [try await AgentRender.sheet(model: frozen, at: requested, folder: folder)]
+            case "clip": return [try await AgentRender.clip(model: frozen, from: from, to: to, folder: folder, progress: progress)]
+            default: throw MCPFailure(code: "INVALID_OP", message: "Choose a render action from tools/list")
+            }
+        }
+        session.renderTask = task; session.renderJobID = jobID
+        defer { if session.renderJobID == jobID { session.renderTask = nil; session.renderJobID = nil } }
+        let files: [URL]
+        do { files = try await task.value }
+        catch is CancellationError { throw MCPFailure(code: "DENIED", message: "Render cancelled; request another render when ready") }
+        catch Exporter.ExportError.cancelled { throw MCPFailure(code: "DENIED", message: "Render cancelled; request another render when ready") }
+        var payload: [String: Any] = ["project": projectID, "revision": revision, "files": files.map { $0.absoluteString }]
+        var content: [[String: Any]] = []
+        for file in files {
+            let mime = file.pathExtension == "png" ? "image/png" : file.pathExtension == "jpg" ? "image/jpeg" : "video/mp4"
+            if action != "clip" { content.append(["type": "image", "mimeType": mime, "data": try Data(contentsOf: file).base64EncodedString()]) }
+            content.append(["type": "resource_link", "uri": file.absoluteString, "name": file.lastPathComponent, "mimeType": mime])
+        }
+        if action == "clip", let file = files.first {
+            payload["seconds"] = try await AVURLAsset(url: file).load(.duration).seconds
+            payload["bytes"] = (try FileManager.default.attributesOfItem(atPath: file.path)[.size] as? NSNumber)?.intValue ?? 0
+        } else { payload["at"] = times }
+        try requireAccess(frozen.project, tool: "render")
+        guard EditorWindowController.allOpen.contains(where: { $0.model.project.id == projectID }) else {
+            throw MCPFailure(code: "NO_PROJECT", message: "The editor closed during rendering; use project.open and retry")
+        }
+        return (payload, content)
     }
 
     @MainActor private static func libraryItems() async -> [ProjectStore.Item] {
