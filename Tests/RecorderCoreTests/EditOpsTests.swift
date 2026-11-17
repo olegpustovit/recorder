@@ -512,6 +512,8 @@ import Testing
         #expect(try span(moved) == (5, 9))
         let earlier = try moved.applying([.update(id: id, from: 1, to: 3, text: nil, position: nil, size: nil, scale: nil, center: nil)], context: EditContext()).project
         #expect(try span(earlier) == (1, 3))
+        let slid = try base.applying([.update(id: id, from: 5, to: nil, text: nil, position: nil, size: nil, scale: nil, center: nil)], context: EditContext()).project
+        #expect(try span(slid) == (5, 9))   // from alone moves, keeping the length
         let longer = try base.applying([.update(id: id, from: nil, to: 8, text: nil, position: nil, size: nil, scale: nil, center: nil)], context: EditContext()).project
         #expect(try span(longer) == (2, 8))
         // Lanes without update fields say so instead of "unknown block"; remove works on every lane.
@@ -531,6 +533,9 @@ import Testing
             #expect(base.suggestedFix(for: error, ops: ops) == .cut(from: 10, to: 15, snap: true))
             #expect(base.suggestedFix(for: .outOfRange(index: 0, reason: ""), ops: [.zoom(from: 18, to: 25, scale: 2, center: nil)]) == .zoom(from: 18, to: 20, scale: 2, center: nil, follow: nil, ease: nil))
             #expect(base.suggestedFix(for: error, ops: [.captions(maxWords: 4)]) == nil)
+            // No fix for non-range errors, or when clamping collapses the range.
+            #expect(base.suggestedFix(for: .invalidOp(index: 0, reason: "unknown block x"), ops: ops) == nil)
+            #expect(base.suggestedFix(for: .outOfRange(index: 0, reason: ""), ops: [.zoom(from: 25, to: 30, scale: 2, center: nil)]) == nil)
         }
     }
 }

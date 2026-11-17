@@ -56,7 +56,7 @@ import Testing
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
         try record.write(to: folder)
-        let loaded = try #require(AgentDraftRecord.read(from: folder))
+        let loaded = try #require(try AgentDraftRecord.read(from: folder))
         #expect(loaded.status == "submitted" && loaded.excluded == [[0, 1]] && loaded.calls == calls && loaded.baseProject == base)
         #expect(loaded.contexts[0].silent == first.silent && loaded.contexts[1].silent.isEmpty)
         var replayed = loaded.baseProject
@@ -67,8 +67,15 @@ import Testing
         }
         #expect(replayed.zooms.map(\.id) == project.zooms.map(\.id) && replayed.markers.map(\.id) == project.markers.map(\.id))
         #expect(replayed.clips == project.clips && replayed.zooms[0].start == 4)
+        // An undecodable file throws and is kept aside, never overwritten by the next save.
+        try Data("{".utf8).write(to: folder.appendingPathComponent(AgentDraftRecord.fileName))
+        #expect(throws: DecodingError.self) { try AgentDraftRecord.read(from: folder) }
+        AgentDraftRecord.quarantine(in: folder)
+        #expect(try AgentDraftRecord.read(from: folder) == nil)
+        #expect(FileManager.default.fileExists(atPath: folder.appendingPathComponent(AgentDraftRecord.failedFileName).path))
+        try record.write(to: folder)
         AgentDraftRecord.remove(from: folder)
-        #expect(AgentDraftRecord.read(from: folder) == nil)
+        #expect(try AgentDraftRecord.read(from: folder) == nil)
     }
 
     @Test func schemaViolationEnforcesLimitsFromTheSchema() {

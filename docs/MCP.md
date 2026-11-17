@@ -32,7 +32,7 @@ folders need the human's approval. Nothing the agent does bypasses `EditorModel`
 | D9 | All times in tool I/O are **output seconds of the project at `ifRevision`** (what the agent sees in renders). | Core converts with `TimeMap` before mutating. Agents never see source time. |
 
 Out of scope (do **not** build): MCP resources/prompts, music ducking, LUFS normalisation, OCR, background music, counters,
-progress bars, end cards, agent-written graphics, multiple simultaneous visible draft previews per project, reconnect-and-replay in the shim.
+progress bars, end cards, agent-written graphics, multiple simultaneous visible draft previews per project, (reconnect-and-replay in the shim was added in T-825/T-826 review fixes: if the app socket drops the shim relaunches the app, reconnects and replays the client's `initialize` + `notifications/initialized`, swallowing the duplicate reply; requests in flight are lost).
 
 ## 2. Architecture
 
@@ -87,7 +87,7 @@ Transport: one JSON object per line, UTF-8, `\n` terminated, both directions. Im
 | Method | Reply |
 |--------|-------|
 | `initialize` | `{"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":true}},"schemaVersion":<hash of tools/list>,"serverInfo":{"name":"recorder","version":<CFBundleShortVersionString>},"instructions":<§5.0 text>}`. Store `params.clientInfo.name` as the session's agent name. |
-| `notifications/initialized` | none; but when this client name last initialized against a different `schemaVersion` (remembered in UserDefaults), the server then sends `notifications/tools/list_changed` once (T-825). |
+| `notifications/initialized` | none; but when this client (name and version when given, else name) last initialized against a different `schemaVersion` (remembered in UserDefaults), the server then sends `notifications/tools/list_changed` once (T-825). |
 | `ping` | `{}` |
 | `tools/list` | `{"tools":[…§5 schemas…]}` |
 | `tools/call` | `{"content":[…],"structuredContent":{…},"isError":false}` |
@@ -97,16 +97,16 @@ Transport: one JSON object per line, UTF-8, `\n` terminated, both directions. Im
   `structuredContent: {"error":"STALE_REVISION","message":"…","fix":{…},"current":{…}}` (T-826): `fix` is always an
   object with a `hint` and, when derivable, `{index, op}` — the corrected op (a clip-edge cut returns the range snapped to
   the edge with `snap:true`; an out-of-range time is clamped); `current` is `{revision, duration, clips:[{from,to}]}` of
-  the project the call saw (null before `project.open`).
+  the project the call saw (null before `project.open`). `current.clips` is present only for range errors, capped to the
+  ~20 clips nearest the failing time; `revision` and `duration` are always there.
 - `content` always starts with one `text` item holding the JSON of `structuredContent` (clients that ignore structured
   output still work). Images: `{"type":"image","mimeType":"image/png","data":<base64>}`. Files:
   `{"type":"resource_link","uri":"file:///…","name":"proxy-0001.mp4","mimeType":"video/mp4"}`.
 - Progress: if `params._meta.progressToken` is present on a long call (`render.clip`, `export.final`, `analyze.transcribe`),
   send `{"jsonrpc":"2.0","method":"notifications/progress","params":{"progressToken":…,"progress":0.35,"total":1}}`
   at most every 0.25 s.
-- Tool annotations in `tools/list`: `project`, `timeline`, `transcript`, `analyze`, `render` `{"readOnlyHint":true}`; `edit`
-  `{"destructiveHint":false,"idempotentHint":true}` (`ifRevision` makes a repeated apply fail, not repeat); `draft`
-  `{"destructiveHint":false}`; `export` `{"destructiveHint":false,"openWorldHint":false}`. Every tool also declares an
+- Tool annotations in `tools/list`: `project`, `timeline`, `transcript`, `render` `{"readOnlyHint":true}`; `analyze` (its `transcribe`
+  writes), `edit` (`undo` is not idempotent) and `draft` `{"destructiveHint":false}`; `export` `{"destructiveHint":false,"openWorldHint":false}`. Every tool also declares an
   `outputSchema` (loose: known keys typed, none required, plus `project`/`revision`/`error`/`message`); results are
   always in `structuredContent`.
 - Limits live only in the tool `inputSchema`. `tools/call` validates arguments against it server-side (`type`, `enum`,
@@ -135,7 +135,10 @@ Nine tools, each with an `action` string (Resolve's MCP shows that grouping keep
 
 | Tool | Actions → result (all results include `project` id and `revision`) |
 |------|---------------------------------------------------------------------|
-| `project` | `list` → `[{id,title,path,duration,modified,hasMic}]` · `open {id\|path}` → opens the editor window, returns `info` plus `draft:{id,status:"drafting"\|"submitted"\|"stale",base,revision,changes}` when a pending draft was re-adopted (or `draft:{status:"unrecoverable",error}`); continue with the returned `revision` · `info` → `{title,duration,size:{w,h},clips,lanes:{zoom,text,mask,…counts},hasMic,hasCamera,transcribed,access}` · `assets` → `{layers:[{asset,kind,id,from,to}], library:[{recording,title,duration}]}` (media a `layer` op can use) |
+| `project` | `list` → `[{id,title,path,duration,modified,hasMic}]` · `open {id\|path}` → opens the editor window, returns `info` plus `draft:{id,status:"drafting"\|"submitted"\|"stale",base,revision,changes}` when a pending draft was re-adopted (or `draft:{status:"unrecoverable",error}` when the file could not be read or replayed; it is then kept as
+`agent-draft.failed.json` and never overwritten). The draft attaches only to its own project. Takeover rule: a reconnecting
+client takes over a disconnected session's in-memory draft of this project, preferring the same client name and otherwise any
+(a client restart may rename itself); a draft a connected session holds is never duplicated from the file; continue with the returned `revision` · `info` → `{title,duration,size:{w,h},clips,lanes:{zoom,text,mask,…counts},hasMic,hasCamera,transcribed,access}` · `assets` → `{layers:[{asset,kind,id,from,to}], library:[{recording,title,duration}]}` (media a `layer` op can use) |
 | `timeline` | `get {from?,to?}` → `AgentTimeline` (§T-801) |
 | `transcript` | `get {from?,to?,format:"words"\|"phrases"}` → `AgentTranscript` (§T-801). `NOT_TRANSCRIBED` if `model.transcript == nil`. |
 | `analyze` | `transcribe` (async, progress) · `pauses {minDuration=0.6,threshold=0.02}` → `[{from,to}]` · `fillers` → `[{word,from,to,text}]` · `activity` → `{idle:[…],typing:[…],clicks:[t…]}` (ranges only, never characters) |

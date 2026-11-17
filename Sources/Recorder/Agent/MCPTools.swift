@@ -97,7 +97,6 @@ enum MCPTools {
             properties["action"] = ["type": "string", "enum": actions]
             var annotations: [String: Any] = read ? ["readOnlyHint": true] : ["destructiveHint": false]
             if name == "export" { annotations["openWorldHint"] = false }
-            if name == "edit" { annotations["idempotentHint"] = true }   // ifRevision makes a repeated apply fail instead of repeating
             // Every result also carries the project id and the revision it describes (null before project.open); errors carry error/message.
             let output = (outputFields[name] ?? [:]).merging(["project": ["type": ["string", "null"]], "revision": ["type": ["string", "null"]],
                 "error": ["type": "string"], "message": ["type": "string"], "fix": ["type": "object"], "current": ["type": ["object", "null"]]], uniquingKeysWith: { a, _ in a })
@@ -109,7 +108,7 @@ enum MCPTools {
             tool("project", ["list", "open", "info", "assets"], "List recordings, open one by id or package path, read its summary and revision, or list the media a layer op can use (assets).", ["id": string, "path": string], read: true),
             tool("timeline", ["get"], "Read clips, effect blocks and markers in output seconds.", range, read: true),
             tool("transcript", ["get"], "Read up to 2000 spoken words with stable wN ids, or timestamped phrases. Key presses are never returned.", range.merging(["format": ["type": "string", "enum": ["words", "phrases"]]], uniquingKeysWith: { _, b in b }), read: true),
-            tool("analyze", ["transcribe", "pauses", "fillers", "activity"], "Transcribe on-device, find mic pauses/fillers, or read activity ranges without key characters.", ["minDuration": number, "threshold": ["type": "number", "minimum": 0, "maximum": 1]], read: true),
+            tool("analyze", ["transcribe", "pauses", "fillers", "activity"], "Transcribe on-device, find mic pauses/fillers, or read activity ranges without key characters.", ["minDuration": number, "threshold": ["type": "number", "minimum": 0, "maximum": 1]]),   // not read-only: transcribe writes the transcript
             tool("edit", ["apply", "undo"], "Apply atomic edits using the latest ifRevision; edits land in a draft by default. Numeric times use that revision's output timeline; anchors ({marker:id|label, offset}, {ref:name, offset}, {shot, edge}) resolve after earlier ops in the batch. Declare ref:\"name\" on an op to anchor later ops on its start. Errors carry fix and current.", ["ifRevision": string, "ops": ["type": "array", "items": ["oneOf": operationSchemas]], "dryRun": boolean]),
             tool("draft", ["status", "submit", "discard"], "Read your draft's exclusions, skipped reasons and verdict; submit for review or discard it. A pending submitted draft can receive more edit.apply calls, returning to watching until submitted again.", ["note": string]),
             tool("render", ["frames", "sheet", "clip", "cancel"], "Render frames, a contact sheet or a 540p proxy into the agent cache. Key chips are hidden.", ["at": ["type": "array", "items": number, "maxItems": 24], "from": number, "to": number, "count": ["type": "integer", "minimum": 1, "maximum": 24], "longEdge": ["type": "integer", "minimum": 2, "maximum": 640], "draft": boolean,
@@ -297,24 +296,44 @@ enum MCPTools {
             }
         }
     }
-    /// R1: a reconnecting session takes over its predecessor's in-memory draft, else re-adopts `agent-draft.json` from the package.
+    /// R1: a reconnecting session takes over a disconnected session's in-memory draft, else re-adopts `agent-draft.json`.
+    /// Orphans of the same client name win; with no name match any disconnected owner of this project's draft is taken
+    /// (a client restart may rename itself). A draft some connected session holds is never duplicated from the file.
     @MainActor private static func adoptDraft(_ session: MCPSession, model: EditorModel) throws {
         session.draftRestoreError = nil
-        guard session.draft?.verdict != nil || session.draft == nil, AgentAccess.level(for: model.liveProject.id) == .draft else { return }
-        if let orphan = MCPServer.shared.sessions.first(where: { !$0.connected && $0 !== session && $0.draft?.verdict == nil && $0.draft?.baseProject.id == model.liveProject.id }) {
+        let projectID = model.liveProject.id
+        guard session.draft == nil || session.draft?.verdict != nil, AgentAccess.level(for: projectID) == .draft else { return }
+        let orphans = MCPServer.shared.sessions.filter { !$0.connected && $0 !== session && $0.draft?.verdict == nil && $0.draft?.baseProject.id == projectID }
+        if let orphan = orphans.first(where: { $0.agentName == session.agentName }) ?? orphans.first {
             session.draft = orphan.draft; orphan.draft = nil
             session.persistedPackage = orphan.persistedPackage; orphan.persistedPackage = nil
             session.agentMedia = orphan.agentMedia; session.agentMediaPackage = orphan.agentMediaPackage; orphan.agentMedia = []
             if model.reviewSessionID == orphan.id { model.reviewSessionID = session.id }
             DraftPlayback.shared.invalidate(sessionID: orphan.id)
             MCPServer.shared.removeFinishedSessions()
-        } else if let record = AgentDraftRecord.read(from: model.packageURL), record.baseProject.id == model.liveProject.id {
-            do {
-                session.draft = try AgentDraft(record, words: model.transcript ?? [])
-                session.persistedPackage = model.packageURL
-                session.agentMedia = Set(session.draft?.assets.keys.map { $0 } ?? []); session.agentMediaPackage = model.packageURL
-                try? MCPServer.shared.review(session, watching: !record.submitted)   // shows it in the editor when the base still matches
-            } catch { session.draftRestoreError = "\(error); the file stays in the package, edit.apply starts a new draft" }
+            return
+        }
+        let package = model.packageURL
+        let record: AgentDraftRecord
+        do {
+            guard let found = try AgentDraftRecord.read(from: package) else { return }
+            record = found
+        } catch {
+            AgentDraftRecord.quarantine(in: package)
+            session.draftRestoreError = "agent-draft.json could not be read (\(error.localizedDescription)); kept as agent-draft.failed.json, edit.apply starts a new draft"
+            return
+        }
+        guard !MCPServer.shared.sessions.contains(where: { $0 !== session && $0.draft?.id == record.id }) else { return }   // a live session owns it
+        do {
+            guard record.baseProject.id == projectID else { throw MCPFailure(code: "NO_PROJECT", message: "the draft belongs to another project") }
+            session.draft = try AgentDraft(record, words: model.transcript ?? [])
+            session.persistedPackage = package
+            session.agentMedia = Set(session.draft?.assets.keys.map { $0 } ?? []); session.agentMediaPackage = package
+            try? MCPServer.shared.review(session, watching: !record.submitted)   // shows it in the editor when the base still matches
+        } catch {
+            session.draft = nil
+            AgentDraftRecord.quarantine(in: package)
+            session.draftRestoreError = "agent-draft.json could not be restored (\(error)); kept as agent-draft.failed.json, edit.apply starts a new draft"
         }
     }
     /// The `draft` block of project.open: id, status (drafting, submitted or stale) and the flattened changes.
@@ -415,7 +434,7 @@ enum MCPTools {
                 let viewed = try viewedProject(controller.model, session: session)
                 payload = info(controller.model, project: viewed)
                 payload["revision"] = try revision(viewed)
-                if let draft = session.draft, draft.verdict == nil { payload["draft"] = try draftSummary(draft, live: controller.model.liveProject) }
+                if let draft = session.draft, draft.verdict == nil, draft.baseProject.id == controller.model.liveProject.id { payload["draft"] = try draftSummary(draft, live: controller.model.liveProject) }
                 else if let failure = session.draftRestoreError { payload["draft"] = ["status": "unrecoverable", "error": failure] }
             } else {
                 let model = try model(for: session)
@@ -521,9 +540,15 @@ enum MCPTools {
             var fix: [String: Any] = ["hint": hints[failure.code] ?? "Revise the call using tools/list and retry"]
             var current: Any = NSNull()
             if let model = try? model(for: session), let viewed = try? viewedProject(model, session: session) {
-                let clips = agentTimeline(viewed).clips
-                current = ["revision": (try? revision(viewed)) ?? "", "duration": viewed.exportDuration,
-                           "clips": clips.map { ["from": $0.from, "to": $0.to] }]
+                var state: [String: Any] = ["revision": (try? revision(viewed)) ?? "", "duration": viewed.exportDuration]
+                if failure.code == "OUT_OF_RANGE" || failure.message.contains("clip edge") {
+                    // Only the ~20 clips nearest the failing time, so a long project does not flood the error.
+                    var time = 0.0
+                    if let editError = error as? EditError, let index = editError.opIndex, let ops = try? decodeOps(args["ops"]), ops.indices.contains(index) { time = ops[index].startSeconds ?? 0 }
+                    let near = agentTimeline(viewed).clips.sorted { abs(($0.from + $0.to) / 2 - time) < abs(($1.from + $1.to) / 2 - time) }.prefix(20)
+                    state["clips"] = near.sorted { $0.from < $1.from }.map { ["from": $0.from, "to": $0.to] }
+                }
+                current = state
                 if name == "edit", let editError = error as? EditError, let index = editError.opIndex, let ops = try? decodeOps(args["ops"]),
                    let corrected = viewed.suggestedFix(for: editError, ops: ops), let object = try? object(corrected) {
                     fix["index"] = index; fix["op"] = object

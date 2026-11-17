@@ -195,6 +195,20 @@ public enum EditOp: Codable, Equatable, Sendable {
             }
         }
     }
+    /// The first numeric time of the op (output seconds), for locating where an error happened.
+    public var startSeconds: Double? {
+        let time: EditTime?
+        switch self {
+        case let .cut(from, _, _), let .speed(from, _, _, _), let .zoom(from, _, _, _, _, _), let .text(from, _, _, _, _, _, _),
+             let .highlight(from, _, _, _), let .layer(from, _, _, _): time = from
+        case let .marker(at, _): time = at
+        case let .cutPauses(_, _, from, _, _): time = from
+        case let .update(_, from, _, _, _, _, _, _, _, _, _): time = from
+        default: time = nil
+        }
+        if case .seconds(let value)? = time { return value }
+        return nil
+    }
     var snapsClipBoundaries: Bool {
         switch self {
         case let .cut(_, _, snap), let .cutPauses(_, _, _, _, snap), let .cutWords(_, _, snap), let .speed(_, _, _, snap): return snap
@@ -257,9 +271,15 @@ private func editBlocks(_ p: Project) -> [(String, Double, Double, Bool)] {
 }
 
 public extension Project {
-    /// R7: the op corrected for a time outside the timeline or too close to a clip edge (snapped to the edge), else nil.
+    /// R7: the op corrected for a time outside the timeline or too close to a clip edge (snapped to the edge). Only for
+    /// range errors, and only when the corrected op is non-empty and applies on its own; otherwise nil.
     func suggestedFix(for error: EditError, ops: [EditOp]) -> EditOp? {
         guard let index = error.opIndex, ops.indices.contains(index) else { return nil }
+        switch error {
+        case .outOfRange: break
+        case .invalidOp(_, let reason): guard reason.contains("clip edge") else { return nil }
+        default: return nil
+        }
         let duration = TimeMap(clips).outputDuration
         var edges = [0.0], offset = 0.0
         for clip in clips { offset += clip.outputDuration; edges.append(offset) }
@@ -269,12 +289,15 @@ public extension Project {
             let edge = edges.min { abs($0 - clamped) < abs($1 - clamped) } ?? clamped
             return .seconds(abs(edge - clamped) < 0.1 ? edge : clamped)
         }
+        let fixed: EditOp
         switch ops[index] {
-        case let .cut(from, to, _): return .cut(from: fit(from), to: fit(to), snap: true)
-        case let .speed(from, to, speed, _): return .speed(from: fit(from), to: fit(to), speed: speed, snap: true)
-        case let .zoom(from, to, scale, center, follow, ease): return .zoom(from: fit(from), to: fit(to), scale: scale, center: center, follow: follow, ease: ease)
+        case let .cut(from, to, _): fixed = .cut(from: fit(from), to: fit(to), snap: true)
+        case let .speed(from, to, speed, _): fixed = .speed(from: fit(from), to: fit(to), speed: speed, snap: true)
+        case let .zoom(from, to, scale, center, follow, ease): fixed = .zoom(from: fit(from), to: fit(to), scale: scale, center: center, follow: follow, ease: ease)
         default: return nil
         }
+        guard fixed != ops[index], (try? applying([fixed], context: EditContext())) != nil else { return nil }
+        return fixed
     }
 }
 
@@ -614,7 +637,7 @@ public extension Project {
                     result.markers.append(Marker(time: span?.start ?? baseMap.sourceTime(atOutput: item.at), label: label))
                     result.markers.sort { $0.time < $1.time }
                     summary = "Marker \(stamp(item.at))"
-                case let .update(id, _, to, text, position, size, scale, center, follow, ease, color):
+                case let .update(id, from, to, text, position, size, scale, center, follow, ease, color):
                     try point(position, index: index); try point(center, index: index); try positive(size, index: index); try positive(scale, index: index)
                     if let i = result.markers.firstIndex(where: { $0.id == id }) {
                         guard to == nil, position == nil, size == nil, scale == nil, center == nil, follow == nil, ease == nil, color == nil else {
@@ -659,11 +682,18 @@ public extension Project {
                         if let color { result.layers[i].color = color }
                         if let span, let layerID = UUID(uuidString: id) {
                             let map = TimeMap(result.clips)
-                            let want = (map.outputTime(atSource: span.start) ?? 0, map.outputTime(atSource: span.end) ?? map.outputDuration)
-                            // shortcut: edges move one at a time, so a move a neighbour or the media length clamps is an error, not a slide.
-                            let later = want.0 >= (map.outputTime(atSource: result.layers[i].start) ?? 0)
-                            for edge in later ? [Edge.trailing, .leading] : [.leading, .trailing] {
-                                result.resizeLayer(layerID, edge: edge, toOutput: edge == .leading ? want.0 : want.1)
+                            var want = (map.outputTime(atSource: span.start) ?? 0, map.outputTime(atSource: span.end) ?? map.outputDuration)
+                            let old = result.layers[i]
+                            if from != nil, to == nil {
+                                // `from` alone moves the layer and keeps its length, like dragging it.
+                                want.1 = want.0 + old.end - old.start
+                                result.moveLayer(layerID, toOutput: want.0)
+                            } else {
+                                // shortcut: edges move one at a time, so a move a neighbour or the media length clamps is an error, not a slide.
+                                let later = want.0 >= (map.outputTime(atSource: old.start) ?? 0)
+                                for edge in later ? [Edge.trailing, .leading] : [.leading, .trailing] {
+                                    result.resizeLayer(layerID, edge: edge, toOutput: edge == .leading ? want.0 : want.1)
+                                }
                             }
                             let now = result.layers.first { $0.id == id }.flatMap { layer in map.outputTime(atSource: layer.start).map { ($0, $0 + layer.end - layer.start) } }
                             guard let now, abs(now.0 - want.0) < 1e-6, abs(now.1 - want.1) < 1e-6 else {
@@ -682,6 +712,7 @@ public extension Project {
                     }
                     guard editBlocks(result).contains(where: { $0.0 == id }) else { throw EditError.invalidOp(index: index, reason: "unknown block \(id)") }
                     result.removeBlock(id: id, propagate: false)   // only this block, never the linked clips or audio
+                    guard !editBlocks(result).contains(where: { $0.0 == id }) else { throw EditError.invalidOp(index: index, reason: "block \(id) could not be removed") }
                     summary = "Remove block"
                 case let .style(patch):
                     do {

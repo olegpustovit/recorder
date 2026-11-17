@@ -27,11 +27,15 @@ struct AgentDraft {
     init(_ record: AgentDraftRecord, words: [Word]) throws {
         self.init(base: record.base, baseProject: record.baseProject)
         id = record.id
-        for (call, context) in zip(record.calls, record.contexts) {
-            var context = context; context.words = words
-            _ = try append(call, context: context)
-        }
-        excluded = Set(record.excluded); note = record.note; submitted = record.submitted
+        calls = record.calls
+        contexts = record.contexts.map { var context = $0; context.words = words; return context }
+        changes = calls.map { _ in [] }
+        // Replay tolerantly (a draft refreshed after its base changed has skipped ops), keep every op's row, then apply the
+        // exclusions and skips the user saw.
+        changes = try replay(from: nil, context: EditContext(words: words), skipInvalid: true).changes
+        excluded = Set(record.excluded); note = record.note
+        _ = try refreshReview(context: EditContext(words: words))
+        submitted = record.submitted
     }
     var record: AgentDraftRecord {
         AgentDraftRecord(id: id, base: base, baseProject: baseProject, calls: calls, contexts: contexts,
@@ -192,50 +196,95 @@ enum MCPSocket {
     }
 }
 
+/// Socket + replay state shared by the shim's two threads.
+private final class ShimState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var fd: Int32
+    private(set) var stdinClosed = false
+    private var initialize: Data?, initialized: Data?
+    private var skipID: Any?
+    init(_ fd: Int32) { self.fd = fd }
+    var socket: Int32 { lock.withLock { fd } }
+    /// Forwards one client line, remembering the handshake so a reconnect can replay it.
+    func forward(_ line: Data) {
+        let method = (try? JSONSerialization.jsonObject(with: line) as? [String: Any])?["method"] as? String
+        lock.withLock {
+            if method == "initialize" { initialize = line } else if method == "notifications/initialized" { initialized = line }
+            _ = MCPSocket.write(line + Data([10]), to: fd)   // a dead socket drops the line; the read loop reconnects
+        }
+    }
+    func closeInput() { lock.withLock { stdinClosed = true; shutdown(fd, SHUT_WR) } }
+    /// Swaps in a fresh connection and replays initialize + initialized; the duplicate initialize reply is swallowed.
+    func replace(_ newFD: Int32) {
+        lock.withLock {
+            close(fd); fd = newFD
+            if let initialize {
+                skipID = (try? JSONSerialization.jsonObject(with: initialize) as? [String: Any])?["id"]
+                _ = MCPSocket.write(initialize + Data([10]), to: fd)
+                if let initialized { _ = MCPSocket.write(initialized + Data([10]), to: fd) }
+            }
+        }
+    }
+    /// True for the one reply to the replayed initialize, which the client already received once.
+    func swallow(_ line: Data) -> Bool {
+        lock.withLock {
+            guard let skipID, let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+                  object["result"] != nil, let id = object["id"], (id as AnyObject).isEqual(skipID) else { return false }
+            self.skipID = nil
+            return true
+        }
+    }
+}
+
 enum MCPShim {
+    private static func connectOrLaunch(_ path: String) throws -> Int32 {
+        if let fd = try? MCPSocket.connect(path) { return fd }
+        let launcher = Process()
+        launcher.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        let app = Bundle.main.bundleURL
+        launcher.arguments = app.pathExtension == "app" ? ["-g", "-j", app.path] : ["-g", "-j", "-b", "space.microapps.recorder"]
+        launcher.standardOutput = FileHandle.standardError
+        launcher.standardError = FileHandle.standardError
+        try launcher.run()
+        let deadline = Date().addingTimeInterval(15)
+        while Date() < deadline {
+            if let socket = try? MCPSocket.connect(path) { return socket }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        throw NSError(domain: "RecorderMCP", code: 1, userInfo: [NSLocalizedDescriptionKey: "Recorder did not open its MCP socket in 15 seconds; launch Recorder and retry"])
+    }
+    /// Calls `handle` with each newline-terminated line read from `fd`; returns at EOF.
+    private static func readLines(_ fd: Int32, _ handle: (Data) -> Void) {
+        var pending = Data(), buffer = [UInt8](repeating: 0, count: 16_384)
+        while true {
+            let count = Darwin.read(fd, &buffer, buffer.count)
+            if count < 0 && errno == EINTR { continue }
+            guard count > 0 else { return }
+            pending.append(contentsOf: buffer.prefix(count))
+            while let newline = pending.firstIndex(of: 10) {
+                handle(Data(pending[..<newline])); pending.removeSubrange(...newline)
+            }
+        }
+    }
     static func runIfRequested() {
         guard CommandLine.arguments.contains("--mcp") else { return }
-        // shortcut: no reconnect if the app quits mid-session; reconnect from the MCP client.
         let path = MCPServer.defaultSocketPath
         do {
-            var fd: Int32
-            do { fd = try MCPSocket.connect(path) }
-            catch {
-                let launcher = Process()
-                launcher.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-                let app = Bundle.main.bundleURL
-                launcher.arguments = app.pathExtension == "app" ? ["-g", "-j", app.path] : ["-g", "-j", "-b", "space.microapps.recorder"]
-                launcher.standardOutput = FileHandle.standardError
-                launcher.standardError = FileHandle.standardError
-                try launcher.run()
-                let deadline = Date().addingTimeInterval(15)
-                var connected: Int32?
-                while Date() < deadline {
-                    if let socket = try? MCPSocket.connect(path) { connected = socket; break }
-                    Thread.sleep(forTimeInterval: 0.1)
-                }
-                guard let connected else { throw NSError(domain: "RecorderMCP", code: 1, userInfo: [NSLocalizedDescriptionKey: "Recorder did not open its MCP socket in 15 seconds; launch Recorder and retry"] ) }
-                fd = connected
-            }
-            let socket = fd
+            let state = ShimState(try connectOrLaunch(path))
             DispatchQueue.global().async {
-                var buffer = [UInt8](repeating: 0, count: 16_384)
-                while true {
-                    let count = Darwin.read(STDIN_FILENO, &buffer, buffer.count)
-                    if count < 0 && errno == EINTR { continue }
-                    guard count > 0 else {
-                        // Drain replies after piped stdin closes (initialize smoke), then exit on socket EOF.
-                        shutdown(socket, SHUT_WR)
-                        return
-                    }
-                    guard MCPSocket.write(Data(buffer.prefix(count)), to: socket) else { exit(0) }
-                }
+                readLines(STDIN_FILENO) { state.forward($0) }
+                // Piped stdin closed (initialize smoke): drain the replies, then exit when the server closes.
+                state.closeInput()
             }
-            var buffer = [UInt8](repeating: 0, count: 16_384)
             while true {
-                let count = Darwin.read(socket, &buffer, buffer.count)
-                if count < 0 && errno == EINTR { continue }
-                guard count > 0, MCPSocket.write(Data(buffer.prefix(count)), to: STDOUT_FILENO) else { exit(0) }
+                readLines(state.socket) { line in
+                    if !state.swallow(line) { _ = MCPSocket.write(line + Data([10]), to: STDOUT_FILENO) }
+                }
+                if state.stdinClosed { exit(0) }
+                // The app quit or restarted (upgrade): relaunch if needed and replay the handshake so the client's session
+                // survives and the server can send tools/list_changed. shortcut: requests in flight when the app died get no
+                // reply (the client times out); resend is not attempted.
+                state.replace(try connectOrLaunch(path))
             }
         } catch {
             FileHandle.standardError.write(Data("Recorder MCP: \(error.localizedDescription)\n".utf8))
@@ -567,9 +616,13 @@ enum AgentAccess: String, CaseIterable {
         let result: [String: Any]
         switch method {
         case "initialize":
-            if let info = params["clientInfo"] as? [String: Any], let name = info["name"] as? String { agentName = String(name.prefix(80)) }
+            var clientKey = ""
+            if let info = params["clientInfo"] as? [String: Any], let name = info["name"] as? String {
+                agentName = String(name.prefix(80))
+                clientKey = agentName + ((info["version"] as? String).map { "@" + String($0.prefix(40)) } ?? "")
+            }
             // R2: a client that last saw another tool schema is told to re-list once it has initialized.
-            let key = "mcpSchemaVersion.\(agentName)"
+            let key = "mcpSchemaVersion.\(clientKey.isEmpty ? agentName : clientKey)"
             let seen = UserDefaults.standard.string(forKey: key)
             schemaChanged = seen != nil && seen != MCPTools.schemaVersion
             UserDefaults.standard.set(MCPTools.schemaVersion, forKey: key)

@@ -1228,7 +1228,7 @@ notifications when the client supplies a progress token. The shim exits if the a
 | `analyze` | `transcribe` on-device, `pauses`, `fillers`, `activity` |
 | `edit` | `apply` an atomic operation array, optional `dryRun`; `undo` the latest Live agent step |
 | `draft` | `status`, `submit`, `discard` |
-| `render` | `frames` (up to 6 PNGs, at most 640px), `sheet` (up to 24 tiles), `clip` (540p MP4), `cancel` |
+| `render` | `frames` (up to 24 PNGs, at most 640px), `sheet` (up to 24 tiles), `clip` (540p MP4), `cancel` |
 | `export` | `final`, with native approval and optional SRT |
 | `ui` | `show` a playhead time and optional selected IDs |
 

@@ -4782,7 +4782,9 @@ private final class MCPTestClient {
     func annotation(_ name: String, _ key: String) -> Bool? {
         ((MCPTools.list.first { $0["name"] as? String == name }?["annotations"]) as? [String: Any])?[key] as? Bool
     }
-    guard ["analyze", "render", "timeline", "transcript"].allSatisfy({ annotation($0, "readOnlyHint") == true }), annotation("edit", "idempotentHint") == true else {
+    // analyze.transcribe writes and edit.undo is not idempotent, so those two tools carry no read-only/idempotent hint.
+    guard ["render", "timeline", "transcript"].allSatisfy({ annotation($0, "readOnlyHint") == true }), annotation("analyze", "readOnlyHint") != true,
+          annotation("edit", "idempotentHint") != true else {
         throw fail("annotations")
     }
     let render = (MCPTools.list.first { $0["name"] as? String == "render" }?["inputSchema"]) as? [String: Any] ?? [:]
