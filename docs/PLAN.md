@@ -743,8 +743,8 @@ TimelineOps primitive → EditOp → human command → selftest (D4), and fills 
 |---|---|---|
 | A. Reliability (feedback run 6) | T-901…T-905 | 5/5 |
 | B. Kernel: item view, fuzz, `set` | T-910…T-912 | 3/3 |
-| C. Keyframes + motion graphics | T-920…T-925 | 5/6 (+T-924 HUMAN) |
-| D. Human editor gaps | T-930…T-937 | 4/8 (+T-930…T-932, T-936 HUMAN) |
+| C. Keyframes + motion graphics | T-920…T-925 | 6/6 |
+| D. Human editor gaps | T-930…T-937 | 8/8 |
 | E. Docs + eval | T-940 | 1/1 |
 
 - [x] **T-901 One duration, layers visible to agent tools** — `project.list`/`info`/`timeline.get`/`analyze.shots`/sheet
@@ -782,25 +782,25 @@ TimelineOps primitive → EditOp → human command → selftest (D4), and fills 
 - [x] **T-923 Render graphics + keyframes** — Compositor draws graphics (CG → cached texture), `space: screen` mapped
   through `ZoomTargetMapping`; layer/text keys applied. Verify: `--selftest parity` with graphics/keys fixtures maxDelta 0;
   `--selftest graphics-png <out>` inspected.
-- [~] **T-924 Human: Graphics lane, template gallery, GraphicPanel, keyframes** — lane in TimelineView, `G` menu of
+- [x] **T-924 Human: Graphics lane, template gallery, GraphicPanel, keyframes** — lane in TimelineView, `G` menu of
   templates, inspector params/elements/colours (Theme tokens), on-canvas move/resize (SelectionRectView), keyframe
   diamonds on the selected block, ⌥K add key at playhead, drag diamond. Verify: `--selftest graphics-ui`, inspector PNGs;
   HUMAN: compare with the prototype.
 - [x] **T-925 MCP `graphic`, `animate`, `project.templates`** — ops lower to T-921/T-920 primitives; schema + parity;
   timeline.get emits graphics. Verify: `--selftest mcp-edit <fixture>` (title card + screen callout through a zoom,
   frames rendered); MCP.md §5.
-- [~] **T-930 Markers UI** — `M` adds at playhead, ruler flags, double-click rename, ⌃←/⌃→ jump, delete. Verify:
+- [x] **T-930 Markers UI** — `M` adds at playhead, ruler flags, double-click rename, ⌃←/⌃→ jump, delete. Verify:
   `--selftest markers`; HUMAN look.
-- [~] **T-931 Editable transcript** — transcript panel words selectable; ⌫ applies `cutWords` through
+- [x] **T-931 Editable transcript** — transcript panel words selectable; ⌫ applies `cutWords` through
   `EditorModel.apply`; fillers highlighted with "Remove fillers". Verify: `--selftest transcript-edit <fixture>`.
-- [~] **T-932 Roll and slip** — Core `rollEdit(boundary, delta)`, `slipClip(id, delta)` (clips and video layers);
+- [x] **T-932 Roll and slip** — Core `rollEdit(boundary, delta)`, `slipClip(id, delta)` (clips and video layers);
   ⌥-drag seam = roll, ⌘-drag body = slip. Verify: `make test FILTER=TimelineOps`; `--selftest timeline-trim`.
 - [x] **T-933 Freeze frame** — `Clip.freeze` (hold one media frame for d output seconds) in TimeMap; ⇧F; MCP `freeze`.
   Verify: `make test FILTER=TimeMap`; parity selftest.
 - [x] **T-934 Seam transitions** — `Clip.transitionIn {kind: dissolve|dipToBlack|push, duration}` centred on the seam;
   compositor blends both frames; MCP `transition`. Verify: Core TimeMap/overlap tests; parity selftest.
 - [x] **T-935 Speed ramp UI** — clip inspector ramp in/out (reuse stepped ramp lowering). Verify: `--selftest clip-speed`.
-- [~] **T-936 Ducking + gain envelope** — music track `duck` under mic/voiceover; editable envelope points on audio clips.
+- [x] **T-936 Ducking + gain envelope** — music track `duck` under mic/voiceover; editable envelope points on audio clips.
   Verify: `--selftest audio-mix`; `make test FILTER=AudioClip`.
 - [x] **T-937 Export range** — I/O on the timeline, export sheet "Range: whole | in–out"; `export.final {from,to}`.
   Verify: `--selftest export-sheet`, `mcp-export`.
@@ -1815,3 +1815,4 @@ T-936 · 2026-11-17 · `- [~]` pending HUMAN listen · verified: `make test` 304
 T-937 · 2026-11-17 · verified: new headless `--selftest export-in-out <package>` (temp copy: In 2.0 / Out 4.5 through the model → a real 2.50 s MP4 via `Exporter(outputRange:)`; setting the full range clears it) OK; existing `export-range` (export-duration rules) still OK; `mcp-schema`, `mcp-edit --headless`, `make test` OK · Reuse: `Exporter` already took `outputRange` (built for proxy clips) — wired to `EditorModel.exportRange` (I / O / ⌥X, per session), a white band on the ruler, the export sheet (Range row + Whole video, duration/size from the range; GIF stays whole), and MCP `export.final {from,to}` (rejected with srt). Found while testing: a duplicate selftest key traps the whole case table, so the new case is `export-in-out`.
 T-940 · 2026-11-17 · verified: `make test` 305/305 (new `GoldenIslandTests.reelWithTitleCardAndCallouts`: the eval brief "30 s reel with a title card and two callouts" as the agent's ops on the real layout — fitDuration, gap cut if linted, titleCard + two screen-space callouts on the strongest payoff shots with keyed pop-in, a dip at a seam → 30 ± 2.5 s, three graphic blocks in timeline.get, no background-only canvas, every lint suggestion applicable); `make mcp-smoke` OK · EDITING-CORE §5 parity table at its final state, SPEC §10 note, MCP.md updated per task. Not run: a live Claude session through the eval harness (it opens editor windows; the user asked for none) — run `scripts/score` after a real session.
 T-924/T-930/T-932 follow-up · 2026-11-17 · verified headlessly: new `--selftest timeline-gestures <package>` drives the real TimelineView event handlers with synthesized events on a windowless view (⌘-drag clip body = slip −1.00 s media with place/length kept, one `Slip Clip` step; ⌥-drag a cut = roll to 6.00 s with length kept; M marker; I/O range; double-click a ruler flag = rename to "Intro", one `Rename Marker` step) OK; new `--selftest timeline-v2-png <package> <out>` renders the real timeline with `cacheDisplay` (no window) — marker flags, In/Out band, sage graphic block with template name and keyframe diamonds inspected; `make test` 305/305 · Added: ⌘-drag slip (plan's gesture, replacing the keyboard-only shortcut), double-click flag rename (NSPopover field). Still `- [~]`: HUMAN look/feel in the running app for T-924, T-930, T-931, T-932, T-936.
+HUMAN waiver · 2026-11-17 · The user waived the in-app HUMAN look/feel checks for T-924, T-930, T-931, T-932, T-936 (answered "Waive, tick them"), accepting the headless evidence: event-driven `timeline-gestures`, offscreen `timeline-v2-png`/`graphics-ui`/`transcript-edit` renders, `graphics-png`, `freeze`, `transitions`, `audio-mix`. No human-performed comparison is claimed.
