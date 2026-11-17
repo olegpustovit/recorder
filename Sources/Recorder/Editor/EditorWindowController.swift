@@ -607,6 +607,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
         model.addGraphic(template: (sender as? NSMenuItem)?.representedObject as? String ?? "titleCard")
     }
     @objc func addKeyframe(_ sender: Any?) { model.addKeyAtPlayhead() }
+    @objc func toggleMarker(_ sender: Any?) { model.toggleMarkerAtPlayhead() }
 
     @objc func addZoomAtPlayhead(_ sender: Any?) {
         let s = model.timeMap.sourceTime(atOutput: model.playhead)

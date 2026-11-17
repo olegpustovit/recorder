@@ -427,6 +427,7 @@ enum SelfTest {
         "parity": { args in try await ExporterSelfTest.runParitySelfTest(args) },
         "graphics-png": { args in try await checkGraphicsPNG(args) },
         "graphics-ui": { args in try await checkGraphicsUI(args) },
+        "markers": { args in try await checkMarkersUI(args) },
         "export-gif": { args in try await ExporterSelfTest.runExportGIFSelfTest(args) },
         "export-perf": { args in try await PerfSelfTest.runExportPerf(args) },
         "export-native": { _ in try await ExportSheetSelfTest.checkNativeHandoff() },
@@ -7585,4 +7586,28 @@ final class MainStallMonitor: @unchecked Sendable {
     }
     try png.write(to: out.appendingPathComponent("graphic-panel.png"))
     print("graphics-ui: add/select/undo name, ⌥K keys at 0.2 s and 1.5 s, undo, menu wiring; panel \(image.width)×\(image.height) px")
+}
+
+/// T-930 (headless): M toggles a marker at the playhead (one undo step each), ⌃←/⌃→ jump between markers, menu item wired.
+@MainActor private func checkMarkersUI(_ args: [String]) async throws {
+    guard let path = args.first else { throw MCPTestFailure(description: "usage: markers <package>") }
+    let copy = FileManager.default.temporaryDirectory.appendingPathComponent("markers-\(UUID().uuidString).recorder")
+    try FileManager.default.copyItem(at: URL(fileURLWithPath: path), to: copy)   // never edit a real project
+    defer { try? FileManager.default.removeItem(at: copy) }
+    let model = try loadEditorModel(package: copy)
+    model.playhead = 1; model.toggleMarkerAtPlayhead()
+    model.playhead = 3; model.toggleMarkerAtPlayhead()
+    guard model.project.markers.map(\.label) == ["Marker 1", "Marker 2"], model.undoStepNames.last == "Add Marker" else { throw MCPTestFailure(description: "add markers") }
+    model.playhead = 2; model.jumpToMarker(forward: true)
+    guard abs(model.playhead - 3) < 1e-6 else { throw MCPTestFailure(description: "next marker: \(model.playhead)") }
+    model.jumpToMarker(forward: false)
+    guard abs(model.playhead - 1) < 1e-6 else { throw MCPTestFailure(description: "previous marker: \(model.playhead)") }
+    model.toggleMarkerAtPlayhead()
+    guard model.project.markers.map(\.label) == ["Marker 2"], agentTimeline(model.project).markers.count == 1 else { throw MCPTestFailure(description: "remove marker") }
+    model.undo()
+    guard model.project.markers.count == 2 else { throw MCPTestFailure(description: "undo remove") }
+    guard AppDelegate.buildMainMenu().items.first(where: { $0.title == "Edit" })?.submenu?.items.contains(where: { $0.title == "Add / Remove Marker" && $0.keyEquivalent == "m" }) == true else {
+        throw MCPTestFailure(description: "menu item")
+    }
+    print("markers: add ×2, next/previous jump, remove at playhead, undo, menu")
 }

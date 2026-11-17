@@ -68,6 +68,23 @@ import RecorderCore
         return id
     }
 
+    /// `M` (T-930): adds "Marker N" at the playhead, or removes the marker already there (within 0.1 s); one undo step.
+    func toggleMarkerAtPlayhead() {
+        let markers = items(project).filter { $0.kind == .marker }
+        if let near = markers.first(where: { abs($0.out.start - playhead) < 0.1 }) {
+            edit("Remove Marker") { $0.markers.removeAll { $0.id == near.id } }
+        } else {
+            let time = timeMap.sourceTime(atOutput: playhead), label = "Marker \(project.markers.count + 1)"
+            edit("Add Marker") { $0.markers.append(Marker(time: time, label: label)); $0.markers.sort { $0.time < $1.time } }
+        }
+    }
+
+    /// `⌃←/⌃→` (T-930): move the playhead to the previous/next marker.
+    func jumpToMarker(forward: Bool) {
+        let times = items(project).filter { $0.kind == .marker }.map(\.out.start).sorted()
+        if let t = forward ? times.first(where: { $0 > playhead + 1e-3 }) : times.last(where: { $0 < playhead - 1e-3 }) { isPlaying = false; playhead = t }
+    }
+
     /// ⌥K (T-924): key the selected layer/graphic at the playhead with its current transform (so nothing jumps), one undo step.
     func addKeyAtPlayhead() {
         guard let id = selection.first, let index = project.layers.firstIndex(where: { $0.id == id.uuidString }),

@@ -1170,6 +1170,17 @@ final class TimelineView: NSView {
             label.draw(at: CGPoint(x: px + 4, y: 3), withAttributes: attrs)
             t += interval
         }
+        // Markers (T-930): flag + label on the ruler, from the one item view so they match timeline.get.
+        guard let model else { return }
+        for marker in items(model.project) where marker.kind == .marker {
+            let px = x(forOutput: marker.out.start)
+            guard px >= gutterWidth - 4, px <= bounds.width else { continue }
+            Theme.warning.setFill()
+            let flag = NSBezierPath(); flag.move(to: CGPoint(x: px, y: Self.rulerHeight)); flag.line(to: CGPoint(x: px, y: 2))
+            flag.line(to: CGPoint(x: px + 7, y: 5)); flag.line(to: CGPoint(x: px, y: 8)); flag.close(); flag.fill()
+            Theme.warning.setStroke(); NSBezierPath.strokeLine(from: CGPoint(x: px, y: 2), to: CGPoint(x: px, y: Self.rulerHeight))
+            (marker.label as NSString).draw(at: CGPoint(x: px + 9, y: Self.rulerHeight - 13), withAttributes: [.font: Theme.captionFont, .foregroundColor: Theme.warning])
+        }
     }
 
     // MARK: - Clip lane
@@ -2699,6 +2710,10 @@ final class TimelineView: NSView {
             model.addText(atSource: model.timeMap.sourceTime(atOutput: model.playhead))
         } else if !cmd, !shift, event.modifierFlags.contains(.option), event.charactersIgnoringModifiers?.lowercased() == "k", let model { // `⌥K` = keyframe
             model.addKeyAtPlayhead()
+        } else if !cmd, !shift, chars?.lowercased() == "m", let model { // `M` = toggle a marker at the playhead (T-930)
+            model.toggleMarkerAtPlayhead()
+        } else if event.modifierFlags.contains(.control), let arrow = event.specialKey, arrow == .leftArrow || arrow == .rightArrow, let model { // `⌃←/⌃→` = previous/next marker
+            model.jumpToMarker(forward: arrow == .rightArrow)
         } else if !cmd, !shift, chars?.lowercased() == "g" { // `G` = template menu at the pointer (T-924)
             let menu = NSMenu(title: "Add Graphic")
             for info in GraphicTemplates.catalog {
