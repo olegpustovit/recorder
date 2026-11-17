@@ -50,29 +50,48 @@ public enum JSONValue: Codable, Equatable, Sendable {
 
 public enum EditTime: Codable, Equatable, Sendable, ExpressibleByIntegerLiteral, ExpressibleByFloatLiteral {
     case seconds(Double)
+    /// Marker by id, or by label when exactly one marker has it.
     case marker(String, offset: Double = 0)
+    /// A same-batch `ref` name declared on an earlier op: that op's start.
+    case ref(String, offset: Double = 0)
+    /// A shot edge from `analyze.shots`, resolved by `EditContext.shotTime`.
+    case shot(String, end: Bool = false)
     public init(integerLiteral value: Int) { self = .seconds(Double(value)) }
     public init(floatLiteral value: Double) { self = .seconds(value) }
     public init(from decoder: Decoder) throws {
         let c = try decoder.singleValueContainer()
         if let value = try? c.decode(Double.self) { self = .seconds(value); return }
         let fields = try c.decode([String: JSONValue].self)
-        guard Set(fields.keys).isSubset(of: ["marker", "offset"]), case .string(let id) = fields["marker"], !id.isEmpty else {
-            throw DecodingError.dataCorruptedError(in: c, debugDescription: "Expected seconds or {marker: id, offset: seconds}")
+        let kinds = ["marker", "ref", "shot"].filter { fields[$0] != nil }
+        guard kinds.count == 1, case .string(let name)? = fields[kinds[0]], !name.isEmpty,
+              Set(fields.keys).isSubset(of: kinds[0] == "shot" ? ["shot", "edge"] : [kinds[0], "offset"]) else {
+            throw DecodingError.dataCorruptedError(in: c, debugDescription: "Expected seconds, {marker: id or label, offset}, {ref: name, offset} or {shot: id, edge: start|end}")
         }
-        if let offset = fields["offset"] {
-            guard case .number(let value) = offset else { throw DecodingError.dataCorruptedError(in: c, debugDescription: "Anchor offset must be seconds") }
-            self = .marker(id, offset: value)
-        } else { self = .marker(id) }
+        if kinds[0] == "shot" {
+            var end = false
+            if let edge = fields["edge"] {
+                guard case .string(let value) = edge, ["start", "end"].contains(value) else { throw DecodingError.dataCorruptedError(in: c, debugDescription: "Shot edge must be start or end") }
+                end = value == "end"
+            }
+            self = .shot(name, end: end); return
+        }
+        var offset = 0.0
+        if let value = fields["offset"] {
+            guard case .number(let number) = value else { throw DecodingError.dataCorruptedError(in: c, debugDescription: "Anchor offset must be seconds") }
+            offset = number
+        }
+        self = kinds[0] == "marker" ? .marker(name, offset: offset) : .ref(name, offset: offset)
     }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.singleValueContainer()
         switch self {
         case .seconds(let value): try c.encode(value)
         case let .marker(id, offset): try c.encode(["marker": JSONValue.string(id), "offset": .number(offset)])
+        case let .ref(name, offset): try c.encode(["ref": JSONValue.string(name), "offset": .number(offset)])
+        case let .shot(id, end): try c.encode(["shot": JSONValue.string(id), "edge": .string(end ? "end" : "start")])
         }
     }
-    var isAnchor: Bool { if case .marker = self { return true }; return false }
+    var isAnchor: Bool { if case .seconds = self { return false }; return true }
 }
 
 public enum ZoomFollow: String, Codable, Sendable { case cursor, fixed }
@@ -180,6 +199,20 @@ public enum EditOp: Codable, Equatable, Sendable {
             }
         }
     }
+    /// The first numeric time of the op (output seconds), for locating where an error happened.
+    public var startSeconds: Double? {
+        let time: EditTime?
+        switch self {
+        case let .cut(from, _, _), let .speed(from, _, _, _), let .zoom(from, _, _, _, _, _), let .text(from, _, _, _, _, _, _),
+             let .highlight(from, _, _, _), let .layer(from, _, _, _): time = from
+        case let .marker(at, _): time = at
+        case let .cutPauses(_, _, from, _, _): time = from
+        case let .update(_, from, _, _, _, _, _, _, _, _, _): time = from
+        default: time = nil
+        }
+        if case .seconds(let value)? = time { return value }
+        return nil
+    }
     var snapsClipBoundaries: Bool {
         switch self {
         case let .cut(_, _, snap), let .cutPauses(_, _, _, _, snap), let .cutWords(_, _, snap), let .speed(_, _, _, snap): return snap
@@ -188,12 +221,18 @@ public enum EditOp: Codable, Equatable, Sendable {
     }
 }
 
-public struct EditContext: Sendable {
-    public var words: [Word]
-    public var silent: [TimeRange]
-    public var operationSeeds: [String]
+public struct EditContext: Codable, Sendable {
+    // Codable covers what a persisted draft needs to replay (silent/assets/refs); words come from the live transcript.
+    private enum CodingKeys: String, CodingKey { case silent, assets, refs }
+    public var words: [Word] = []
+    public var silent: [TimeRange] = []
+    public var operationSeeds: [String] = []
     /// Probed media files keyed by package-relative path; `layer` ops may only name files listed here.
-    public var assets: [String: MediaAsset]
+    public var assets: [String: MediaAsset] = [:]
+    /// `ref` name → index of the op in this call that declares it; `{ref: name}` anchors resolve to that op's start.
+    public var refs: [String: Int] = [:]
+    /// Source time of a shot's start/end edge (`{shot:"s07", edge}`); nil → "unknown shot". The shot-analysis task sets this.
+    public var shotTime: (@Sendable (String, Bool) -> Double?)? = nil
     public init(words: [Word] = [], silent: [TimeRange] = [], operationSeeds: [String] = [], assets: [String: MediaAsset] = [:]) {
         self.words = words; self.silent = silent; self.operationSeeds = operationSeeds; self.assets = assets
     }
@@ -209,6 +248,10 @@ public struct EditChange: Codable, Equatable, Sendable {
 }
 public enum EditError: Error, Equatable, CustomStringConvertible {
     case invalidOp(index: Int, reason: String), outOfRange(index: Int, reason: String), transcriptChanged, invariant(String)
+    /// The op the error is about, when it names one.
+    public var opIndex: Int? {
+        switch self { case let .invalidOp(index, _), let .outOfRange(index, _): return index; default: return nil }
+    }
     public var description: String {
         switch self {
         case let .invalidOp(index, reason): return "INVALID_OP: op \(index): \(reason); revise the op and retry"
@@ -216,6 +259,49 @@ public enum EditError: Error, Equatable, CustomStringConvertible {
         case .transcriptChanged: return "TRANSCRIPT_CHANGED: call transcript.get for the current transcript and word ids"
         case .invariant(let reason): return "INVARIANT: \(reason); revise the ops and retry"
         }
+    }
+}
+
+/// Every block `timeline.get` emits as (id, source start, source end, isMarker). Layers store their length in output
+/// seconds, so their end is where that length lands on the current clock.
+private func editBlocks(_ p: Project) -> [(String, Double, Double, Bool)] {
+    let map = TimeMap(p.clips)
+    return p.zooms.map { ($0.id, $0.start, $0.end, false) } + p.texts.map { ($0.id, $0.start, $0.end, false) } + p.masks.map { ($0.id, $0.start, $0.end, false) }
+        + p.layouts.map { ($0.id, $0.start, $0.end, false) } + p.keystrokeClips.map { ($0.id, $0.start, $0.end, false) }
+        + p.cameraClips.map { ($0.id, $0.start, $0.end, false) } + p.windowShots.map { ($0.id, $0.start, $0.end, false) }
+        + p.audioClips.map { ($0.id, $0.start, $0.end, false) }
+        + p.layers.map { ($0.id, $0.start, map.sourceTime(atOutput: (map.outputTime(atSource: $0.start) ?? 0) + $0.end - $0.start), false) }
+        + p.markers.map { ($0.id, $0.time, $0.time, true) }
+}
+
+public extension Project {
+    /// R7: the op corrected for a time outside the timeline or too close to a clip edge (snapped to the edge). Only for
+    /// range errors, and only when the corrected op is non-empty and applies on its own; otherwise nil.
+    func suggestedFix(for error: EditError, ops: [EditOp]) -> EditOp? {
+        guard let index = error.opIndex, ops.indices.contains(index) else { return nil }
+        switch error {
+        case .outOfRange: break
+        case .invalidOp(_, let reason): guard reason.contains("clip edge") else { return nil }
+        default: return nil
+        }
+        let duration = TimeMap(clips).outputDuration
+        var edges = [0.0], offset = 0.0
+        for clip in clips { offset += clip.outputDuration; edges.append(offset) }
+        func fit(_ time: EditTime) -> EditTime {
+            guard case .seconds(let value) = time, value.isFinite else { return time }
+            let clamped = min(duration, max(0, value))
+            let edge = edges.min { abs($0 - clamped) < abs($1 - clamped) } ?? clamped
+            return .seconds(abs(edge - clamped) < 0.1 ? edge : clamped)
+        }
+        let fixed: EditOp
+        switch ops[index] {
+        case let .cut(from, to, _): fixed = .cut(from: fit(from), to: fit(to), snap: true)
+        case let .speed(from, to, speed, _): fixed = .speed(from: fit(from), to: fit(to), speed: speed, snap: true)
+        case let .zoom(from, to, scale, center, follow, ease): fixed = .zoom(from: fit(from), to: fit(to), scale: scale, center: center, follow: follow, ease: ease)
+        default: return nil
+        }
+        guard fixed != ops[index], (try? applying([fixed], context: EditContext())) != nil else { return nil }
+        return fixed
     }
 }
 
@@ -269,7 +355,6 @@ public extension Project {
         if let error = checkInvariants() { throw EditError.invariant(error) }
         let baseMap = TimeMap(clips)
         let duration = baseMap.outputDuration
-        let baseBlocks = zooms.map { ($0.id, $0.start, $0.end) } + texts.map { ($0.id, $0.start, $0.end) } + masks.map { ($0.id, $0.start, $0.end) } + markers.map { ($0.id, $0.time, $0.time) }
         func numericRanges(_ from: Double, _ to: Double, index: Int, recordedOnly: Bool = false, snap: Bool = false) throws -> [TimeRange] {
             guard from.isFinite, to.isFinite, to > from, snap || (from >= 0 && to <= duration) else {
                 throw EditError.outOfRange(index: index, reason: "expected 0 ≤ from < to ≤ \(duration)")
@@ -286,6 +371,7 @@ public extension Project {
         }
         var context = context
         var prepared: [PreparedEdit] = []
+        var refTimes: [String: Double] = [:]
         for (index, op) in ops.enumerated() {
             var resolved: [TimeRange] = [], at = 0.0, note: String?, sourceAt: Double?
             var current: Project?
@@ -304,13 +390,25 @@ public extension Project {
                     }
                     let bounded = min(duration, max(0, value))
                     return (baseMap.sourceTime(atOutput: bounded), bounded)
-                case let .marker(id, offset):
+                default:
                     let project = try prefix(), map = TimeMap(project.clips)
-                    guard !id.isEmpty, offset.isFinite, let marker = project.markers.first(where: { $0.id == id }) else {
-                        throw EditError.invalidOp(index: index, reason: "missing marker anchor \(id) or invalid offset")
+                    var id = "", offset = 0.0, found: Double?
+                    switch time {
+                    case let .marker(key, delta):
+                        id = key; offset = delta
+                        let byID = project.markers.filter { $0.id == key }
+                        let hits = byID.isEmpty ? project.markers.filter { $0.label == key } : byID
+                        guard hits.count <= 1 else { throw EditError.invalidOp(index: index, reason: "marker label \(key) matches \(hits.count) markers; use an id from timeline.get") }
+                        found = hits.first?.time
+                    case let .ref(key, delta): id = key; offset = delta; found = refTimes[key]
+                    case let .shot(key, end): id = key; found = context.shotTime?(key, end)
+                    case .seconds: break
                     }
-                    guard let position = map.outputTime(atSource: marker.time) else {
-                        throw EditError.outOfRange(index: index, reason: "marker anchor \(id) is in removed footage")
+                    guard offset.isFinite, let found else {
+                        throw EditError.invalidOp(index: index, reason: "unknown anchor \(id): no such marker, earlier ref or shot, or invalid offset")
+                    }
+                    guard let position = map.outputTime(atSource: found) else {
+                        throw EditError.outOfRange(index: index, reason: "anchor \(id) is in removed footage")
                     }
                     let output = position + offset
                     guard output.isFinite, output >= 0, output <= map.outputDuration else {
@@ -333,13 +431,8 @@ public extension Project {
                 }
             }
             func block(_ id: String, current: Bool = false) throws -> (String, Double, Double, Bool)? {
-                if !current, let block = baseBlocks.first(where: { $0.0 == id }) {
-                    return (block.0, block.1, block.2, markers.contains { $0.id == id })
-                }
-                let project = try prefix()
-                let blocks = project.zooms.map { ($0.id, $0.start, $0.end) } + project.texts.map { ($0.id, $0.start, $0.end) }
-                    + project.masks.map { ($0.id, $0.start, $0.end) } + project.markers.map { ($0.id, $0.time, $0.time) }
-                return blocks.first { $0.0 == id }.map { ($0.0, $0.1, $0.2, project.markers.contains { $0.id == id }) }
+                if !current, let block = editBlocks(self).first(where: { $0.0 == id }) { return block }
+                return editBlocks(try prefix()).first { $0.0 == id }
             }
             switch op {
             case let .cut(from, to, _), let .speed(from, to, _, _), let .zoom(from, to, _, _, _, _), let .text(from, to, _, _, _, _, _), let .highlight(from, to, _, _):
@@ -431,7 +524,9 @@ public extension Project {
                 }
             case .captions, .style, .reframe: break
             }
-            prepared.append((op, mergedEditRanges(resolved), at, note, sourceAt))
+            let merged = mergedEditRanges(resolved)
+            if let name = context.refs.first(where: { $0.value == index })?.key, let start = merged.first?.start { refTimes[name] = start }
+            prepared.append((op, merged, at, note, sourceAt))
         }
         return try applyingPrepared(prepared, context: context)
     }
@@ -546,7 +641,7 @@ public extension Project {
                     result.markers.append(Marker(time: span?.start ?? baseMap.sourceTime(atOutput: item.at), label: label))
                     result.markers.sort { $0.time < $1.time }
                     summary = "Marker \(stamp(item.at))"
-                case let .update(id, _, to, text, position, size, scale, center, follow, ease, color):
+                case let .update(id, from, to, text, position, size, scale, center, follow, ease, color):
                     try point(position, index: index); try point(center, index: index); try positive(size, index: index); try positive(scale, index: index)
                     if let i = result.markers.firstIndex(where: { $0.id == id }) {
                         guard to == nil, position == nil, size == nil, scale == nil, center == nil, follow == nil, ease == nil, color == nil else {
@@ -584,6 +679,33 @@ public extension Project {
                         if let color { result.masks[i].color = color }
                         if let span { result.masks[i].start = span.start; result.masks[i].end = span.end }
                         result.masks.sort { $0.start < $1.start }
+                    } else if let i = result.layers.firstIndex(where: { $0.id == id }) {
+                        guard text == nil, position == nil, size == nil, scale == nil, center == nil, follow == nil, ease == nil else {
+                            throw EditError.invalidOp(index: index, reason: "layer update supports from/to and color")
+                        }
+                        if let color { result.layers[i].color = color }
+                        if let span, let layerID = UUID(uuidString: id) {
+                            let map = TimeMap(result.clips)
+                            var want = (map.outputTime(atSource: span.start) ?? 0, map.outputTime(atSource: span.end) ?? map.outputDuration)
+                            let old = result.layers[i]
+                            if from != nil, to == nil {
+                                // `from` alone moves the layer and keeps its length, like dragging it.
+                                want.1 = want.0 + old.end - old.start
+                                result.moveLayer(layerID, toOutput: want.0)
+                            } else {
+                                // shortcut: edges move one at a time, so a move a neighbour or the media length clamps is an error, not a slide.
+                                let later = want.0 >= (map.outputTime(atSource: old.start) ?? 0)
+                                for edge in later ? [Edge.trailing, .leading] : [.leading, .trailing] {
+                                    result.resizeLayer(layerID, edge: edge, toOutput: edge == .leading ? want.0 : want.1)
+                                }
+                            }
+                            let now = result.layers.first { $0.id == id }.flatMap { layer in map.outputTime(atSource: layer.start).map { ($0, $0 + layer.end - layer.start) } }
+                            guard let now, abs(now.0 - want.0) < 1e-6, abs(now.1 - want.1) < 1e-6 else {
+                                throw EditError.invalidOp(index: index, reason: String(format: "layer cannot span %.2f–%.2f s: a neighbour, the media length or the 0.5 s minimum blocks it", want.0, want.1))
+                            }
+                        }
+                    } else if editBlocks(result).contains(where: { $0.0 == id }) {
+                        throw EditError.invalidOp(index: index, reason: "update does not support block \(id) (timeline.get editable:false); remove it with edit.remove or change it in Recorder")
                     } else { throw EditError.invalidOp(index: index, reason: "unknown block \(id)") }
                     summary = "Update block \(stamp(item.at))"
                 case let .remove(id):
@@ -592,8 +714,9 @@ public extension Project {
                         summary = "Remove marker"
                         break
                     }
-                    guard result.zooms.contains(where: { $0.id == id }) || result.texts.contains(where: { $0.id == id }) || result.masks.contains(where: { $0.id == id }) else { throw EditError.invalidOp(index: index, reason: "unknown block \(id)") }
-                    result.removeBlock(id: id)
+                    guard editBlocks(result).contains(where: { $0.0 == id }) else { throw EditError.invalidOp(index: index, reason: "unknown block \(id)") }
+                    result.removeBlock(id: id, propagate: false)   // only this block, never the linked clips or audio
+                    guard !editBlocks(result).contains(where: { $0.0 == id }) else { throw EditError.invalidOp(index: index, reason: "block \(id) could not be removed") }
                     summary = "Remove block"
                 case let .reframe(aspect, _, keys):
                     guard [.r4x5, .r1x1, .r9x16, .r16x9].contains(aspect) else { throw EditError.invalidOp(index: index, reason: "reframe aspect must be 4:5, 1:1, 9:16 or 16:9") }

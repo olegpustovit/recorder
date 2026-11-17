@@ -28,11 +28,11 @@ folders need the human's approval. Nothing the agent does bypasses `EditorModel`
 | D5 | Agents render freely into the cache; `export.final` outside it needs approval. | Cache: `~/Library/Caches/Recorder/Agent/<session>/`, purged at launch when older than 7 days. |
 | D6 | The **same `Recorder` binary** is the stdio shim: `Recorder --mcp`. | No new SwiftPM target, no `assemble-app.sh` change. |
 | D7 | A project an agent works on is **open in an editor window**. | One code path: tools act on `EditorWindowController`'s `EditorModel`. No headless editing. |
-| D8 | Drafts live **in memory** in the app. | Quitting the app drops pending drafts (ponytail comment). No new files in the package (SPEC §5 rule stands). |
+| D8 | Drafts are **persisted** (T-825, replaces the in-memory D8) in `agent-draft.json` inside the project package: id, base revision and base project, calls, per-call replay context (silent ranges, imported assets), exclusions, note, submitted flag. | Written atomically after each edit, review change and submit; deleted on accept or discard. `project.open` re-adopts it (or a disconnected session's in-memory draft) and returns `draft:{id,status,changes}`. One file per package, so one pending draft per project; a second concurrent draft overwrites it. The base project is stored so a stale draft replays exactly; words come from the live transcript. |
 | D9 | All times in tool I/O are **output seconds of the project at `ifRevision`** (what the agent sees in renders). | Core converts with `TimeMap` before mutating. Agents never see source time. |
 
 Out of scope (do **not** build): MCP resources/prompts, music ducking, LUFS normalisation, OCR, background music, counters,
-progress bars, end cards, agent-written graphics, multiple simultaneous visible draft previews per project, reconnect-and-replay in the shim.
+progress bars, end cards, agent-written graphics, multiple simultaneous visible draft previews per project, (reconnect-and-replay in the shim was added in T-825/T-826 review fixes: if the app socket drops the shim relaunches the app, reconnects and replays the client's `initialize` + `notifications/initialized`, swallowing the duplicate reply; requests in flight are lost).
 
 ## 2. Architecture
 
@@ -86,23 +86,35 @@ Transport: one JSON object per line, UTF-8, `\n` terminated, both directions. Im
 
 | Method | Reply |
 |--------|-------|
-| `initialize` | `{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"recorder","version":<CFBundleShortVersionString>},"instructions":<§5.0 text>}`. Store `params.clientInfo.name` as the session's agent name. |
-| `notifications/initialized` | none (notification) |
+| `initialize` | `{"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":true}},"schemaVersion":<hash of tools/list>,"serverInfo":{"name":"recorder","version":<CFBundleShortVersionString>},"instructions":<§5.0 text>}`. Store `params.clientInfo.name` as the session's agent name. |
+| `notifications/initialized` | none; but when this client (name and version when given, else name) last initialized against a different `schemaVersion` (remembered in UserDefaults), the server then sends `notifications/tools/list_changed` once (T-825). |
 | `ping` | `{}` |
 | `tools/list` | `{"tools":[…§5 schemas…]}` |
 | `tools/call` | `{"content":[…],"structuredContent":{…},"isError":false}` |
 | anything else with an `id` | JSON-RPC error `-32601` |
 
 - Tool failures are **results**, not JSON-RPC errors: `isError: true`, `content: [{"type":"text","text":"STALE_REVISION: …"}]`,
-  `structuredContent: {"error":"STALE_REVISION","message":"…"}`.
+  `structuredContent: {"error":"STALE_REVISION","message":"…","fix":{…},"current":{…}}` (T-826): `fix` is always an
+  object with a `hint` and, when derivable, `{index, op}` — the corrected op (a clip-edge cut returns the range snapped to
+  the edge with `snap:true`; an out-of-range time is clamped); `current` is `{revision, duration, clips:[{from,to}]}` of
+  the project the call saw (null before `project.open`). `current.clips` is present only for range errors, capped to the
+  ~20 clips nearest the failing time; `revision` and `duration` are always there.
 - `content` always starts with one `text` item holding the JSON of `structuredContent` (clients that ignore structured
   output still work). Images: `{"type":"image","mimeType":"image/png","data":<base64>}`. Files:
   `{"type":"resource_link","uri":"file:///…","name":"proxy-0001.mp4","mimeType":"video/mp4"}`.
 - Progress: if `params._meta.progressToken` is present on a long call (`render.clip`, `export.final`, `analyze.transcribe`),
   send `{"jsonrpc":"2.0","method":"notifications/progress","params":{"progressToken":…,"progress":0.35,"total":1}}`
   at most every 0.25 s.
-- Tool annotations in `tools/list`: read tools `{"readOnlyHint":true}`; `edit`, `draft` `{"destructiveHint":false}`;
-  `export` `{"destructiveHint":false,"openWorldHint":false}`.
+- Tool annotations in `tools/list`: `project`, `timeline`, `transcript`, `render` `{"readOnlyHint":true}`; `analyze` (its `transcribe`
+  writes), `edit` (`undo` is not idempotent) and `draft` `{"destructiveHint":false}`; `export` `{"destructiveHint":false,"openWorldHint":false}`. Every tool also declares an
+  `outputSchema` (loose: known keys typed, none required, plus `project`/`revision`/`error`/`message`); results are
+  always in `structuredContent`.
+- Limits live only in the tool `inputSchema`. `tools/call` validates arguments against it server-side (`type`, `enum`,
+  `minimum`, `maximum`, `minLength`, `maxItems`, nested objects/arrays; `oneOf` unions are checked by the op decoder, which
+  also validates each op against its own schema). Out-of-range or off-enum numbers return `OUT_OF_RANGE`, wrong shapes
+  `INVALID_OP`. `render.frames at` takes up to 24 times, the same as the schema says. `MCPTools.handled` lists every
+  `tool.action` with a handler; `--selftest mcp-schema` diffs it against `tools/list` and checks annotations,
+  outputSchemas and the render limits.
 
 Error codes (exact strings): `PERMISSION_DENIED`, `NO_PROJECT`, `STALE_REVISION`, `TRANSCRIPT_CHANGED`, `NOT_TRANSCRIBED`,
 `OUT_OF_RANGE`, `INVALID_OP`, `INVARIANT`, `RENDER_BUSY`, `NEEDS_APPROVAL`, `DENIED`, `REVIEW_IN_PROGRESS`.
@@ -123,13 +135,16 @@ Nine tools, each with an `action` string (Resolve's MCP shows that grouping keep
 
 | Tool | Actions → result (all results include `project` id and `revision`) |
 |------|---------------------------------------------------------------------|
-| `project` | `list` → `[{id,title,path,duration,modified,hasMic}]` · `open {id\|path}` → opens the editor window, returns `info` · `info` → `{title,duration,size:{w,h},clips,lanes:{zoom,text,mask,…counts},hasMic,hasCamera,transcribed,access}` · `assets` → `{layers:[{asset,kind,id,from,to}], library:[{recording,title,duration}]}` (media a `layer` op can use) |
+| `project` | `list` → `[{id,title,path,duration,modified,hasMic}]` · `open {id\|path}` → opens the editor window, returns `info` plus `draft:{id,status:"drafting"\|"submitted"\|"stale",base,revision,changes}` when a pending draft was re-adopted (or `draft:{status:"unrecoverable",error}` when the file could not be read or replayed; it is then kept as
+`agent-draft.failed.json` and never overwritten). The draft attaches only to its own project. Takeover rule: a reconnecting
+client takes over a disconnected session's in-memory draft of this project, preferring the same client name and otherwise any
+(a client restart may rename itself); a draft a connected session holds is never duplicated from the file; continue with the returned `revision` · `info` → `{title,duration,size:{w,h},clips,lanes:{zoom,text,mask,…counts},hasMic,hasCamera,transcribed,access}` · `assets` → `{layers:[{asset,kind,id,from,to}], library:[{recording,title,duration}]}` (media a `layer` op can use) |
 | `timeline` | `get {from?,to?}` → `AgentTimeline` (§T-801) |
 | `transcript` | `get {from?,to?,format:"words"\|"phrases"}` → `AgentTranscript` (§T-801). `NOT_TRANSCRIBED` if `model.transcript == nil`. |
 | `analyze` | `transcribe` (async, progress) · `pauses {minDuration=0.6,threshold=0.02}` → `[{from,to}]` · `fillers` → `[{word,from,to,text}]` · `activity` → `{idle:[…],typing:[…],clicks:[t…]}` (ranges only, never characters) · `shots {response_format="concise"\|"detailed", thresholds?}` → `Storyboard` `{duration,fps,shots:[{id,from,to,kind,boundary,energy,staticFrac,clicks,cursor,focus,reasons,caption}],summary}` in output seconds (dropped footage omitted; ids s01… come from the unedited recording so they survive cuts; concise omits `reasons` only (`focus` is kept); no `thumb` yet). Signals (10 fps, 1/8 luma diff/SSIM/changed bbox) are cached in `shots-cache.json` in the package; progress reported. `thresholds` (an object) overrides `ssim=0.985, minStable=0.3, cutSsim=0.9, motionDiff=0.01, payoffDiff=0.03, cursorSpeed=0.05, energyScale=0.1` (`energyScale`, `minStable` > 0; `ssim`, `cutSsim` within 0…1; others ≥ 0; else INVALID_OP) |
 | `edit` | `apply {ifRevision, ops:[EditOp], dryRun=false}` → `{revision, mode:"draft"\|"live", changes:[EditChange], duration:{before,after}, warnings:[…], report?:EditReport, lowered?:[LoweredIntent]}` (`lint:"reel"\|"tutorial"\|"demo"` picks the report profile) · `undo` (live only: `model.undo()` if the top undo name starts with `Claude:`) |
 | `draft` | `status` → `{base, ops, changes, submitted, verdict?}` · `submit {note}` → opens review in the editor · `discard` |
-| `render` | `frames {at:[t…] ≤6, draft=true, longEdge=640, grid=false}` (grid: 0.1-step magenta overlay labelled 0–1, origin top-left, the coordinates zoom `center` and text `position` use) → images + links · `sheet {count=12 ≤24 \| at:[…], draft=true}` → 1 JPEG + link · `clip {from,to, draft=true}` → job, then link (async, progress) · `storyboard {shots?:[id], page=1, draft=true}` → 1 JPEG, one 320 px tile per shot at its settled keyframe (just before `to`), labelled `id duration`, ≤48 per page (`page`/`pages` returned), shots the draft dropped are skipped; needs `analyze.shots` (else `NO_STORYBOARD`) · `strip {from,to,fps=6 (4–8)}` → 1 filmstrip JPEG, ≤48 tiles · `compare {at:[t…] ≤6}` → 1 JPEG, one row per time, live base left, draft right (each side clamped to its own duration) · `lint {profile="reel", draft=true}` → `{revision, profile, report}` (needs a storyboard) · `cancel` |
+| `render` | `frames {at:[t…] ≤24, draft=true, longEdge=640, grid=false}` (grid: 0.1-step magenta overlay labelled 0–1, origin top-left, the coordinates zoom `center` and text `position` use) → images + links · `sheet {count=12 ≤24 \| at:[…], draft=true}` → 1 JPEG + link · `clip {from,to, draft=true}` → job, then link (async, progress) · `storyboard {shots?:[id], page=1, draft=true}` → 1 JPEG, one 320 px tile per shot at its settled keyframe (just before `to`), labelled `id duration`, ≤48 per page (`page`/`pages` returned), shots the draft dropped are skipped; needs `analyze.shots` (else `NO_STORYBOARD`) · `strip {from,to,fps=6 (4–8)}` → 1 filmstrip JPEG, ≤48 tiles · `compare {at:[t…] ≤6}` → 1 JPEG, one row per time, live base left, draft right (each side clamped to its own duration) · `lint {profile="reel", draft=true}` → `{revision, profile, report}` (needs a storyboard) · `cancel` |
 | `export` | `final {destination?, shortEdge?, fps?, srt=false}` → waits for approval → `{path, seconds, bytes}` or `DENIED` |
 | `ui` | `show {at, select?:[id]}` → moves the playhead / selection in the editor |
 
@@ -170,8 +185,8 @@ Text styles: `title`, `label`, `caption` (existing), `lowerThird`, `chapter` (ne
 
 Core: `EditReport.swift` (`editReport`, `lint`, `LintProfile`), `IntentOps.swift` (`lowerIntents`). Both take a source-time
 `Storyboard` (analyze.shots) and map shots to output time through `TimeMap`. The MCP layer calls `MCPTools.loadStoryboard`
-(stub until T-827 lands: `NOT_ANALYZED`). Without a storyboard `edit.apply` still works and omits `report`;
-intent ops that need shots fail with `NOT_ANALYZED`.
+(analyze.shots' cached signals, never a fresh decode; `NO_STORYBOARD` until analyze.shots ran). Without a storyboard
+`edit.apply` still works and returns `reportNote` instead of `report`; intent ops that need shots fail with `NO_STORYBOARD`.
 
 Intent ops are rewritten to `cut` / `speed` / `zoom` against the same base timeline before the batch is decoded, so the
 whole batch is one `applying` call and one undo step. Every intent reads the batch-start timeline, so **at most one** of `keepShots`/`pace`/`fitDuration` is allowed per batch (`INVALID_OP`; call `edit.apply` again for the next); `autoZoom`, `speed ramp` and explicit ops may be mixed in because they use the same base times. `changes[].op` and errors use the agent's original batch index. Speeds in lowered ops are absolute (relative factor × the clip's current speed, rounded up). Intents never delete imported clips. `autoZoom` skips clusters that overlap an existing zoom. If no storyboard is available, `edit.apply` returns `reportNote` with the reason instead of `report`. `lowered:[{op,intent,ops,dropped?,note?}]` returns the primitives.
@@ -205,6 +220,19 @@ the batch started from. Static = `static` or `cursorOnly` shots. `hookSec` = out
 | tinyShot | < 0.25 s | < 0.3 s | < 0.4 s |
 | orphanEffect (zoom, non-caption text) | < 0.5 s visible, all profiles | | |
 | edgeContent | shot focus box outside `project.crop`, all profiles | | |
+**Anchors (T-826).** Any `from`/`to`/`at` may be a number or an anchor object, resolved on the timeline after the
+earlier ops of the same batch: `{"marker":"<id or label>","offset":s}` (a label works when exactly one marker has it;
+two or more is an error naming the count), `{"ref":"name","offset":s}` (the start of an earlier op in this batch that
+declared `"ref":"name"`; allowed on `cut`, `speed`, `zoom`, `text`, `highlight`, `marker`, `layer`; names are unique per
+batch and do not carry across `edit.apply` calls — use marker labels for that), and `{"shot":"s07","edge":"start"|"end"}`.
+Shot anchors resolve through `EditContext.shotTime(id, isEnd) -> source seconds`, filled from analyze.shots' cached
+storyboard; before analyze.shots ran they return `INVALID_OP: unknown anchor`.
+
+**Every block is addressable.** `edit.remove` removes any block `timeline.get` emits (zoom, text, mask, layout, camera,
+keys, window, layer, audio) or marker, only that block (linked clips and audio stay). `edit.update` covers zoom, text,
+mask, markers and layers (`from`/`to` move both ends of a layer on the output clock, either direction, and fail with the
+reachable limit when a neighbour, the media length or 0.5 s blocks it; `color`). Blocks `update` cannot change are
+emitted with `editable:false` and a `reason`, and an `update` on one says so instead of "unknown block".
 
 ---
 
@@ -798,7 +826,7 @@ The user waived HUMAN visual gates; these were agent-driven native checks, not a
 
 Verification limits: fresh microphone capture and positive on-device transcription were not repeated; the existing
 on-device transcription engine is reused. Lexical filler detection can only flag words present in its transcript.
-Drafts remain memory-only, the shim requires client reconnection after app exit, and long draft replay remains
+Drafts were memory-only at that time (persisted since T-825); the shim requires client reconnection after app exit, and long draft replay remains
 uncached as documented in source. The native SwiftPM build system is currently required on this toolchain and is
 deprecated upstream; the Makefile honors `DEVELOPER_DIR`, with Xcode and CLT Testing-path selection checked.
 This completion covers the prototype's MCP scope, including its explicit exclusions in §1; unrelated older

@@ -120,6 +120,8 @@ import RecorderCore
         }
         _ = try stageThenMove(named: name) { staged in
             try fm.copyItem(at: url, to: staged)
+            try? fm.removeItem(at: staged.appendingPathComponent(AgentDraftRecord.fileName))   // a pending agent draft belongs to the original
+            try? fm.removeItem(at: staged.appendingPathComponent(AgentDraftRecord.failedFileName))
             let projectURL = staged.appendingPathComponent("project.json")
             var project = try Project.load(from: projectURL)
             project.id = UUID().uuidString

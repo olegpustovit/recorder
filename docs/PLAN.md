@@ -690,17 +690,17 @@ acceptance undo, privacy (renders hide key overlays) and existing op semantics; 
 
 | Scope | Tasks | Done |
 |---|---|---|
-| Reliability | T-825…T-826 | 0/2 |
+| Reliability | T-825…T-826 | 2/2 |
 | Perception + feedback core | T-827…T-829 | 3/3 |
 | Intent ops + reframe | T-830…T-831 | 2/2 |
 | Captions + eval harness | T-832…T-833 | 2/2 |
 
-- [ ] **T-825 Persistent drafts, listChanged, schema parity** — R1 `agent-draft.json` in the package (base revision,
+- [x] **T-825 Persistent drafts, listChanged, schema parity** — R1 `agent-draft.json` in the package (base revision,
   calls, status); `project.open` returns `draft:{id,status,changes}` and re-adopts it (replaces D8). R2
   `tools:{listChanged:true}`, `notifications/tools/list_changed` on upgrade, `schemaVersion` in `initialize`. R5 one
   source of truth for limits (render.frames 24), server-side `minimum`/`maximum`/`maxItems`/`enum` validation, R6
   annotations + `outputSchema`. Verify: Core draft persistence round-trip tests; schema/handler parity self-test.
-- [ ] **T-826 Addressable blocks, anchors, actionable errors** — R3 update/remove every lane `timeline.get` emits or
+- [x] **T-826 Addressable blocks, anchors, actionable errors** — R3 update/remove every lane `timeline.get` emits or
   mark `editable:false` with reason; layer from/to maps both ends. R4 `{marker:"label"}` when unique,
   `{shot:"s07",edge}` and same-batch `ref`. R7 errors carry `fix` and `current`. Verify: EditOps tests per lane,
   label/ref anchors, snapped-range fix on clip-edge error.
@@ -1698,3 +1698,6 @@ T-831 · 2026-11-17 · `reframe` op (`aspect` 4:5|1:1|9:16|16:9, `mode` perShot|
 T-829 · 2026-11-17 · `EditReport.swift` (editReport/lint/LintProfile reel|tutorial|demo, rules hook/maxStatic/asl/duration/tinyShot/orphanEffect/edgeContent with `suggest` ops) takes a source-time Storyboard; edit.apply/dryRun return `report`, `render.lint {profile,draft}` added; `MCPTools.loadStoryboard` is a stub until T-827 merges. make test 225/225 (EditReportTests). Not run: GUI/selftests.
 
 T-830 · 2026-11-17 · `IntentOps.swift` lowerIntents: keepShots, pace, fitDuration, autoZoom (AutoZoom lead/tail params), speed `ramp` (stepped, ponytail) → cut/speed/zoom in the same batch (one `applying`, one undo step), `lowered` returned by edit.apply. IntentOpsTests incl. fitDuration target/tolerance/protect. make test 225/225; selftest schema count bumped 13→17 (not run).
+T-825 · 2026-11-17 · Drafts persist in `agent-draft.json` (Core `AgentDraftRecord`; `project.open` re-adopts and returns `draft:{id,status,changes}`, replaces D8); `initialize` advertises `tools.listChanged` + `schemaVersion` and sends `tools/list_changed` after a schema change; limits validated server-side from the tool schemas (render.frames cap 24 = schema, Core `schemaViolation`); annotations, `outputSchema`, `mcp-schema` parity self-test (not run: no-GUI instruction). `make test` passes; selftests and live client not run.
+
+T-826 · 2026-11-17 · `edit.remove` covers every lane `timeline.get` emits, `edit.update` adds layers (both ends), other lanes are `editable:false` + `reason`; anchors `{marker:label}` (unique), same-batch `ref`, `{shot,edge}` via `EditContext.shotTime` (defaults to unknown shot); errors carry `fix` (snapped/clamped op) and `current`. Core tests for lanes, anchors, fix; `make test` passes. The layer timeline view was already correct (connected length), so only update uses both ends.

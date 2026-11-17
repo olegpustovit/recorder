@@ -30,6 +30,7 @@ enum SelfTest {
         "mcp-roundtrip": { args in try await checkMCPRoundtrip(args) },
         "mcp-render": { args in try await checkMCPRender(args) },
         "mcp-edit": { args in try await checkMCPEdit(args) },
+        "mcp-shots": { args in try await checkMCPShots(args) },
         "shots-perf": { args in try await ShotAnalysis.selfTestPerf(args) },
         "mcp-review": { args in try await checkMCPReview(args) },
         "mcp-live": { args in try await checkMCPLive(args) },
@@ -38,6 +39,7 @@ enum SelfTest {
         "mcp-live-client": { args in try await checkMCPLiveClient(args) },
         "mcp-panel-motion": { args in try await UIKitGallery.checkAgentStudy(to: URL(fileURLWithPath: args.first ?? "/tmp/recorder-t814-motion")) },
         "mcp-export": { args in try await checkMCPExport(args) },
+        "mcp-schema": { _ in try await checkMCPSchema() },
         "motion-text": { _ in try await Compositor.runMotionTextSelfTest() },
         "layers": { args in try await SelfTest.cases["make-layers-fixture"]!(args) },
         "capture-exclusion": { _ in
@@ -4766,6 +4768,34 @@ private final class MCPTestClient {
     print("MCP review: native group/disclosure/seek/footer clicks, rapid reversal, \(reducedMotion ? "reduced" : "normal") motion samples, submitted iteration/exclusion/reason/identity retention, partial/group/zero-op acceptance, atomic group validation, seeded result, one undo, preview/disk/client isolation, edit/Escape guards, scrubbing, stale replay/discard, dependency recovery, disconnect and close verified; /tmp/recorder-mcp-review.png")
 }
 
+/// R5/R6: tools/list and the handlers agree, every tool declares annotations and an outputSchema, and handler limits come from the schema.
+@MainActor private func checkMCPSchema() throws {
+    func fail(_ message: String) -> MCPTestFailure { MCPTestFailure(description: "mcp-schema: " + message) }
+    var listed: Set<String> = []
+    for tool in MCPTools.list {
+        let name = tool["name"] as? String ?? "?"
+        let properties = (tool["inputSchema"] as? [String: Any])?["properties"] as? [String: Any]
+        for action in (properties?["action"] as? [String: Any])?["enum"] as? [String] ?? [] { listed.insert("\(name).\(action)") }
+        guard tool["outputSchema"] != nil, tool["annotations"] != nil else { throw fail("\(name) lacks annotations or outputSchema") }
+    }
+    guard listed == MCPTools.handled else {
+        throw fail("listed without handler \(listed.subtracting(MCPTools.handled).sorted()), handler without schema \(MCPTools.handled.subtracting(listed).sorted())")
+    }
+    func annotation(_ name: String, _ key: String) -> Bool? {
+        ((MCPTools.list.first { $0["name"] as? String == name }?["annotations"]) as? [String: Any])?[key] as? Bool
+    }
+    // analyze.transcribe writes and edit.undo is not idempotent, so those two tools carry no read-only/idempotent hint.
+    guard ["render", "timeline", "transcript"].allSatisfy({ annotation($0, "readOnlyHint") == true }), annotation("analyze", "readOnlyHint") != true,
+          annotation("edit", "idempotentHint") != true else {
+        throw fail("annotations")
+    }
+    let render = (MCPTools.list.first { $0["name"] as? String == "render" }?["inputSchema"]) as? [String: Any] ?? [:]
+    guard schemaViolation(["action": "frames", "at": Array(repeating: 1.0, count: 24)], render) == nil,
+          schemaViolation(["action": "frames", "at": Array(repeating: 1.0, count: 25)], render)?.range == true,
+          schemaViolation(["action": "frames", "longEdge": 1], render)?.range == true else { throw fail("render.frames limits do not follow the schema") }
+    print("MCP schema: \(listed.count) tool actions have handlers, annotations and outputSchemas; limits are validated from the schema")
+}
+
 @MainActor private func checkMCPAssetsHeadless() async throws {
     func fail(_ message: String) -> MCPTestFailure { MCPTestFailure(description: "layer assets: " + message) }
     let fm = FileManager.default
@@ -7208,4 +7238,73 @@ private func runTimelineHeaderSelfTest() async throws {
     try server.finishReview(session, commit: false)
     guard model.project == base, try Data(contentsOf: file) == saved else { throw MCPTestFailure(description: "Real client discard did not preserve the original package") }
     print("Actual Claude Code: three unsubmitted calls observed in the real window, cumulative panel/marks and frozen base verified, submitted for review, recording decoded, then safely discarded: \(output.path)")
+}
+
+/// `--selftest mcp-shots <package>` (T-825…T-832 end to end, opens an editor window on a temp copy): analyze.shots →
+/// render.storyboard/strip/compare → fitDuration dry run report → shot-anchor cut → reframe → render.lint → discard.
+@MainActor private func checkMCPShots(_ args: [String]) async throws {
+    guard let path = args.first else { throw MCPTestFailure(description: "usage: mcp-shots <recording.recorder>") }
+    let fm = FileManager.default
+    let root = fm.temporaryDirectory.appendingPathComponent("recorder-mcp-shots-\(UUID().uuidString)")
+    let package = root.appendingPathComponent("Shots.recorder"), file = package.appendingPathComponent("project.json")
+    try fm.createDirectory(at: root, withIntermediateDirectories: true)
+    try fm.copyItem(at: URL(fileURLWithPath: path), to: package)
+    for name in ["shots-cache.json", "agent-draft.json"] { try? fm.removeItem(at: package.appendingPathComponent(name)) }
+    var fixture = try Project.load(from: file)
+    fixture.id = UUID().uuidString
+    try fixture.save(to: file)
+    NSApplication.shared.setActivationPolicy(.accessory); NSApplication.shared.finishLaunching()
+    guard let controller = await EditorWindowController.open(package: package).value else { throw MCPTestFailure(description: "fixture failed to open") }
+    let model = controller.model, session = MCPSession()
+    session.agentName = "claude-code"; session.projectURL = model.packageURL.standardizedFileURL
+    MCPServer.shared.register(session)
+    defer {
+        controller.close(); session.connected = false; session.draft = nil; MCPServer.shared.removeFinishedSessions()
+        UserDefaults.standard.removeObject(forKey: "agentAccess.\(fixture.id)")
+        try? fm.removeItem(at: root)
+    }
+    AgentAccess.set(.draft, for: fixture.id)
+    let base = model.project
+    func tool(_ name: String, _ args: [String: Any], error: String? = nil) async throws -> ([String: Any], Int) {
+        let result = await MCPTools.call(name, args, session: session)
+        let payload = result["structuredContent"] as? [String: Any] ?? [:]
+        let images = (result["content"] as? [[String: Any]] ?? []).filter { $0["type"] as? String == "image" }.count
+        if let error {
+            guard result["isError"] as? Bool == true, payload["error"] as? String == error else { throw MCPTestFailure(description: "\(name) \(args["action"] ?? ""): expected \(error), got \(payload)") }
+        } else if result["isError"] as? Bool != false { throw MCPTestFailure(description: "\(name) \(args["action"] ?? "") failed: \(payload)") }
+        return (payload, images)
+    }
+    _ = try await tool("render", ["action": "storyboard"], error: "NO_STORYBOARD")
+    let started = Date()
+    let (board, _) = try await tool("analyze", ["action": "shots"])
+    let shots = board["shots"] as? [[String: Any]] ?? []
+    guard let first = shots.first, first["focus"] != nil, first["reasons"] == nil, let firstID = first["id"] as? String else { throw MCPTestFailure(description: "analyze.shots concise storyboard: \(board.keys)") }
+    print("mcp-shots analyze \(shots.count) shots in \(String(format: "%.1f", Date().timeIntervalSince(started)))s")
+    _ = try await tool("analyze", ["action": "shots", "thresholds": ["energyScale": 0]], error: "INVALID_OP")
+    let (sb, sbImages) = try await tool("render", ["action": "storyboard", "draft": false])
+    guard sbImages == 1, (sb["shots"] as? [String])?.isEmpty == false else { throw MCPTestFailure(description: "render.storyboard: \(sb)") }
+    _ = try await tool("render", ["action": "storyboard", "page": 1e30], error: "OUT_OF_RANGE")
+    let (_, stripImages) = try await tool("render", ["action": "strip", "from": 0, "to": 2, "fps": 4])
+    guard stripImages == 1 else { throw MCPTestFailure(description: "render.strip image") }
+    var revision = try MCPTools.revision(base)
+    let (dry, _) = try await tool("edit", ["action": "apply", "ifRevision": revision, "dryRun": true, "ops": [["op": "fitDuration", "target": 30, "tolerance": 2]]])
+    guard let report = dry["report"] as? [String: Any], let dur = report["duration"] as? [String: Any], let after = dur["after"] as? Double, abs(after - 30) <= 2,
+          (dry["lowered"] as? [Any])?.isEmpty == false, model.project == base else { throw MCPTestFailure(description: "fitDuration dry run report: \(dry["report"] ?? dry["reportNote"] ?? "none")") }
+    let (cut, _) = try await tool("edit", ["action": "apply", "ifRevision": revision, "ops": [["op": "cut", "from": ["shot": firstID, "edge": "start"], "to": ["shot": firstID, "edge": "end"]]]])
+    revision = cut["revision"] as? String ?? revision
+    let (framed, _) = try await tool("edit", ["action": "apply", "ifRevision": revision, "ops": [["op": "reframe", "aspect": "4:5"]]])
+    revision = framed["revision"] as? String ?? revision
+    _ = try await tool("edit", ["action": "apply", "ifRevision": revision, "ops": [["op": "reframe", "aspect": "4:5", "keys": []]]], error: "INVALID_OP")
+    let (lint, _) = try await tool("render", ["action": "lint", "profile": "reel"])
+    guard lint["report"] is [String: Any] else { throw MCPTestFailure(description: "render.lint: \(lint)") }
+    let (_, compareImages) = try await tool("render", ["action": "compare", "at": [1.0]])
+    guard compareImages == 1 else { throw MCPTestFailure(description: "render.compare image") }
+    _ = try await tool("edit", ["action": "apply", "ifRevision": revision, "ops": [["op": "cut", "from": 1e9, "to": 2e9]]], error: "OUT_OF_RANGE")
+    guard fm.fileExists(atPath: package.appendingPathComponent("agent-draft.json").path) else { throw MCPTestFailure(description: "draft not persisted") }
+    let (status, _) = try await tool("draft", ["action": "status"])
+    _ = try await tool("draft", ["action": "discard"])
+    guard model.project == base, model.undoStepNames.isEmpty, !fm.fileExists(atPath: package.appendingPathComponent("agent-draft.json").path) else {
+        throw MCPTestFailure(description: "discard left the project changed or the draft file behind")
+    }
+    print("mcp-shots draft ops \((status["ops"] as? [Any])?.count ?? -1), lint items \(((lint["report"] as? [String: Any])?["lint"] as? [Any])?.count ?? -1)")
 }

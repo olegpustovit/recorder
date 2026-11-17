@@ -5,7 +5,7 @@ import Observation
 import RecorderCore
 
 struct AgentDraft {
-    let id = UUID().uuidString
+    var id = UUID().uuidString   // var: a persisted draft keeps its id, which seeds its block ids
     var base: String
     var baseProject: Project
     var calls: [[EditOp]] = []
@@ -23,11 +23,30 @@ struct AgentDraft {
     init(base: String, baseProject: Project) {
         self.base = base; self.baseProject = baseProject; revision = base; duration = baseProject.exportDuration
     }
+    /// Rebuilds a draft from `agent-draft.json` by replaying its calls, so ids and changes match the original exactly.
+    init(_ record: AgentDraftRecord, words: [Word], shotTime: (@Sendable (String, Bool) -> Double?)? = nil) throws {
+        self.init(base: record.base, baseProject: record.baseProject)
+        id = record.id
+        calls = record.calls
+        contexts = record.contexts.map { var context = $0; context.words = words; context.shotTime = shotTime; return context }
+        changes = calls.map { _ in [] }
+        // Replay tolerantly (a draft refreshed after its base changed has skipped ops), keep every op's row, then apply the
+        // exclusions and skips the user saw.
+        changes = try replay(from: nil, context: EditContext(words: words), skipInvalid: true).changes
+        excluded = Set(record.excluded); note = record.note
+        _ = try refreshReview(context: EditContext(words: words))
+        submitted = record.submitted
+    }
+    var record: AgentDraftRecord {
+        AgentDraftRecord(id: id, base: base, baseProject: baseProject, calls: calls, contexts: contexts,
+                         excluded: excluded.sorted { $0.lexicographicallyPrecedes($1) }, note: note, submitted: submitted)
+    }
     /// Media imported by earlier calls of this draft, so a later call can reuse it as `asset`.
     var assets: [String: MediaAsset] { contexts.reduce(into: [:]) { $0.merge($1.assets) { first, _ in first } } }
     private func replayContext(_ context: EditContext, call: Int, indices: [Int]) -> EditContext {
         var context = context
         context.operationSeeds = indices.map { "\(id):\(call):\($0)" }
+        context.refs = context.refs.reduce(into: [:]) { refs, ref in if let position = indices.firstIndex(of: ref.value) { refs[ref.key] = position } }   // excluded ops shift indices
         return context
     }
     func project(from start: Project? = nil, context: EditContext) throws -> Project {
@@ -177,50 +196,95 @@ enum MCPSocket {
     }
 }
 
+/// Socket + replay state shared by the shim's two threads.
+private final class ShimState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var fd: Int32
+    private(set) var stdinClosed = false
+    private var initialize: Data?, initialized: Data?
+    private var skipID: Any?
+    init(_ fd: Int32) { self.fd = fd }
+    var socket: Int32 { lock.withLock { fd } }
+    /// Forwards one client line, remembering the handshake so a reconnect can replay it.
+    func forward(_ line: Data) {
+        let method = (try? JSONSerialization.jsonObject(with: line) as? [String: Any])?["method"] as? String
+        lock.withLock {
+            if method == "initialize" { initialize = line } else if method == "notifications/initialized" { initialized = line }
+            _ = MCPSocket.write(line + Data([10]), to: fd)   // a dead socket drops the line; the read loop reconnects
+        }
+    }
+    func closeInput() { lock.withLock { stdinClosed = true; shutdown(fd, SHUT_WR) } }
+    /// Swaps in a fresh connection and replays initialize + initialized; the duplicate initialize reply is swallowed.
+    func replace(_ newFD: Int32) {
+        lock.withLock {
+            close(fd); fd = newFD
+            if let initialize {
+                skipID = (try? JSONSerialization.jsonObject(with: initialize) as? [String: Any])?["id"]
+                _ = MCPSocket.write(initialize + Data([10]), to: fd)
+                if let initialized { _ = MCPSocket.write(initialized + Data([10]), to: fd) }
+            }
+        }
+    }
+    /// True for the one reply to the replayed initialize, which the client already received once.
+    func swallow(_ line: Data) -> Bool {
+        lock.withLock {
+            guard let skipID, let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+                  object["result"] != nil, let id = object["id"], (id as AnyObject).isEqual(skipID) else { return false }
+            self.skipID = nil
+            return true
+        }
+    }
+}
+
 enum MCPShim {
+    private static func connectOrLaunch(_ path: String) throws -> Int32 {
+        if let fd = try? MCPSocket.connect(path) { return fd }
+        let launcher = Process()
+        launcher.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        let app = Bundle.main.bundleURL
+        launcher.arguments = app.pathExtension == "app" ? ["-g", "-j", app.path] : ["-g", "-j", "-b", "space.microapps.recorder"]
+        launcher.standardOutput = FileHandle.standardError
+        launcher.standardError = FileHandle.standardError
+        try launcher.run()
+        let deadline = Date().addingTimeInterval(15)
+        while Date() < deadline {
+            if let socket = try? MCPSocket.connect(path) { return socket }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        throw NSError(domain: "RecorderMCP", code: 1, userInfo: [NSLocalizedDescriptionKey: "Recorder did not open its MCP socket in 15 seconds; launch Recorder and retry"])
+    }
+    /// Calls `handle` with each newline-terminated line read from `fd`; returns at EOF.
+    private static func readLines(_ fd: Int32, _ handle: (Data) -> Void) {
+        var pending = Data(), buffer = [UInt8](repeating: 0, count: 16_384)
+        while true {
+            let count = Darwin.read(fd, &buffer, buffer.count)
+            if count < 0 && errno == EINTR { continue }
+            guard count > 0 else { return }
+            pending.append(contentsOf: buffer.prefix(count))
+            while let newline = pending.firstIndex(of: 10) {
+                handle(Data(pending[..<newline])); pending.removeSubrange(...newline)
+            }
+        }
+    }
     static func runIfRequested() {
         guard CommandLine.arguments.contains("--mcp") else { return }
-        // shortcut: no reconnect if the app quits mid-session; reconnect from the MCP client.
         let path = MCPServer.defaultSocketPath
         do {
-            var fd: Int32
-            do { fd = try MCPSocket.connect(path) }
-            catch {
-                let launcher = Process()
-                launcher.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-                let app = Bundle.main.bundleURL
-                launcher.arguments = app.pathExtension == "app" ? ["-g", "-j", app.path] : ["-g", "-j", "-b", "space.microapps.recorder"]
-                launcher.standardOutput = FileHandle.standardError
-                launcher.standardError = FileHandle.standardError
-                try launcher.run()
-                let deadline = Date().addingTimeInterval(15)
-                var connected: Int32?
-                while Date() < deadline {
-                    if let socket = try? MCPSocket.connect(path) { connected = socket; break }
-                    Thread.sleep(forTimeInterval: 0.1)
-                }
-                guard let connected else { throw NSError(domain: "RecorderMCP", code: 1, userInfo: [NSLocalizedDescriptionKey: "Recorder did not open its MCP socket in 15 seconds; launch Recorder and retry"] ) }
-                fd = connected
-            }
-            let socket = fd
+            let state = ShimState(try connectOrLaunch(path))
             DispatchQueue.global().async {
-                var buffer = [UInt8](repeating: 0, count: 16_384)
-                while true {
-                    let count = Darwin.read(STDIN_FILENO, &buffer, buffer.count)
-                    if count < 0 && errno == EINTR { continue }
-                    guard count > 0 else {
-                        // Drain replies after piped stdin closes (initialize smoke), then exit on socket EOF.
-                        shutdown(socket, SHUT_WR)
-                        return
-                    }
-                    guard MCPSocket.write(Data(buffer.prefix(count)), to: socket) else { exit(0) }
-                }
+                readLines(STDIN_FILENO) { state.forward($0) }
+                // Piped stdin closed (initialize smoke): drain the replies, then exit when the server closes.
+                state.closeInput()
             }
-            var buffer = [UInt8](repeating: 0, count: 16_384)
             while true {
-                let count = Darwin.read(socket, &buffer, buffer.count)
-                if count < 0 && errno == EINTR { continue }
-                guard count > 0, MCPSocket.write(Data(buffer.prefix(count)), to: STDOUT_FILENO) else { exit(0) }
+                readLines(state.socket) { line in
+                    if !state.swallow(line) { _ = MCPSocket.write(line + Data([10]), to: STDOUT_FILENO) }
+                }
+                if state.stdinClosed { exit(0) }
+                // The app quit or restarted (upgrade): relaunch if needed and replay the handshake so the client's session
+                // survives and the server can send tools/list_changed. shortcut: requests in flight when the app died get no
+                // reply (the client times out); resend is not attempted.
+                state.replace(try connectOrLaunch(path))
             }
         } catch {
             FileHandle.standardError.write(Data("Recorder MCP: \(error.localizedDescription)\n".utf8))
@@ -415,6 +479,7 @@ enum AgentAccess: String, CaseIterable {
         model.isWatchingDraft = watching
         try model.updateReview { $0 = proposed }
         draft.submitted = !watching; session.draft = draft
+        session.persistDraft()
         if !watching { session.previewSuppressed = false }
         updateMarks(model, base: draft.baseProject)
     }
@@ -433,6 +498,7 @@ enum AgentAccess: String, CaseIterable {
         let proposed = try draft.refreshReview(context: EditContext(words: model.transcript ?? []))
         try model.updateReview { $0 = proposed }
         session.draft = draft; session.reviewError = nil
+        session.persistDraft()
         updateMarks(model, base: draft.baseProject)
     }
     func finishReview(_ session: MCPSession, commit: Bool) throws {
@@ -451,6 +517,7 @@ enum AgentAccess: String, CaseIterable {
         if commit { session.draft?.verdict = verdict } else { session.draft = nil }
         session.reviewError = nil
         session.previewSuppressed = false
+        session.persistDraft()
         removeFinishedSessions()
     }
     @discardableResult func takeOverWatching(_ model: EditorModel) -> Bool {
@@ -511,8 +578,11 @@ enum AgentAccess: String, CaseIterable {
     var reviewError: String?
     var agentName = "MCP client"
     var projectURL: URL?
-    // shortcut: drafts are memory-only and disappear when Recorder quits; persist only if recovery is requested.
     var draft: AgentDraft?
+    var draftRestoreError: String?
+    private var schemaChanged = false
+    /// Package holding this session's `agent-draft.json`; set when written or adopted, so only its owner deletes it.
+    var persistedPackage: URL?
     var lastDraftVerdict: String?
     var previewSuppressed = false
     var shownLiveProjects: Set<String> = []
@@ -534,6 +604,10 @@ enum AgentAccess: String, CaseIterable {
               request["params"] == nil || request["params"] is [String: Any] else {
             return Self.error(-32600, "Expected jsonrpc 2.0, a method string and object params", id: request["id"] ?? NSNull())
         }
+        if method == "notifications/initialized", schemaChanged {
+            schemaChanged = false
+            notify("notifications/tools/list_changed", [:])
+        }
         guard let id = request["id"] else { return nil }
         guard id is String || id is NSNull || ((id as? NSNumber).map { CFGetTypeID($0) != CFBooleanGetTypeID() } ?? false) else {
             return Self.error(-32600, "Request id must be a string or number", id: NSNull())
@@ -542,8 +616,17 @@ enum AgentAccess: String, CaseIterable {
         let result: [String: Any]
         switch method {
         case "initialize":
-            if let info = params["clientInfo"] as? [String: Any], let name = info["name"] as? String { agentName = String(name.prefix(80)) }
-            result = ["protocolVersion": "2025-06-18", "capabilities": ["tools": [:]],
+            var clientKey = ""
+            if let info = params["clientInfo"] as? [String: Any], let name = info["name"] as? String {
+                agentName = String(name.prefix(80))
+                clientKey = agentName + ((info["version"] as? String).map { "@" + String($0.prefix(40)) } ?? "")
+            }
+            // R2: a client that last saw another tool schema is told to re-list once it has initialized.
+            let key = "mcpSchemaVersion.\(clientKey.isEmpty ? agentName : clientKey)"
+            let seen = UserDefaults.standard.string(forKey: key)
+            schemaChanged = seen != nil && seen != MCPTools.schemaVersion
+            UserDefaults.standard.set(MCPTools.schemaVersion, forKey: key)
+            result = ["protocolVersion": "2025-06-18", "capabilities": ["tools": ["listChanged": true]], "schemaVersion": MCPTools.schemaVersion,
                       "serverInfo": ["name": "recorder", "version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"],
                       "instructions": MCPTools.instructions]
         case "ping": result = [:]
@@ -557,6 +640,14 @@ enum AgentAccess: String, CaseIterable {
         default: return Self.error(-32601, "Unknown method \(method); call initialize or tools/list", id: id)
         }
         return ["jsonrpc": "2.0", "id": id, "result": result]
+    }
+    /// R1: keeps `agent-draft.json` equal to the active draft; removes it once the draft is accepted, discarded or gone.
+    // shortcut: rewrites the whole file (base project included) per change; fine for tens of ops, diff if drafts grow large.
+    func persistDraft() {
+        if let draft, draft.verdict == nil, let package = persistedPackage ?? projectURL {
+            do { try draft.record.write(to: package); persistedPackage = package }
+            catch { FileHandle.standardError.write(Data("Recorder MCP: could not save agent-draft.json: \(error.localizedDescription)\n".utf8)) }
+        } else if let package = persistedPackage { AgentDraftRecord.remove(from: package); persistedPackage = nil }
     }
     func notify(_ method: String, _ params: [String: Any]) { send(["jsonrpc": "2.0", "method": method, "params": params]) }
     private func progressReporter(token: Any?) -> (Double) -> Void {

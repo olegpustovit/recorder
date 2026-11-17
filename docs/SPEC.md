@@ -429,6 +429,7 @@ My Recording.recorder/
   events.json       { "events":[ {"t":1.234,"k":"move","x":0.41,"y":0.62}, {"t":…,"k":"down","b":0,…}, {"k":"key",…}, {"k":"cursor","id":"ab12"} ] }
   cursors/ab12.png  + cursors/ab12.json {"hotX":..,"hotY":..,"scale":2}
   thumbnail.jpg     640 px wide, frame at 1 s, written on first save
+  agent-draft.json  optional pending agent draft (MCP.md D8): calls, base project/revision, exclusions; deleted on accept/discard
 ```
 
 `project.json` (times use the **timeline/source clock** unless noted; positions/sizes are normalised 0…1 of the
@@ -1193,7 +1194,7 @@ without wipes, lane delays or dash movement. One shared finite display link stop
 replacement cancels old motion. These preview/animation fields never enter project JSON.
 Accept creates one named `Claude: …` undo step; Live mode applies each call directly as one named undo step.
 A stale draft offers **Replay on current**; replay reports invalid/dependent operations as skipped.
-Only one review can be active per project. Quitting Recorder loses pending drafts; disconnecting a client does
+Only one review can be active per project. Pending drafts persist in the package (`agent-draft.json`) and `project.open` re-adopts them; disconnecting a client does
 not automatically accept them. Human gestures, review ownership and voiceover recording guard conflicting edits.
 
 Agents never receive key characters. Activity analysis returns ranges/times only; agent frames, sheets and proxies
@@ -1228,7 +1229,7 @@ notifications when the client supplies a progress token. The shim exits if the a
 | `analyze` | `transcribe` on-device, `pauses`, `fillers`, `activity` |
 | `edit` | `apply` an atomic operation array, optional `dryRun`; `undo` the latest Live agent step |
 | `draft` | `status`, `submit`, `discard` |
-| `render` | `frames` (up to 6 PNGs, at most 640px), `sheet` (up to 24 tiles), `clip` (540p MP4), `cancel` |
+| `render` | `frames` (up to 24 PNGs, at most 640px), `sheet` (up to 24 tiles), `clip` (540p MP4), `cancel` |
 | `export` | `final`, with native approval and optional SRT |
 | `ui` | `show` a playhead time and optional selected IDs |
 

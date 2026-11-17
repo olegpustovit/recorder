@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import RecorderCore
 
@@ -35,5 +36,63 @@ import Testing
         #expect(AgentChangeGroup.groups([]).isEmpty)
         #expect(AgentChangeGroup.groups([rows[0]]).map(\.kind) == [.markers])
         #expect(AgentChangeGroup.groups(rows.filter { AgentChangeKind($0.op) != .cuts }).map(\.kind) == Array(AgentChangeKind.allCases.dropFirst()))
+    }
+
+    @Test func persistedDraftRoundTripsAndReplaysToTheSameProject() throws {
+        let base = Project(source: Source(duration: 20, hasMic: true), clips: [Clip(sourceStart: 0, sourceEnd: 20)])
+        var first = EditContext(); first.silent = [TimeRange(start: 5, end: 7)]
+        let calls: [[EditOp]] = [[.marker(at: 4, label: "hook"), .cutPauses(minDuration: 0.5, keepTail: 0.1, from: nil, to: nil)],
+                                 [.zoom(from: 4, to: 6, scale: 2, center: nil)]]
+        let second = EditContext()
+        var project = base, changes: [[EditChange]] = []
+        for (index, call) in calls.enumerated() {
+            var context = [first, second][index]
+            context.operationSeeds = call.indices.map { "draft:\(index):\($0)" }
+            let result = try project.applying(call, context: context)
+            project = result.project; changes.append(result.changes)
+        }
+        let record = AgentDraftRecord(id: "draft", base: "r0", baseProject: base, calls: calls, contexts: [first, second], excluded: [[0, 1]], note: "n", submitted: true)
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("draft-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try record.write(to: folder)
+        let loaded = try #require(try AgentDraftRecord.read(from: folder))
+        #expect(loaded.status == "submitted" && loaded.excluded == [[0, 1]] && loaded.calls == calls && loaded.baseProject == base)
+        #expect(loaded.contexts[0].silent == first.silent && loaded.contexts[1].silent.isEmpty)
+        var replayed = loaded.baseProject
+        for (index, call) in loaded.calls.enumerated() {
+            var context = loaded.contexts[index]
+            context.operationSeeds = call.indices.map { "\(loaded.id):\(index):\($0)" }
+            replayed = try replayed.applying(call, context: context).project
+        }
+        #expect(replayed.zooms.map(\.id) == project.zooms.map(\.id) && replayed.markers.map(\.id) == project.markers.map(\.id))
+        #expect(replayed.clips == project.clips && replayed.zooms[0].start == 4)
+        // An undecodable file throws and is kept aside, never overwritten by the next save.
+        try Data("{".utf8).write(to: folder.appendingPathComponent(AgentDraftRecord.fileName))
+        #expect(throws: DecodingError.self) { try AgentDraftRecord.read(from: folder) }
+        AgentDraftRecord.quarantine(in: folder)
+        #expect(try AgentDraftRecord.read(from: folder) == nil)
+        #expect(FileManager.default.fileExists(atPath: folder.appendingPathComponent(AgentDraftRecord.failedFileName).path))
+        try record.write(to: folder)
+        AgentDraftRecord.remove(from: folder)
+        #expect(try AgentDraftRecord.read(from: folder) == nil)
+    }
+
+    @Test func schemaViolationEnforcesLimitsFromTheSchema() {
+        let schema: [String: Any] = ["type": "object", "additionalProperties": false, "required": ["action"], "properties": [
+            "action": ["type": "string", "enum": ["frames"]],
+            "at": ["type": "array", "maxItems": 24, "items": ["type": "number", "minimum": 0]],
+            "longEdge": ["type": "integer", "minimum": 2, "maximum": 640],
+            "shortEdge": ["type": "integer", "enum": [720, 1080]]]]
+        #expect(schemaViolation(["action": "frames", "at": [0, 1.5], "longEdge": 640, "shortEdge": 1080], schema) == nil)
+        #expect(schemaViolation(["action": "frames", "at": Array(repeating: 1, count: 25)], schema)?.range == true)
+        #expect(schemaViolation(["action": "frames", "at": [-1]], schema)?.range == true)
+        #expect(schemaViolation(["action": "frames", "longEdge": 641], schema)?.range == true)
+        #expect(schemaViolation(["action": "frames", "longEdge": 2.5], schema)?.range == false)
+        #expect(schemaViolation(["action": "frames", "shortEdge": 900], schema)?.range == true)
+        #expect(schemaViolation(["action": "other"], schema)?.range == false)
+        #expect(schemaViolation(["action": "frames", "bogus": 1], schema) != nil)
+        #expect(schemaViolation(["longEdge": 4], schema)?.message.contains("required") == true)
+        #expect(schemaViolation(["action": "frames", "longEdge": true], schema) != nil)
     }
 }

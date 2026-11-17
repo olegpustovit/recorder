@@ -465,4 +465,77 @@ import Testing
         #expect(throws: EditError.self) { try marked.applying([.cut(from: 2, to: 4), .marker(at: .marker("m"), label: "Removed")], context: EditContext()) }
         #expect(base.frame.padding == project().frame.padding)
     }
+
+    @Test func labelRefAndShotAnchors() throws {
+        var base = project()
+        base.markers = [Marker(id: "m1", time: 3, label: "intro"), Marker(id: "m2", time: 8, label: "dup"), Marker(id: "m3", time: 9, label: "dup")]
+        let byLabel = try base.applying([.zoom(from: .marker("intro"), to: .marker("intro", offset: 2), scale: 2, center: nil)], context: EditContext())
+        #expect(byLabel.project.zooms[0].start == 3 && byLabel.project.zooms[0].end == 5)
+        // An id wins over a label; an ambiguous label is an error that names the count.
+        #expect(try base.applying([.marker(at: .marker("m2"), label: "x")], context: EditContext()).project.markers.contains { $0.time == 8 && $0.label == "x" })
+        do { _ = try base.applying([.marker(at: .marker("dup"), label: "x")], context: EditContext()); Issue.record("ambiguous label accepted") }
+        catch { #expect("\(error)".contains("2 markers")) }
+        // Same-batch ref: a later op anchors on an earlier op's start, even after another op moved the timeline.
+        var context = EditContext(); context.refs = ["a": 1]
+        let ref = try base.applying([.cut(from: 0, to: 1), .marker(at: 5, label: "hook"), .zoom(from: .ref("a"), to: .ref("a", offset: 2), scale: 2, center: nil)], context: context)
+        #expect(ref.project.zooms[0].start == 5 && ref.project.zooms[0].end == 7)   // source seconds: the cut shifted the output clock by 1
+        #expect(throws: EditError.self) { try base.applying([.zoom(from: .ref("nope"), to: 4, scale: 2, center: nil)], context: EditContext()) }
+        // Shots parse, but resolve only through the context hook; the default is an unknown-shot error.
+        let shot = try JSONDecoder().decode(EditTime.self, from: Data(#"{"shot":"s07","edge":"end"}"#.utf8))
+        let again = try JSONDecoder().decode(EditTime.self, from: JSONEncoder().encode(shot))
+        #expect(shot == .shot("s07", end: true) && again == shot)
+        #expect(throws: DecodingError.self) { try JSONDecoder().decode(EditTime.self, from: Data(#"{"shot":"s07","edge":"middle"}"#.utf8)) }
+        #expect(throws: DecodingError.self) { try JSONDecoder().decode(EditTime.self, from: Data(#"{"shot":"s07","marker":"m"}"#.utf8)) }
+        #expect(throws: EditError.self) { try base.applying([.zoom(from: shot, to: 12, scale: 2, center: nil)], context: EditContext()) }
+        context = EditContext(); context.shotTime = { id, end in id == "s07" ? (end ? 6 : 4) : nil }
+        let shots = try base.applying([.zoom(from: .shot("s07"), to: .shot("s07", end: true), scale: 2, center: nil)], context: context)
+        #expect(shots.project.zooms[0].start == 4 && shots.project.zooms[0].end == 6)
+    }
+
+    @Test func updateAndRemoveCoverEveryLane() throws {
+        var base = project()
+        let added = base.addLayer(kind: .image, file: "media/a.png", atOutput: 2, duration: 4, rect: NormRect(), hasAudio: false)
+        let layer = try #require(added)
+        base.windowShots = [WindowShot(id: "win", start: 10, end: 12)]
+        base.layouts = [Layout(id: "lay", start: 14, end: 16)]
+        let view = agentTimeline(base)
+        #expect(Set(view.blocks.filter { !$0.editable }.map(\.lane)) == ["window", "layout", "audio"])
+        #expect(view.blocks.filter { !$0.editable }.allSatisfy { $0.reason != nil } && view.blocks.first { $0.lane == "layer" }?.editable == true)
+        func span(_ project: Project) throws -> (Double, Double) {
+            let l = try #require(project.layers.first)
+            let start = try #require(TimeMap(project.clips).outputTime(atSource: l.start))
+            return (start, start + l.end - l.start)
+        }
+        // Layer from/to use both ends, in either direction.
+        let id = layer.uuidString
+        let moved = try base.applying([.update(id: id, from: 5, to: 9, text: nil, position: nil, size: nil, scale: nil, center: nil)], context: EditContext()).project
+        #expect(try span(moved) == (5, 9))
+        let earlier = try moved.applying([.update(id: id, from: 1, to: 3, text: nil, position: nil, size: nil, scale: nil, center: nil)], context: EditContext()).project
+        #expect(try span(earlier) == (1, 3))
+        let slid = try base.applying([.update(id: id, from: 5, to: nil, text: nil, position: nil, size: nil, scale: nil, center: nil)], context: EditContext()).project
+        #expect(try span(slid) == (5, 9))   // from alone moves, keeping the length
+        let longer = try base.applying([.update(id: id, from: nil, to: 8, text: nil, position: nil, size: nil, scale: nil, center: nil)], context: EditContext()).project
+        #expect(try span(longer) == (2, 8))
+        // Lanes without update fields say so instead of "unknown block"; remove works on every lane.
+        do { _ = try base.applying([.update(id: "win", from: 1, to: nil, text: nil, position: nil, size: nil, scale: nil, center: nil)], context: EditContext()); Issue.record("window update accepted") }
+        catch { #expect("\(error)".contains("editable:false")) }
+        let removed = try base.applying([.remove(id: id), .remove(id: "win"), .remove(id: "lay"), .remove(id: base.audioClips[0].id)], context: EditContext()).project
+        #expect(removed.layers.isEmpty && removed.audioClips.isEmpty && removed.windowShots.isEmpty && removed.layouts.isEmpty && removed.clips == base.clips)
+        #expect(throws: EditError.self) { try base.applying([.remove(id: "nope")], context: EditContext()) }
+    }
+
+    @Test func errorsSuggestSnappedAndClampedFix() throws {
+        var base = Project(source: Source(duration: 20), clips: [Clip(sourceStart: 0, sourceEnd: 10), Clip(sourceStart: 10, sourceEnd: 20)])
+        base.rippleDelete = true
+        let ops: [EditOp] = [.cut(from: 9.97, to: 15)]
+        do { _ = try base.applying(ops, context: EditContext()); Issue.record("clip-edge cut accepted") }
+        catch let error as EditError {
+            #expect(base.suggestedFix(for: error, ops: ops) == .cut(from: 10, to: 15, snap: true))
+            #expect(base.suggestedFix(for: .outOfRange(index: 0, reason: ""), ops: [.zoom(from: 18, to: 25, scale: 2, center: nil)]) == .zoom(from: 18, to: 20, scale: 2, center: nil, follow: nil, ease: nil))
+            #expect(base.suggestedFix(for: error, ops: [.captions(maxWords: 4)]) == nil)
+            // No fix for non-range errors, or when clamping collapses the range.
+            #expect(base.suggestedFix(for: .invalidOp(index: 0, reason: "unknown block x"), ops: ops) == nil)
+            #expect(base.suggestedFix(for: .outOfRange(index: 0, reason: ""), ops: [.zoom(from: 25, to: 30, scale: 2, center: nil)]) == nil)
+        }
+    }
 }
