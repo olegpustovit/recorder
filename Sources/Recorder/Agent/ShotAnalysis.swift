@@ -10,6 +10,7 @@ enum ShotAnalysis {
     /// Bump whenever decoding or the signal maths change: it is part of the cache key.
     static let algorithmVersion = 3
     private static let cacheName = "shots-cache.json"
+    static let thresholdsName = "shots-thresholds.json"
     private struct Cache: Codable { var key: String; var signals: [FrameSignal] }
 
     // ponytail: fingerprint = size + mtime + SHA256 of the first MB, not the whole file; an in-place edit past 1 MB that
@@ -294,7 +295,7 @@ enum ShotAnalysis {
         struct Fail: Error { let description: String }
         let base = try Project.load(from: package.appendingPathComponent("project.json"))
         let log = (try? JSONDecoder().decode(EventLog.self, from: Data(contentsOf: package.appendingPathComponent("events.json")))) ?? EventLog(events: [])
-        let board = storyboard(signals: signals, fps: fps, events: log.events)
+        let board = storyboard(signals: signals, fps: fps, events: log.events).inSource(clips: base.clips)
         func step(_ project: Project, _ op: JSONValue) throws -> Project {
             let result = try lowerIntents([op], project: project, clicks: log.clicks(), storyboard: { board })
             let lowered = result.ops

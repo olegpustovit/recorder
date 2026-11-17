@@ -186,14 +186,36 @@ private func summarize(_ shots: [Shot], duration: Double, fps: Double) -> Storyb
 public extension Storyboard {
     /// The same shots (same ids) in the output time of `map`; footage the edits dropped is omitted, a shot split
     /// by a cut appears once per kept piece, and imported/gap clips have no recorded footage.
+    /// Media-file seconds (what the analysis measures) → project source seconds, the clock every edit, TimeMap and crop key
+    /// uses (they differ once clips carry `mediaStart`). Each recording clip contributes the part of a shot it shows; shots no
+    /// clip shows are dropped; ids are kept, so one shot table serves analyze, storyboard, lint, intent ops and reframe.
+    func inSource(clips: [Clip]) -> Storyboard {
+        var out: [Shot] = []
+        for clip in clips where !clip.isEmpty && clip.file == nil {
+            for var s in shots {
+                let (lo, hi) = (max(s.from, clip.mediaIn), min(s.to, clip.mediaEnd))
+                guard hi - lo > 1e-9 else { continue }
+                s.clicks = s.clicks.filter { $0 >= lo && $0 < hi }.map { r2(clip.sourceTime(atMedia: $0)) }
+                (s.from, s.to) = (clip.sourceTime(atMedia: lo), clip.sourceTime(atMedia: hi))
+                // a clip split with nothing removed continues the same piece
+                if let last = out.lastIndex(where: { $0.id == s.id }), abs(out[last].to - s.from) < 1e-6 { out[last].to = s.to; out[last].clicks += s.clicks }
+                else { out.append(s) }
+            }
+        }
+        var board = summarize(out.sorted { $0.from < $1.from }, duration: duration, fps: fps)
+        board.summary.shots = Set(out.map(\.id)).count
+        return board
+    }
+
+    /// Source-time storyboard (see `inSource`) → output time through the project's clips.
     func mapped(through map: TimeMap) -> Storyboard {
         var out: [Shot] = [], offset = 0.0, open: [String: (idx: Int, src: Double)] = [:]
         for clip in map.clips {
             defer { offset += clip.outputDuration }
             guard !clip.isEmpty, clip.file == nil else { continue }
-            func output(_ media: Double) -> Double { r2(offset + (clip.sourceTime(atMedia: media) - clip.sourceStart) / clip.timeScale) }
+            func output(_ source: Double) -> Double { r2(offset + (source - clip.sourceStart) / clip.timeScale) }
             for var s in shots {
-                let (lo, hi) = (max(s.from, clip.mediaIn), min(s.to, clip.mediaEnd))
+                let (lo, hi) = (max(s.from, clip.sourceStart), min(s.to, clip.sourceEnd))
                 guard hi - lo > 1e-9 else { continue }
                 s.clicks = s.clicks.filter { $0 >= lo && $0 < hi }.map(output)
                 (s.from, s.to) = (output(lo), output(hi))

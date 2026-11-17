@@ -23,6 +23,7 @@ import Testing
         let byID = try lower(#"[{"op":"keepShots","shots":["s01","s04"]}]"#)
         #expect(byID.ops == [.cut(from: 0, to: 3, snap: true), .cut(from: 4, to: 10, snap: true), .cut(from: 12, to: 20, snap: true)])
         #expect(byID.lowered.first?.ops.count == 3)
+        #expect(byID.lowered.first?.shots?.filter(\.kept).map(\.id) == ["s01", "s04"])   // dry run shows the verdict per shot
         #expect(try apply(byID.ops).exportDuration == 3)
         let byKind = try lower(#"[{"op":"keepShots","where":{"kind":["payoff","typing"]}}]"#)
         #expect(byKind.ops == byID.ops)

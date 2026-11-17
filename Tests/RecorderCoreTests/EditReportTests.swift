@@ -98,4 +98,15 @@ import Testing
         let after = try base.applying([try JSONDecoder().decode(EditOp.self, from: JSONEncoder().encode(try #require(hook.suggest)))], context: EditContext()).project
         #expect(editReport(before: base, after: after, storyboard: Self.board()).hookSec ?? 9 <= 1.0)
     }
+
+    @Test func hookCountsOpeningMotionAndTinyShotUsesPrintedValue() {
+        // Feedback: an opening that animates from frame 0 was reported as "first payoff at 5.9 s".
+        let shots = [Shot(id: "s01", from: 0, to: 3, kind: .motion, boundary: .start),
+                     Shot(id: "s02", from: 3, to: 3.249, kind: .static, boundary: .cut),
+                     Shot(id: "s03", from: 3.249, to: 9, kind: .payoff, boundary: .cut, clicks: [5.9])]
+        let sb = Storyboard(duration: 9, fps: 10, shots: shots, summary: StoryboardSummary(shots: 3, aslSec: 3, staticSec: 0, longestStatic: nil))
+        let p = Project(source: Source(duration: 9), clips: [Clip(sourceStart: 0, sourceEnd: 9)])
+        #expect(editReport(before: p, after: p, storyboard: sb).hookSec == 0)
+        #expect(!lint(p, storyboard: sb).contains { $0.rule == "hook" || $0.rule == "tinyShot" })   // 0.249 s prints as 0.25 s
+    }
 }

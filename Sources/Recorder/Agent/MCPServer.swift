@@ -143,6 +143,16 @@ struct AgentDraft {
     private func isCut(_ op: EditOp) -> Bool {
         switch op { case .cut, .cutWords, .cutPauses: return true; default: return false }
     }
+    /// edit.undo inside a draft: drop the last edit.apply call (and its exclusions), so a bad intent is one call to back out.
+    mutating func popLastCall() throws {
+        let context = contexts.last ?? EditContext()
+        calls.removeLast(); changes.removeLast(); contexts.removeLast()
+        excluded = excluded.filter { $0[0] < calls.count }; skipped = skipped.filter { $0.key[0] < calls.count }
+        submitted = false
+        let result = try project(context: context)
+        revision = calls.isEmpty ? base : try MCPTools.revision(result)
+        duration = result.exportDuration
+    }
     mutating func append(_ ops: [EditOp], context: EditContext) throws -> (project: Project, changes: [EditChange]) {
         let current = try project(context: context)
         let result = try current.applying(ops, context: replayContext(context, call: calls.count, indices: Array(ops.indices)))

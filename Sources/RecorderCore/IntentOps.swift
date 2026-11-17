@@ -9,6 +9,11 @@ public struct LoweredIntent: Codable, Equatable, Sendable {
     public var ops: [JSONValue]      // primitives that replaced it
     public var dropped: [String]?    // fitDuration: shots removed whole
     public var note: String?
+    public var shots: [ShotPick]?    // keepShots: every shot with its verdict, so a dry run shows a bad filter before it applies
+}
+
+public struct ShotPick: Codable, Equatable, Sendable {
+    public var id: String, kind: ShotKind, energy: Double, kept: Bool
 }
 
 private extension JSONValue {
@@ -49,7 +54,7 @@ public func lowerIntents(_ ops: [JSONValue], project: Project, clicks: [InputEve
             guard let n = field.num, n.isFinite else { throw bad("\(key) must be a number") }
             return n
         }
-        var result: [JSONValue] = [], dropped: [String]?, note: String?
+        var result: [JSONValue] = [], dropped: [String]?, note: String?, picks: [ShotPick]?
         func up(_ v: Double) -> Double { (v * 100).rounded(.up) / 100 }
         /// `factor` is relative; the speed op sets absolute speed, so scale each piece by its clip's current speed.
         func speedUp(_ s: ShotSegment, _ from: Double, _ to: Double, _ factor: Double) {
@@ -72,6 +77,8 @@ public func lowerIntents(_ ops: [JSONValue], project: Project, clicks: [InputEve
                 let minEnergy = try number("minEnergy", 0, in: w)
                 chosen = board.shots.filter { (kinds?.contains($0.kind) ?? true) && $0.energy >= minEnergy }
             } else { throw bad("keepShots needs shots:[id] or where:{kind,minEnergy}") }
+            let keptIDs = Set(chosen.map(\.id)); var seen = Set<String>()
+            picks = board.shots.filter { seen.insert($0.id).inserted }.map { ShotPick(id: $0.id, kind: $0.kind, energy: $0.energy, kept: keptIDs.contains($0.id)) }
             let lead = try number("lead", 0, in: raw["trim"]), tail = try number("tail", 0, in: raw["trim"])
             guard lead >= 0, tail >= 0 else { throw bad("trim.lead and trim.tail must be >= 0") }
             var keep: [TimeRange] = []
@@ -164,7 +171,7 @@ public func lowerIntents(_ ops: [JSONValue], project: Project, clicks: [InputEve
         default: out.append(raw); origin.append(index); continue
         }
         out += result; origin += result.map { _ in index }
-        lowered.append(LoweredIntent(op: index, intent: name, ops: result, dropped: dropped, note: note))
+        lowered.append(LoweredIntent(op: index, intent: name, ops: result, dropped: dropped, note: note, shots: picks))
     }
     return (out, origin, lowered)
 }

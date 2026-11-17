@@ -109,8 +109,10 @@ private func metrics(_ project: Project, _ sb: Storyboard) -> Metrics {
         if s.duration > (m.longest?.sec ?? 0) { m.longest = .init(sec: r2(s.duration), at: r2(s.range.start)) }
     }
     if !perShot.isEmpty { m.asl = perShot.values.reduce(0, +) / Double(perShot.count) }
-    m.hook = m.segs.filter { $0.shot.kind == .payoff }.map { s in
-        s.shot.clicks.compactMap { map.outputTime(atSource: $0) }.min() ?? s.range.start
+    // The hook is the first thing that happens: a payoff, a motion shot, or any click (an opening that animates from frame 0 counts).
+    m.hook = m.segs.compactMap { s -> Double? in
+        let click = s.shot.clicks.compactMap { map.outputTime(atSource: $0) }.filter { $0 >= s.range.start && $0 < s.range.end }.min()
+        switch s.shot.kind { case .payoff: return click ?? s.range.start; case .motion: return s.range.start; default: return click }
     }.min()
     return m
 }
@@ -145,7 +147,7 @@ private func lint(_ project: Project, _ m: Metrics, _ sb: Storyboard, _ p: LintP
                 suggest: factor <= 6 && single <= 16 ? opJSON("speed", ["from": .number(r2(s.range.start)), "to": .number(r2(s.range.end)), "speed": .number((single * 100).rounded(.up) / 100), "snap": .bool(true)])
                                                       : cutJSON(s.range.start + p.maxStatic, s.range.end)))
         }
-        if s.duration < p.tinyShot - 1e-6 {
+        if r2(s.duration) < p.tinyShot - 1e-6 {   // compare what the message prints: "0.25 s, want ≥ 0.25 s" must not fire
             items.append(LintItem(rule: "tinyShot", sev: "warn", at: r2(s.range.start), shot: s.shot.id,
                 msg: String(format: "%@ lasts %.2fs (flicker, want >= %.2fs)", s.shot.id, s.duration, p.tinyShot),
                 suggest: cutJSON(s.range.start, s.range.end)))
@@ -154,10 +156,11 @@ private func lint(_ project: Project, _ m: Metrics, _ sb: Storyboard, _ p: LintP
         let f = s.shot.focus, c = project.cropSample(atSource: (s.shot.from + s.shot.to) / 2), tol = 0.005
         // Only a focus box that would fit the crop but pokes out of it is a framing problem; a wider one can't be fixed by moving.
         if c != NormRect(), f.w <= c.w, f.h <= c.h, f.x < c.x - tol || f.y < c.y - tol || f.x + f.w > c.x + c.w + tol || f.y + f.h > c.y + c.h + tol {
-            let aspect = project.output.aspect == .auto ? "16:9" : project.output.aspect.rawValue
+            // Keep the shape the user chose: reframe only within an explicit aspect; a manual crop (auto aspect) gets no op.
+            let aspect = project.output.aspect
             items.append(LintItem(rule: "edgeContent", sev: "warn", at: r2(s.range.start), shot: s.shot.id,
-                msg: "\(s.shot.id) focus box is clipped by the output crop",
-                suggest: .object(["op": .string("reframe"), "aspect": .string(aspect), "mode": .string("perShot")])))
+                msg: "\(s.shot.id) focus box is clipped by the output crop" + (aspect == .auto ? "; move the crop" : ""),
+                suggest: aspect == .auto ? nil : .object(["op": .string("reframe"), "aspect": .string(aspect.rawValue), "mode": .string("perShot")])))
         }
     }
     if !m.segs.isEmpty, !p.asl.contains(m.asl) {

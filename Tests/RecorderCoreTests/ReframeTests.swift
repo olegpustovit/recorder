@@ -33,7 +33,7 @@ import Testing
     @Test func stationaryWhenFocusFitsPanWhenNot() {
         let fits = reframePlan(storyboard: board([shot(0, 0, 4, NormRect(x: 0.4, y: 0.4, w: 0.1, h: 0.2))]), aspect: .r9x16, mode: .perShot, sourceSize: size)
         #expect(fits.count == 2 && fits[0].rect == fits[1].rect)
-        let wide = reframePlan(storyboard: board([shot(0, 0, 4, NormRect(x: 0.1, y: 0.2, w: 0.8, h: 0.3))]), aspect: .r9x16, mode: .perShot, sourceSize: size)
+        let wide = reframePlan(storyboard: board([shot(0, 0, 4, NormRect(x: 0.15, y: 0.2, w: 0.7, h: 0.3))]), aspect: .r9x16, mode: .perShot, sourceSize: size)
         #expect(wide[0].rect.x < wide[1].rect.x && wide[0].rect.y == wide[1].rect.y)
     }
 
@@ -96,7 +96,7 @@ import Testing
         let full = reframePlan(storyboard: board([shot(0, 0, 4, NormRect())]), aspect: .r9x16, mode: .perShot, sourceSize: size)
         #expect(full[0].rect == full[1].rect && abs(full[0].rect.x + full[0].rect.w / 2 - 0.5) < 1e-9)
         let cur = reframePlan(storyboard: board([shot(0, 0, 4, NormRect(), cursor: NormPoint(x: 0.2, y: 0.5))]), aspect: .r9x16, mode: .perShot, sourceSize: size)
-        #expect(cur[0].rect == cur[1].rect && abs(cur[0].rect.x + cur[0].rect.w / 2 - 0.2) < 1e-9)
+        #expect(cur[0].rect == cur[1].rect && abs(cur[0].rect.x + cur[0].rect.w / 2 - 0.5) < 1e-9)   // no target: centre, don't chase the cursor
         let wide = reframePlan(storyboard: board([shot(0, 0, 4, NormRect(x: 0.1, y: 0.2, w: 0.8, h: 0.3))]), aspect: .r9x16, mode: .static, sourceSize: size)
         #expect(abs(wide[0].rect.x + wide[0].rect.w / 2 - 0.5) < 1e-9)
     }
@@ -104,5 +104,19 @@ import Testing
     @Test func cursorMapsIntoSampledCropSpace() {
         let p = cropSpace(x: 0.5, y: 0.5, in: NormRect(x: 0.3, y: 0, w: 0.45, h: 1))
         #expect(abs(p.0 - 0.2 / 0.45) < 1e-9 && abs(p.1 - 0.5) < 1e-9)
+    }
+
+    @Test func wideFocusCentresAndNeverLosesToTheCentreCrop() {
+        // Feedback: a 0.98×0.96 focus with the cursor at the far right pushed the 1:1 window to the edge.
+        let wide = Shot(id: "s01", from: 0, to: 2, kind: .motion, boundary: .start, cursor: NormPoint(x: 0.95, y: 0.5), focus: NormRect(x: 0.01, y: 0.02, w: 0.98, h: 0.96))
+        let board = Storyboard(duration: 2, fps: 10, shots: [wide], summary: StoryboardSummary(shots: 1, aslSec: 2, staticSec: 0, longestStatic: nil))
+        let keys = reframePlan(storyboard: board, aspect: .r1x1, mode: .perShot, sourceSize: CGSize(width: 1920, height: 1080))
+        #expect(keys.allSatisfy { abs($0.rect.x + $0.rect.w / 2 - 0.5) < 1e-6 })
+        // A focus on the left half whose aimed window would clip it more than the centre does: fall back to the centre.
+        let left = Shot(id: "s02", from: 0, to: 2, kind: .payoff, boundary: .start, cursor: NormPoint(x: 0.0, y: 0.5), focus: NormRect(x: 0.2, y: 0.1, w: 0.6, h: 0.8))
+        let k2 = reframePlan(storyboard: Storyboard(duration: 2, fps: 10, shots: [left], summary: board.summary), aspect: .r1x1, mode: .perShot, sourceSize: CGSize(width: 1920, height: 1080))
+        let centreX = (1 - k2[0].rect.w) / 2
+        func shown(_ r: NormRect) -> Double { max(0, min(0.8, r.x + r.w) - max(0.2, r.x)) }
+        #expect(k2.allSatisfy { shown($0.rect) + 1e-9 >= shown(NormRect(x: centreX, y: 0, w: $0.rect.w, h: 1)) })
     }
 }

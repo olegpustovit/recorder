@@ -7292,12 +7292,23 @@ private func runTimelineHeaderSelfTest() async throws {
     guard stripImages == 1 else { throw MCPTestFailure(description: "render.strip image") }
     var revision = try MCPTools.revision(base)
     let (dry, _) = try await tool("edit", ["action": "apply", "ifRevision": revision, "dryRun": true, "ops": [["op": "fitDuration", "target": 30, "tolerance": 2]]])
-    guard let report = dry["report"] as? [String: Any], let dur = report["duration"] as? [String: Any], let after = dur["after"] as? Double, abs(after - 30) <= 2,
+    guard let report = dry["report"] as? [String: Any], let dur = report["duration"] as? [String: Any], let after = dur["after"] as? Double,
+          let beforeLen = dur["before"] as? Double, abs(after - min(30, beforeLen)) <= 2,
           (dry["lowered"] as? [Any])?.isEmpty == false, model.project == base else { throw MCPTestFailure(description: "fitDuration dry run report: \(dry["report"] ?? dry["reportNote"] ?? "none")") }
     let (cut, _) = try await tool("edit", ["action": "apply", "ifRevision": revision, "ops": [["op": "cut", "from": ["shot": firstID, "edge": "start"], "to": ["shot": firstID, "edge": "end"]]]])
     revision = cut["revision"] as? String ?? revision
+    let cutRevision = revision
     let (framed, _) = try await tool("edit", ["action": "apply", "ifRevision": revision, "ops": [["op": "reframe", "aspect": "4:5"]]])
     revision = framed["revision"] as? String ?? revision
+    // P1-2: undo inside a draft drops the last call; reapplying gives the same revision.
+    let (undone, _) = try await tool("edit", ["action": "undo"])
+    guard undone["revision"] as? String == cutRevision, undone["calls"] as? Int == 1 else { throw MCPTestFailure(description: "draft undo: \(undone)") }
+    let (again, _) = try await tool("edit", ["action": "apply", "ifRevision": cutRevision, "ops": [["op": "reframe", "aspect": "4:5"]]])
+    guard again["revision"] as? String == revision else { throw MCPTestFailure(description: "reapply after undo changed the revision") }
+    // P0-2: storyboard tiles carry analyze.shots ids.
+    let (sb2, _) = try await tool("render", ["action": "storyboard", "draft": false])
+    let analyzedIDs = Set(shots.compactMap { $0["id"] as? String })
+    guard let tileIDs = sb2["shots"] as? [String], Set(tileIDs).isSubset(of: analyzedIDs) else { throw MCPTestFailure(description: "storyboard ids \(sb2["shots"] ?? "") not from analyze.shots") }
     _ = try await tool("edit", ["action": "apply", "ifRevision": revision, "ops": [["op": "reframe", "aspect": "4:5", "keys": []]]], error: "INVALID_OP")
     let (lint, _) = try await tool("render", ["action": "lint", "profile": "reel"])
     guard lint["report"] is [String: Any] else { throw MCPTestFailure(description: "render.lint: \(lint)") }
@@ -7347,7 +7358,7 @@ private func shotsFixture(_ path: String) throws -> (package: URL, project: Proj
     let f = try shotsFixture(args[0]); defer { try? FileManager.default.removeItem(at: f.package.deletingLastPathComponent()) }
     let out = URL(fileURLWithPath: args[1]); try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
     let signals = try await ShotAnalysis.signals(package: f.package, progress: { _ in })
-    let board = storyboard(signals: signals, fps: ShotAnalysis.fps, events: f.events.events)
+    let board = storyboard(signals: signals, fps: ShotAnalysis.fps, events: f.events.events).inSource(clips: f.project.clips)
     let lowered = try lowerIntents([.object(["op": .string("fitDuration"), "target": .number(30), "tolerance": .number(2)])], project: f.project, clicks: f.events.clicks(), storyboard: { board }).ops
     let edited = try f.project.applying(MCPTools.decodeOps(JSONSerialization.jsonObject(with: JSONEncoder().encode(lowered))), context: EditContext()).project
     let report = editReport(before: f.project, after: edited, storyboard: board)
@@ -7368,7 +7379,7 @@ private func shotsFixture(_ path: String) throws -> (package: URL, project: Proj
     let out = URL(fileURLWithPath: args[1]), fm = FileManager.default
     try fm.createDirectory(at: out, withIntermediateDirectories: true)
     let signals = try await ShotAnalysis.signals(package: f.package, progress: { _ in })
-    let board = storyboard(signals: signals, fps: ShotAnalysis.fps, events: f.events.events)
+    let board = storyboard(signals: signals, fps: ShotAnalysis.fps, events: f.events.events).inSource(clips: f.project.clips)
     let model = EditorModel(packageURL: f.package, project: f.project, events: f.events)
     let map = TimeMap(f.project.clips)
     let kept = board.shots.compactMap { s in AgentRender.keyframe(s, fps: board.fps, map: map).map { (s, $0.output, $0.kept) } }.prefix(48)

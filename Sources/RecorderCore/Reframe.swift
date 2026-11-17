@@ -39,7 +39,9 @@ public func reframePlan(storyboard: Storyboard, aspect: Output.Aspect, mode: Ref
     let w = ratio >= src ? 1 : ratio / src, h = ratio >= src ? src / ratio : 1
     func focus(_ shot: Shot) -> NormRect {
         // A span covering (almost) the whole axis, e.g. the default full-frame focus, says nothing: collapse to the cursor, else the centre.
+        // A focus covering most of an axis is no target at all: centre it rather than chase the cursor.
         func axis(_ lo: Double, _ len: Double, _ c: Double?) -> (Double, Double) {
+            if len >= 0.8 { return (0.5, 0) }
             let a = min(lo, c ?? lo), b = max(lo + len, c ?? lo + len)
             return b - a >= 0.9 ? (c ?? 0.5, 0) : (a, b - a)
         }
@@ -62,8 +64,15 @@ public func reframePlan(storyboard: Storyboard, aspect: Output.Aspect, mode: Ref
         let x0 = fs.map(\.x).min()!, y0 = fs.map(\.y).min()!, x1 = fs.map { $0.x + $0.w }.max()!, y1 = fs.map { $0.y + $0.h }.max()!
         return [CropKey(t: 0, rect: rects(NormRect(x: x0, y: y0, w: x1 - x0, h: y1 - y0), hold: true).0)]
     }
+    // Never worse than the default centre crop: a window that shows less of the shot's focus box falls back to the centre.
+    let centre = NormRect(x: (1 - w) / 2, y: (1 - h) / 2, w: w, h: h)
+    func shown(_ f: NormRect, _ r: NormRect) -> Double {
+        max(0, min(f.x + f.w, r.x + r.w) - max(f.x, r.x)) * max(0, min(f.y + f.h, r.y + r.h) - max(f.y, r.y))
+    }
+    func guarded(_ r: NormRect, _ f: NormRect) -> NormRect { shown(f, r) + 1e-9 < shown(f, centre) ? centre : r }
     return storyboard.shots.flatMap { shot -> [CropKey] in
-        let (a, b) = rects(focus(shot))
+        var (a, b) = rects(focus(shot))
+        (a, b) = (guarded(a, shot.focus), guarded(b, shot.focus))
         // End key at `shot.to` and the next start key at the same t: `cropSample` takes the later one, so the seam is a cut.
         return [CropKey(t: shot.from, rect: a), CropKey(t: shot.to, rect: b)]
     }

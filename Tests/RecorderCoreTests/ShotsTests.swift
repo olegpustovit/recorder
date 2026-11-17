@@ -48,6 +48,23 @@ import Testing
         #expect(storyboard(signals: Self.signals(), events: [], thresholds: t).shots.count == 1)
     }
 
+    @Test func mediaTimesBecomeSourceTimesThroughMediaStart() {
+        // Golden Island layout: source 0–4 plays media 10–14, source 4–8 plays media 0–4 (reordered footage).
+        let board = Storyboard(duration: 14, fps: 10, shots: [
+            Shot(id: "s01", from: 0, to: 4, kind: .static, boundary: .start),
+            Shot(id: "s02", from: 4, to: 10, kind: .motion, boundary: .cut),
+            Shot(id: "s03", from: 10, to: 14, kind: .payoff, boundary: .cut, clicks: [11])],
+            summary: StoryboardSummary(shots: 3, aslSec: 0, staticSec: 0, longestStatic: nil))
+        var a = Clip(sourceStart: 0, sourceEnd: 4), b = Clip(sourceStart: 4, sourceEnd: 8)
+        a.mediaStart = 10; b.mediaStart = 0
+        let source = board.inSource(clips: [a, b])
+        #expect(source.shots.map(\.id) == ["s03", "s01"])              // s02's footage is in no clip
+        #expect(source.shots[0].from == 0 && source.shots[0].to == 4 && source.shots[0].clicks == [1])
+        #expect(source.shots[1].from == 4 && source.shots[1].to == 8)
+        let out = source.mapped(through: TimeMap([a, b]))                  // same table, output time
+        #expect(out.shots.map(\.id) == ["s03", "s01"] && out.shots[0].clicks == [1])
+    }
+
     @Test func idsStayPutAfterACut() {
         let s = storyboard(signals: Self.signals(), events: [Self.click])
         var clip1 = Clip(sourceStart: 0, sourceEnd: 2), clip2 = Clip(sourceStart: 4, sourceEnd: 6)

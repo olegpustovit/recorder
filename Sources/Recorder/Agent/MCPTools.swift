@@ -121,7 +121,7 @@ enum MCPTools {
                 "captions": ["type": "boolean", "description": "analyze.shots only: add on-device 6–10 word captions per shot (slower; null when unavailable)."],
                 "response_format": ["type": "string", "enum": ["concise", "detailed"], "description": "analyze.shots only: concise (default) omits reasons only; focus is always kept."],
                 "thresholds": ["type": "object", "description": "analyze.shots only: optional overrides of ssim, minStable, cutSsim, motionDiff, payoffDiff, cursorSpeed, energyScale. energyScale and minStable must be > 0; ssim and cutSsim within 0…1.", "additionalProperties": ["type": "number", "minimum": 0]]]),   // not read-only: transcribe writes the transcript
-            tool("edit", ["apply", "undo"], "Apply atomic edits using the latest ifRevision; edits land in a draft by default. Numeric times use that revision's output timeline; anchors ({marker:id|label, offset}, {ref:name, offset}, {shot, edge}) resolve after earlier ops in the batch. Declare ref:\"name\" on an op to anchor later ops on its start. Errors carry fix and current.", ["ifRevision": string, "ops": ["type": "array", "items": ["oneOf": operationSchemas]], "dryRun": boolean, "lint": ["type": "string", "enum": ["reel", "tutorial", "demo"], "description": "Profile for report.lint (default reel)."]]),
+            tool("edit", ["apply", "undo"], "Apply atomic edits using the latest ifRevision; edits land in a draft by default. Numeric times use that revision's output timeline; anchors ({marker:id|label, offset}, {ref:name, offset}, {shot, edge}) resolve after earlier ops in the batch. Declare ref:\"name\" on an op to anchor later ops on its start. At most one of keepShots/pace/fitDuration per batch (call edit.apply once per intent). undo inside a draft removes your last edit.apply call. Errors carry fix and current.", ["ifRevision": string, "ops": ["type": "array", "items": ["oneOf": operationSchemas]], "dryRun": boolean, "lint": ["type": "string", "enum": ["reel", "tutorial", "demo"], "description": "Profile for report.lint (default reel)."]]),
             tool("draft", ["status", "submit", "discard"], "Read your draft's exclusions, skipped reasons and verdict; submit for review or discard it. A pending submitted draft can receive more edit.apply calls, returning to watching until submitted again.", ["note": string]),
             tool("render", ["frames", "sheet", "clip", "storyboard", "strip", "compare", "lint", "cancel"], "Render frames, a contact sheet, a 540p proxy, per-shot storyboard tiles (needs analyze.shots), a filmstrip (strip: from, to, fps 4–8, ≤48 tiles) base|draft rows (compare: at ≤6) into the agent cache (key chips hidden), or lint the draft against a profile (lint: reel, tutorial, demo; needs analyze.shots).", ["at": ["type": "array", "items": number, "maxItems": 24], "shots": ["type": "array", "items": string, "maxItems": 48, "description": "render.storyboard only: shot ids; default all shots the draft keeps."], "page": ["type": "integer", "minimum": 1, "description": "render.storyboard only: 48 tiles per page."], "fps": ["type": "integer", "minimum": 4, "maximum": 8, "description": "render.strip only."], "from": number, "to": number, "count": ["type": "integer", "minimum": 1, "maximum": 24], "longEdge": ["type": "integer", "minimum": 2, "maximum": 640], "draft": boolean, "profile": ["type": "string", "enum": ["reel", "tutorial", "demo"]],
                 "grid": ["type": "boolean", "description": "render.frames only: overlay a 0.1-step grid labelled 0–1, origin top-left, matching zoom center and text position coordinates (exact at 1× zoom with no layout padding)."]], read: true),
@@ -252,12 +252,20 @@ enum MCPTools {
         return (try JSONSerialization.jsonObject(with: JSONEncoder().encode(result.ops)), result.origin, result.lowered)
     }
     @MainActor private static func edit(_ action: String, _ args: [String: Any], model: EditorModel, session: MCPSession) async throws -> [String: Any] {
-        try requireEditable(model, draftSession: action == "apply" ? session : nil, allowInvisible: true)
+        try requireEditable(model, draftSession: session, allowInvisible: true)
         let level = AgentAccess.level(for: model.liveProject.id)
         guard level == .draft || level == .live else { throw MCPFailure(code: "PERMISSION_DENIED", message: "Editing needs Draft or Live access in the Claude tab") }
         let active = session.draft.flatMap { $0.verdict == nil ? $0 : nil }
         if let active, active.baseProject.id != model.liveProject.id || level == .live {
             throw MCPFailure(code: "REVIEW_IN_PROGRESS", message: "Discard or finish the pending draft, or reopen its project, before editing")
+        }
+        if action == "undo", level == .draft {
+            guard var draft = active, !draft.calls.isEmpty else { throw MCPFailure(code: "INVALID_OP", message: "Nothing to undo in this draft") }
+            let undone = draft.changes.last?.first?.summary ?? "edit"
+            try draft.popLastCall()
+            if draft.calls.isEmpty { try MCPServer.shared.finishReview(session, commit: false) }
+            else { session.draft = draft; try MCPServer.shared.review(session, watching: true); DraftPlayback.shared.invalidate(sessionID: session.id) }
+            return ["mode": "draft", "undone": undone, "calls": draft.calls.count, "revision": draft.revision]
         }
         if action == "undo" {
             guard level == .live, let name = model.undoStepNames.last, name.hasPrefix("Claude:") else {
@@ -548,9 +556,11 @@ enum MCPTools {
                     let format = args["response_format"] as? String ?? "concise"
                     guard ["concise", "detailed"].contains(format) else { throw MCPFailure(code: "INVALID_OP", message: "response_format must be concise or detailed") }
                     let thresholds = try ShotAnalysis.thresholds(args["thresholds"])
-                    let signals = try await ShotAnalysis.signals(package: model.packageURL, progress: progress)
+                    _ = try await ShotAnalysis.signals(package: model.packageURL, progress: progress)
+                    // The thresholds used here become the project's segmentation, so every tool reads this same shot table.
+                    try? JSONEncoder().encode(thresholds).write(to: model.packageURL.appendingPathComponent(ShotAnalysis.thresholdsName), options: .atomic)
                     // ponytail: no recorder:// resource mechanism exists, so shots carry no thumb; use render.frames at a shot's time.
-                    var source = storyboard(signals: signals, fps: ShotAnalysis.fps, events: model.events.events, thresholds: thresholds)
+                    var source = try loadStoryboard(model: model)
                     if args["captions"] as? Bool == true { source = try await AgentCaptions.captionShots(source, model: model) }
                     let board = source.mapped(through: TimeMap(viewed.clips))
                     payload = try object(board)
@@ -924,12 +934,12 @@ enum MCPTools {
     }
 
     /// Source-time storyboard from analyze.shots' cached signals, for storyboard/lint/intent/reframe ops.
-    // shortcut: uses default thresholds even if analyze.shots was called with overrides; persist them with the cache if agents rely on overrides.
     @MainActor static func loadStoryboard(model: EditorModel) throws -> Storyboard {
         guard let signals = ShotAnalysis.cachedSignals(package: model.packageURL) else {
             throw MCPFailure(code: "NO_STORYBOARD", message: "run analyze.shots first (decoded once, then cached)")
         }
-        return storyboard(signals: signals, fps: ShotAnalysis.fps, events: model.events.events)
+        let thresholds = (try? JSONDecoder().decode(ShotThresholds.self, from: Data(contentsOf: model.packageURL.appendingPathComponent(ShotAnalysis.thresholdsName)))) ?? ShotThresholds()
+        return storyboard(signals: signals, fps: ShotAnalysis.fps, events: model.events.events, thresholds: thresholds).inSource(clips: model.liveProject.clips)
     }
 
     @MainActor static func libraryRecordings() async -> [MCPAssets.LibraryRecording] {
