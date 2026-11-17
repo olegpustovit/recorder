@@ -32,7 +32,8 @@ public func editableFields(_ kind: Item.Kind) -> [String] {
     case .layer: SetFields.layerFields
     case .graphic: ["from", "to", "color"]
     case .marker: ["from", "text"]
-    case .clip, .gap, .layout, .camera, .keys, .window, .audio: []
+    case .clip: ["mediaStart"]   // slip (T-932)
+    case .gap, .layout, .camera, .keys, .window, .audio: []
     }
 }
 

@@ -538,6 +538,9 @@ public extension Project {
                 }
                 resolved = baseMap.sourceRanges(forMedia: media)
                 at = resolved.first.flatMap { baseMap.outputTime(atSource: $0.start) } ?? 0
+            case let .set(id, _) where kinds[id] == .clip:
+                guard let i = Int(id.dropFirst()), clips.indices.contains(i) else { throw EditError.invalidOp(index: index, reason: "unknown clip \(id)") }
+                at = baseMap.outputTime(atSource: clips[i].sourceStart) ?? 0
             case let .set(id, fields) where !layers.contains(where: { $0.id == id }):
                 let (from, to) = (fields.from, fields.to)
                 let anchored = from?.isAnchor == true || to?.isAnchor == true
@@ -606,6 +609,7 @@ public extension Project {
 
     private func applyingPrepared(_ prepared: [PreparedEdit], context: EditContext) throws -> (project: Project, changes: [EditChange]) {
         let baseMap = TimeMap(clips)
+        let kinds = Dictionary(items(self).map { ($0.id, $0.kind) }, uniquingKeysWith: { a, _ in a })   // base ids, as `set` resolved them
         func point(_ point: NormPoint?, index: Int) throws {
             if let point, !point.x.isFinite || !point.y.isFinite || !(0...1).contains(point.x) || !(0...1).contains(point.y) {
                 throw EditError.invalidOp(index: index, reason: "position/center must be normalized 0–1 (zoom center: source frame, origin top-left)")
@@ -714,6 +718,16 @@ public extension Project {
                     result.markers.append(Marker(time: span?.start ?? baseMap.sourceTime(atOutput: item.at), label: label))
                     result.markers.sort { $0.time < $1.time }
                     summary = "Marker \(stamp(item.at))"
+                case let .set(id, fields) where kinds[id] == .clip:
+                    // Slip: base clip → the current clip showing the same footage (earlier ops may have split or moved it).
+                    guard let i = Int(id.dropFirst()), let mediaStart = fields.mediaStart, clips.indices.contains(i),
+                          let j = result.clips.firstIndex(where: { !$0.isEmpty && $0.file == clips[i].file && abs($0.mediaIn - clips[i].mediaIn) < 1e-9 }) else {
+                        throw EditError.invalidOp(index: index, reason: "clip \(id) slip needs mediaStart and the clip's footage")
+                    }
+                    guard result.slipClip(j, byMedia: mediaStart - result.clips[j].mediaIn) || abs(mediaStart - result.clips[j].mediaIn) < 1e-9 else {
+                        throw EditError.invalidOp(index: index, reason: String(format: "clip %@ cannot slip to %.2f s: the media must cover %.2f s and linked audio must lie inside the clip", id, mediaStart, result.clips[j].mediaDuration))
+                    }
+                    summary = "Slip clip \(stamp(item.at))"
                 case let .set(id, fields) where !result.layers.contains(where: { $0.id == id }):
                     let (from, to, text, position, size, scale, center, follow, ease, color) =
                         (fields.from, fields.to, fields.text, fields.position, fields.size, fields.scale, fields.center, fields.follow, fields.ease, fields.color)

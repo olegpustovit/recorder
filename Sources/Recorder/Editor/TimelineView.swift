@@ -2710,6 +2710,11 @@ final class TimelineView: NSView {
             model.addText(atSource: model.timeMap.sourceTime(atOutput: model.playhead))
         } else if !cmd, !shift, event.modifierFlags.contains(.option), event.charactersIgnoringModifiers?.lowercased() == "k", let model { // `⌥K` = keyframe
             model.addKeyAtPlayhead()
+        } else if !cmd, event.modifierFlags.contains(.option), chars == "," || chars == "." || chars == "<" || chars == ">", let model,
+                  let i = model.selectedClip { // `⌥,`/`⌥.` = slip the selected clip one frame (⇧: ten) (T-932)
+            let frames = (chars == "," || chars == "<" ? -1.0 : 1.0) * (shift ? 10 : 1)
+            var trial = model.project
+            if trial.slipClip(i, byMedia: frames / 30) { model.edit("Slip Clip") { $0 = trial } } else { NSSound.beep() }
         } else if !cmd, !shift, chars?.lowercased() == "m", let model { // `M` = toggle a marker at the playhead (T-930)
             model.toggleMarkerAtPlayhead()
         } else if event.modifierFlags.contains(.control), let arrow = event.specialKey, arrow == .leftArrow || arrow == .rightArrow, let model { // `⌃←/⌃→` = previous/next marker
@@ -2850,6 +2855,7 @@ final class TimelineView: NSView {
             dragKind = .scrub
             scrub(toViewX: p.x)
         case .clipEdge(let i, let edge):
+            rollTrim = event.modifierFlags.contains(.option)   // ⌥-drag a cut = roll (T-932)
             beginTrim(index: i, edge: edge)
         case .clipBody(let i):
             guard let model else { return }
@@ -3343,6 +3349,9 @@ final class TimelineView: NSView {
 
     // MARK: - Trim (SPEC §7.2 "Trim")
 
+    /// ⌥ held when the edge drag began: roll instead of trim (T-932).
+    private var rollTrim = false
+
     private func beginTrim(index: Int, edge: RecorderCore.Edge) {
         guard let model, model.project.clips.indices.contains(index) else { return }
         dragClips = model.project.clips
@@ -3370,8 +3379,13 @@ final class TimelineView: NSView {
         var placed: Int?
         model.update { project in
             if let dragProject { project = dragProject }
-            placed = project.placeClip(index, start: edge == .leading ? target : beginSourceStart,
-                                       end: edge == .trailing ? target : beginSourceEnd, propagate: true)
+            if rollTrim, edge == .trailing || index > 0 {
+                // Roll the cut on this edge's side; the neighbour gives or takes the same time (length unchanged).
+                project.rollEdit(between: edge == .trailing ? index : index - 1, toSource: target); placed = index
+            } else {
+                placed = project.placeClip(index, start: edge == .leading ? target : beginSourceStart,
+                                           end: edge == .trailing ? target : beginSourceEnd, propagate: true)
+            }
         }
         model.selectedClip = placed
         let index = model.selectedClip ?? index

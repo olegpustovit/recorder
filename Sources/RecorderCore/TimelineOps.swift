@@ -2764,3 +2764,40 @@ public func snap(_ x: Double, candidates: [Double], threshold: Double) -> (value
     }
     return (nearest, true)
 }
+
+// MARK: - Roll and slip (T-932, EDITING-CORE §5)
+
+public extension Project {
+    /// Roll: moves the cut between clip `i` and `i + 1` to spine time `s`; one grows, the other shrinks, the total length
+    /// stays. Built from `trimClip` (shrink first, then grow into the freed time), so linked audio, layers and settling
+    /// follow the same rules as a trim. Needs a seamless boundary on one clock; returns false (unchanged) otherwise.
+    @discardableResult
+    mutating func rollEdit(between i: Int, toSource s: Double) -> Bool {
+        guard clips.indices.contains(i), clips.indices.contains(i + 1), s.isFinite else { return false }
+        let a = clips[i], b = clips[i + 1]
+        guard !a.isEmpty, !b.isEmpty, abs(a.sourceEnd - b.sourceStart) < 1e-9, abs(a.timeScale - b.timeScale) < 1e-9 else { return false }
+        let before = self, length = TimeMap(clips).outputDuration
+        if s > a.sourceEnd { trimClip(i + 1, edge: .leading, toSource: s); trimClip(i, edge: .trailing, toSource: clips[i + 1].sourceStart) }
+        else { trimClip(i, edge: .trailing, toSource: s); trimClip(i + 1, edge: .leading, toSource: clips[i].sourceEnd) }
+        guard abs(TimeMap(clips).outputDuration - length) < 1e-6, abs(clips[i].sourceEnd - clips[i + 1].sourceStart) < 1e-9,
+              clips[i] != a || clips[i + 1] != b, checkInvariants() == nil else { self = before; return false }
+        return true
+    }
+
+    /// Slip: plays other footage in clip `i` (media in-point + `delta` media seconds); position and length stay. Linked
+    /// screen/camera audio inside the clip moves with it; audio spanning other clips would desync, so that refuses.
+    @discardableResult
+    mutating func slipClip(_ i: Int, byMedia delta: Double) -> Bool {
+        guard clips.indices.contains(i), !clips[i].isEmpty, delta.isFinite, delta != 0 else { return false }
+        let clip = clips[i], before = self
+        let limit = clip.file == nil ? source.duration : clip.mediaEnd   // imported files: no known length, so never later
+        guard clip.mediaIn + delta >= 0, clip.mediaEnd + delta <= limit + 1e-9 else { return false }
+        let linked = audioClips.indices.filter { audioClips[$0].link == .screen || audioClips[$0].link == .camera }
+            .filter { audioClips[$0].end > clip.sourceStart + 1e-9 && audioClips[$0].start < clip.sourceEnd - 1e-9 }
+        guard linked.allSatisfy({ audioClips[$0].start >= clip.sourceStart - 1e-9 && audioClips[$0].end <= clip.sourceEnd + 1e-9 }) else { return false }
+        clips[i].mediaStart = clip.mediaIn + delta
+        for a in linked where audioClips[a].link == .screen || linkVideoEdits { audioClips[a].mediaStart += delta * (audioClips[a].mediaRate ?? 1) / (clip.speed / clip.timeScale) }
+        guard checkInvariants() == nil else { self = before; return false }
+        return true
+    }
+}
