@@ -7391,7 +7391,7 @@ private func shotsFixture(_ path: String) throws -> (package: URL, project: Proj
     print("agent-visuals shots=\(board.shots.count) tiles=\(kept.count) captions=\(captioned.shots.filter { $0.caption != nil }.count)/\(captioned.shots.count) out=\(out.path)")
 }
 
-/// `--selftest shots-live <short package>`: the recording-time cache (ShotAnalysis.Live, fed the file's frames as capture
+/// `--selftest shots-live <short package> [bgra]`: the recording-time cache (ShotAnalysis.Live, fed the file's frames as capture
 /// would) is used by analyze.shots and agrees with decoding the file.
 @MainActor private func checkShotsLive(_ args: [String]) async throws {
     guard let path = args.first else { throw MCPTestFailure(description: "usage: shots-live <package>") }
@@ -7399,7 +7399,7 @@ private func shotsFixture(_ path: String) throws -> (package: URL, project: Proj
     let media = f.package.appendingPathComponent("screen.mov"), asset = AVURLAsset(url: media)
     let reader = try AVAssetReader(asset: asset)
     let output = AVAssetReaderTrackOutput(track: try await asset.loadTracks(withMediaType: .video)[0],
-        outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange])
+        outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: args.contains("bgra") ? kCVPixelFormatType_32BGRA : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange])
     reader.add(output); reader.startReading()
     let live = ShotAnalysis.Live()
     while let sample = output.copyNextSampleBuffer() {

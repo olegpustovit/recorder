@@ -49,13 +49,11 @@ enum ShotAnalysis {
     /// analyze.shots never decodes a new recording. Same ticks (latest frame at or before k/10 s), size and luma as `decode`.
     final class Live {
         private let queue = DispatchQueue(label: "recorder.shots.live", qos: .utility)
-        private var latest: CVPixelBuffer?, previous: [UInt8]?, signals: [FrameSignal] = [], w = 0, h = 0, off = false
+        private var latest: CVPixelBuffer?, previous: [UInt8]?, signals: [FrameSignal] = [], w = 0, h = 0
 
-        /// Main-stream 4:2:0 frames only (BGRA window captures fall back to decoding); `t` = output seconds.
+        /// Main-stream frames (4:2:0 or BGRA window captures); `t` = output seconds.
         func add(_ buffer: CVPixelBuffer, at t: Double) {
             queue.async { [self] in
-                guard !off else { return }
-                guard CVPixelBufferGetPixelFormatType(buffer) == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange else { off = true; return }
                 emit(upTo: t); latest = buffer
             }
         }
@@ -73,7 +71,7 @@ enum ShotAnalysis {
             let result: [FrameSignal]? = queue.sync { [self] in
                 let ticks = max(1, Int((duration * ShotAnalysis.fps).rounded(.down)))
                 emit(upTo: Double(ticks) / ShotAnalysis.fps); latest = nil
-                return off || signals.count < ticks ? nil : Array(signals.prefix(ticks))
+                return signals.count < ticks ? nil : Array(signals.prefix(ticks))
             }
             guard let result, let key = try? "v\(ShotAnalysis.algorithmVersion)-" + ShotAnalysis.fingerprint(package.appendingPathComponent("screen.mov")) else { return }
             try? JSONEncoder().encode(ShotAnalysis.Cache(key: key, signals: result)).write(to: package.appendingPathComponent(ShotAnalysis.cacheName), options: .atomic)
@@ -210,19 +208,26 @@ enum ShotAnalysis {
         }
     }
 
-    /// w×h luma from a full-size 4:2:0 buffer: mean of every 2nd row × 8 columns per output pixel; the decode output
+    /// w×h luma from a full-size 4:2:0 or BGRA buffer: mean of every 2nd row × 8 columns per output pixel; the decode output
     /// is full-res (the decoders ignore reduced-size requests for HEVC) and reading all rows costs more than the decode.
     private static func lumaBox(_ buffer: CVPixelBuffer, w: Int, h: Int) -> [UInt8] {
         CVPixelBufferLockBaseAddress(buffer, .readOnly); defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
-        let stride = CVPixelBufferGetBytesPerRowOfPlane(buffer, 0), base = CVPixelBufferGetBaseAddressOfPlane(buffer, 0)!.assumingMemoryBound(to: UInt8.self)
-        let fx = CVPixelBufferGetWidthOfPlane(buffer, 0) / w, fy = CVPixelBufferGetHeightOfPlane(buffer, 0) / h
+        // Window captures arrive as BGRA: convert to the same video-range BT.709 luma the encoder stores (Y' = 16 + 219·L).
+        let bgra = CVPixelBufferGetPixelFormatType(buffer) == kCVPixelFormatType_32BGRA
+        let stride = bgra ? CVPixelBufferGetBytesPerRow(buffer) : CVPixelBufferGetBytesPerRowOfPlane(buffer, 0)
+        let base = (bgra ? CVPixelBufferGetBaseAddress(buffer) : CVPixelBufferGetBaseAddressOfPlane(buffer, 0))!.assumingMemoryBound(to: UInt8.self)
+        let fx = CVPixelBufferGetWidth(buffer) / w, fy = CVPixelBufferGetHeight(buffer) / h
         var frame = [UInt8](repeating: 0, count: w * h), acc = [Int32](repeating: 0, count: w)
         for y in 0..<h {
             acc.withUnsafeMutableBufferPointer { $0.update(repeating: 0) }
             var n: Int32 = 0
             for k in Swift.stride(from: 0, to: fy, by: 2) {
                 let row = base + (y * fy + k) * stride
-                for x in 0..<w { var s: Int32 = 0; for j in 0..<fx { s += Int32(row[x * fx + j]) }; acc[x] += s }
+                if bgra {   // integer BT.709: 16 + (47·R + 157·G + 16·B) / 256 ≈ 16 + 219·(0.2126R + 0.7152G + 0.0722B)/255
+                    for x in 0..<w { var s: Int32 = 0; for j in 0..<fx { let p = row + (x * fx + j) * 4; s += 16 + (47 * Int32(p[2]) + 157 * Int32(p[1]) + 16 * Int32(p[0])) >> 8 }; acc[x] += s }
+                } else {
+                    for x in 0..<w { var s: Int32 = 0; for j in 0..<fx { s += Int32(row[x * fx + j]) }; acc[x] += s }
+                }
                 n += Int32(fx)
             }
             for x in 0..<w { frame[y * w + x] = UInt8(acc[x] / n) }
