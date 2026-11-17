@@ -42,6 +42,17 @@ import Testing
         #expect(!lint(after, storyboard: board).contains { $0.rule == "maxStatic" })
     }
 
+    @Test func fitDurationCountsAnOutroLayerPastTheVideo() throws {
+        var outro = base
+        let video = base.exportDuration
+        // Like a real outro: anchored at the last source second, running 3 s past the video's end.
+        outro.layers.append(LayerBlock(kind: .video, start: base.source.duration - 0.5, end: base.source.duration + 2.5, file: "media/outro.mov", rect: NormRect()))
+        #expect(abs(outro.exportDuration - (video + 2.5)) < 0.01)
+        let r = try lower(#"[{"op":"fitDuration","target":12,"tolerance":0.5}]"#, project: outro)
+        let after = try outro.applying(r.ops, context: EditContext()).project
+        #expect(abs(after.exportDuration - 12) <= 0.5)                               // the outro moves earlier, export hits target
+    }
+
     @Test func fitDurationHitsTargetAndProtects() throws {
         let r = try lower(#"[{"op":"fitDuration","target":12,"tolerance":0.5}]"#)
         #expect(r.lowered[0].dropped == ["s05"])

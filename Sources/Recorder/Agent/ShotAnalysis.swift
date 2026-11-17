@@ -141,6 +141,43 @@ enum ShotAnalysis {
         print(String(format: "shots-perf frames=%d media=%.1fs decode=%.2fs cached=%.3fs shots=%d asl=%.2fs",
                      s.count, Double(s.count) / fps, first, cached, board.shots.count, board.summary.aslSec))
         guard cached < 0.5 else { throw Fail(description: "cache miss on second call") }
+        try reelPipeline(package: URL(fileURLWithPath: path), signals: s)
+    }
+
+    /// The spec's §4 loop on real data, Core only: storyboard → keepShots → pace → fitDuration 30 s → reframe 4:5 → report + lint.
+    private static func reelPipeline(package: URL, signals: [FrameSignal]) throws {
+        struct Fail: Error { let description: String }
+        let base = try Project.load(from: package.appendingPathComponent("project.json"))
+        let log = (try? JSONDecoder().decode(EventLog.self, from: Data(contentsOf: package.appendingPathComponent("events.json")))) ?? EventLog(events: [])
+        let board = storyboard(signals: signals, fps: fps, events: log.events)
+        func step(_ project: Project, _ op: JSONValue) throws -> Project {
+            let result = try lowerIntents([op], project: project, clicks: log.clicks(), storyboard: { board })
+            let lowered = result.ops
+            if ProcessInfo.processInfo.environment["SHOTS_DEBUG"] != nil {
+                for l in result.lowered { print("  \(l.intent): \(l.ops.count) ops, dropped \(l.dropped?.count ?? 0), note \(l.note ?? "-")") }
+                print("  ops: \(String(data: try JSONEncoder().encode(lowered), encoding: .utf8)!.prefix(1500))")
+            }
+            let ops = try MCPTools.decodeOps(JSONSerialization.jsonObject(with: JSONEncoder().encode(lowered)))
+            let applied = try project.applying(ops, context: EditContext())
+            if ProcessInfo.processInfo.environment["SHOTS_DEBUG"] != nil {
+                print(String(format: "  duration %.2f → %.2f, skipped %d", TimeMap(project.clips).outputDuration, TimeMap(applied.project.clips).outputDuration, applied.changes.filter(\.skipped).count))
+                for c in applied.changes where c.skipped { print("   skipped: \(c.note ?? "")") }
+            }
+            return applied.project
+        }
+        var p = try step(base, .object(["op": .string("keepShots"), "where": .object(["kind": .array(["payoff", "motion", "typing"].map { .string($0) })])]))
+        p = try step(p, .object(["op": .string("pace")]))
+        p = try step(p, .object(["op": .string("fitDuration"), "target": .number(30), "tolerance": .number(2)]))
+        let keys = reframePlan(storyboard: board, aspect: .r4x5, mode: .perShot, sourceSize: CGSize(width: base.source.pixelWidth, height: base.source.pixelHeight))
+        p = try p.applying([.reframe(aspect: .r4x5, mode: .perShot, keys: keys)], context: EditContext()).project
+        let report = editReport(before: base, after: p, storyboard: board)
+        let rules = Dictionary(grouping: report.lint, by: \.rule).mapValues(\.count).sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " ")
+        print(String(format: "shots-pipeline duration %.1f→%.1fs asl %.2f→%.2fs static %.1f→%.1fs hook=%@ longestStatic=%@ cropKeys=%d lint[%@]",
+                     report.duration.before, report.duration.after, report.aslSec.before, report.aslSec.after,
+                     report.staticSec.before, report.staticSec.after, report.hookSec.map { String(format: "%.2fs", $0) } ?? "-",
+                     report.longestStatic.map { String(format: "%.2fs@%.1f", $0.sec, $0.at) } ?? "-", p.cropKeys.count, rules))
+        guard abs(report.duration.after - 30) <= 2 else { throw Fail(description: "fitDuration missed 30±2 s: \(report.duration.after)") }
+        guard p.checkInvariants() == nil else { throw Fail(description: "invariants: \(p.checkInvariants()!)") }
     }
 
     /// Optional per-call overrides of `ShotThresholds` by field name.

@@ -117,7 +117,8 @@ public func lowerIntents(_ ops: [JSONValue], project: Project, clicks: [InputEve
             let rank: [ShotKind: Double] = [.static: 0, .cursorOnly: 1, .typing: 2, .motion: 3, .payoff: 4]
             let order = try sb().segments(map).filter { !protected.contains($0.shot.id) }
                 .sorted { (rank[$0.shot.kind]! + $0.shot.energy, -$0.duration) < (rank[$1.shot.kind]! + $1.shot.energy, -$1.duration) }
-            var length = total, ids: [String] = []
+            // Target the exported length: layers/audio past the video (e.g. an outro) count, and shift earlier with each cut.
+            var length = project.exportDuration, ids: [String] = []
             for s in order {
                 let excess = length - target
                 if excess <= tolerance { break }
