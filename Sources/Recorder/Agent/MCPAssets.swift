@@ -146,12 +146,12 @@ import RecorderCore
 
     /// `project.assets`: what `layer` can use right now.
     static func list(project: Project, library: [LibraryRecording]) -> [String: Any] {
-        let map = TimeMap(project.clips)
-        // Every layer, recording layers included (feedback run 6: an appended recording layer was missing).
+        // Every layer, recording layers included (feedback run 6); output ranges from the one item view (T-910).
+        let spans = Dictionary(items(project).filter { $0.kind == .layer }.map { ($0.id, $0.out) }, uniquingKeysWith: { a, _ in a })
         let layers: [[String: Any]] = project.layers.map { layer in
             var row: [String: Any] = ["asset": layer.file, "kind": layer.kind.rawValue, "id": layer.id, "track": layer.track,
                                       "mediaStart": layer.mediaStart, "mediaRate": layer.mediaRate ?? 1]
-            if let start = map.outputTime(atSource: layer.start) { row["from"] = start; row["to"] = start + layer.end - layer.start }
+            if let span = spans[layer.id] { row["from"] = span.start; row["to"] = span.end }
             return row
         }
         return ["layers": layers,

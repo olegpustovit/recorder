@@ -103,3 +103,23 @@ import Testing
     #expect(unknown == ["s99"])
     #expect(aimed.shots[0].focus == NormRect(x: 0.6, y: 0.4, w: 0.4, h: 0.2) && aimed.shots[0].cursor == NormPoint(x: 0.95, y: 0.5))
 }
+
+/// T-910: one item view covers every stored array, stays inside the export, and agentTimeline is built from it.
+@Test func itemsCoverEveryKind() throws {
+    let base = GoldenIslandTests.fixture.project
+    var p = base
+    p.markers = [Marker(id: "m1", time: 5, label: "intro")]
+    p.zooms = [Zoom(id: "z1", start: 2, end: 4, scale: 2)]
+    p.texts = [TextBlock(id: "t1", start: 6, end: 8, text: "Hello")]
+    let all = items(p)
+    let kinds = Set(all.map(\.kind))
+    #expect(kinds.isSuperset(of: [.clip, .gap, .zoom, .text, .layer, .marker]))
+    #expect(all.allSatisfy { $0.out.start >= -1e-9 && $0.out.end <= p.exportDuration + 1e-9 && $0.out.end >= $0.out.start })
+    let layer = try #require(all.first { $0.kind == .layer })
+    #expect(layer.anchor == .connected && layer.media?.rate == 2 && layer.editable.contains("mediaRate"))
+    #expect(abs(layer.out.end - p.exportDuration) < 1e-9)              // the appended layer is the export's end
+    let timeline = agentTimeline(p)
+    #expect(timeline.blocks.map(\.id).contains(layer.id) && timeline.markers.map(\.id) == ["m1"])
+    #expect(timeline.clips.count == p.clips.filter { !$0.isEmpty }.count)
+    #expect(timeline.blocks.first { $0.lane == "zoom" }?.editable == true && timeline.duration == (p.exportDuration * 100).rounded() / 100)
+}
