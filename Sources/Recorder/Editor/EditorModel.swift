@@ -160,6 +160,12 @@ import RecorderCore
         }
     }
 
+    func renameMarker(_ id: String, to label: String) {
+        let text = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, let i = project.markers.firstIndex(where: { $0.id == id }), project.markers[i].label != text else { return }
+        edit("Rename Marker") { $0.markers[i].label = text }
+    }
+
     /// `⌃←/⌃→` (T-930): move the playhead to the previous/next marker.
     func jumpToMarker(forward: Bool) {
         let times = items(project).filter { $0.kind == .marker }.map(\.out.start).sorted()

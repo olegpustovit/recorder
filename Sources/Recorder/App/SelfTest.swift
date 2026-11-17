@@ -433,6 +433,8 @@ enum SelfTest {
         "transitions": { args in try await checkTransitions(args) },
         "speed-ramp": { args in try await checkSpeedRamp(args) },
         "export-in-out": { args in try await checkExportRange(args) },
+        "timeline-v2-png": { args in try await checkTimelineV2PNG(args) },
+        "timeline-gestures": { args in guard let path = args.first else { throw MCPTestFailure(description: "usage: timeline-gestures <package>") }; try await TimelineView.runV2GestureSelfTest(package: URL(fileURLWithPath: path)) },
         "export-gif": { args in try await ExporterSelfTest.runExportGIFSelfTest(args) },
         "export-perf": { args in try await PerfSelfTest.runExportPerf(args) },
         "export-native": { _ in try await ExportSheetSelfTest.checkNativeHandoff() },
@@ -7763,4 +7765,31 @@ final class MainStallMonitor: @unchecked Sendable {
     model.playhead = 0; model.setRangeEdge(in: true); model.playhead = model.project.exportDuration; model.setRangeEdge(in: false)
     guard model.exportRange == nil else { throw MCPTestFailure(description: "full range should clear") }
     print(String(format: "export-in-out: In 2.0 / Out 4.5 → %.2f s MP4; whole range clears", seconds))
+}
+
+/// Windowless render of the real TimelineView (cacheDisplay, no NSWindow) with the v2 additions: ruler marker flags,
+/// the export In/Out band, a selected keyed graphic (sage block, template name, diamonds). Writes <out>/timeline-v2.png.
+@MainActor private func checkTimelineV2PNG(_ args: [String]) async throws {
+    guard args.count >= 2 else { throw MCPTestFailure(description: "usage: timeline-v2-png <package> <out-dir>") }
+    let fm = FileManager.default, copy = fm.temporaryDirectory.appendingPathComponent("tl-\(UUID().uuidString).recorder")
+    try fm.copyItem(at: URL(fileURLWithPath: args[0]), to: copy)
+    defer { try? fm.removeItem(at: copy) }
+    let model = try loadEditorModel(package: copy)
+    model.playhead = 1.5; model.toggleMarkerAtPlayhead()
+    model.playhead = 6; model.toggleMarkerAtPlayhead()
+    model.playhead = 2
+    guard let id = model.addGraphic(template: "callout") else { throw MCPTestFailure(description: "graphic") }
+    model.playhead = 2.4; model.addKeyAtPlayhead(); model.playhead = 4; model.addKeyAtPlayhead()
+    model.playhead = 3; model.setRangeEdge(in: true); model.playhead = 9; model.setRangeEdge(in: false)
+    model.selection = [id]
+    let view = TimelineView(frame: NSRect(x: 0, y: 0, width: 1200, height: 420))
+    view.appearance = NSAppearance(named: .darkAqua)
+    view.model = model
+    view.layoutSubtreeIfNeeded()
+    guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw MCPTestFailure(description: "rep") }
+    view.cacheDisplay(in: view.bounds, to: rep)
+    guard let png = rep.representation(using: .png, properties: [:]) else { throw MCPTestFailure(description: "png") }
+    try fm.createDirectory(at: URL(fileURLWithPath: args[1]), withIntermediateDirectories: true)
+    try png.write(to: URL(fileURLWithPath: args[1]).appendingPathComponent("timeline-v2.png"))
+    print("timeline-v2-png: \(rep.pixelsWide)×\(rep.pixelsHigh)")
 }

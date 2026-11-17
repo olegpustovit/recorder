@@ -2861,6 +2861,16 @@ final class TimelineView: NSView {
         }
         let hit = hitTest(at: p)
         switch hit {
+        case .ruler where event.clickCount >= 2:   // double-click a marker flag = rename it (T-930)
+            guard let model, let marker = items(model.project).first(where: { $0.kind == .marker && abs(x(forOutput: $0.out.start) - p.x) < 8 }) else { break }
+            renamingMarker = marker.id
+            let field = NSTextField(string: marker.label)
+            field.frame = NSRect(x: 0, y: 0, width: 180, height: 22)
+            let popover = NSPopover(), controller = NSViewController()
+            controller.view = field; popover.contentViewController = controller; popover.behavior = .transient
+            field.target = self; field.action = #selector(commitMarkerRename(_:))
+            if window != nil { popover.show(relativeTo: NSRect(x: p.x - 4, y: 0, width: 8, height: Self.rulerHeight), of: self, preferredEdge: .maxY) }
+            markerPopover = popover
         case .playhead, .ruler:
             dragKind = .scrub
             scrub(toViewX: p.x)
@@ -2869,6 +2879,11 @@ final class TimelineView: NSView {
             beginTrim(index: i, edge: edge)
         case .clipBody(let i):
             guard let model else { return }
+            if event.modifierFlags.contains(.command), !model.project.clips[i].isEmpty {   // ⌘-drag = slip (T-932)
+                selectClip(i); model.beginGesture()
+                slipDrag = (i, p.x, model.project)
+                return
+            }
             if event.modifierFlags.contains(.shift) {
                 if model.selectedClips.contains(i) { model.selectedClips.subtract(model.project.clipGroup(containing: i)) }
                 else { model.selectedClips.insert(i) }
@@ -3143,6 +3158,13 @@ final class TimelineView: NSView {
 
     override func mouseDragged(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
+        if let slip = slipDrag, let model {   // drag right = later footage, at the clip's own playback rate
+            let clip = slip.project.clips[slip.index]
+            let media = Double(p.x - slip.startX) / geometry.pxPerSecond * clip.speed / clip.timeScale
+            model.update { project in project = slip.project; project.slipClip(slip.index, byMedia: media) }
+            trimChip = (x: p.x, text: String(format: "Slip %+.2f s", media)); needsDisplay = true
+            return
+        }
         if overviewDrag != nil { panOverview(to: p.x, centered: false); return }
         if eraserDrag != nil { eraserDrag?.end = max(gutterWidth, p.x); needsDisplay = true; return }
         if let start = marqueeStart, let model {
@@ -3237,6 +3259,7 @@ final class TimelineView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
+        if slipDrag != nil { slipDrag = nil; trimChip = nil; model?.commitGesture("Slip Clip"); needsDisplay = true; return }
         if eraserDrag != nil { finishEraser(); return }
         if marqueeStart != nil {
             if marqueeRect == nil {
@@ -3359,8 +3382,18 @@ final class TimelineView: NSView {
 
     // MARK: - Trim (SPEC §7.2 "Trim")
 
+    /// Marker being renamed from its ruler flag (T-930), and the popover holding the field.
+    private(set) var renamingMarker: String?
+    private var markerPopover: NSPopover?
+    @objc func commitMarkerRename(_ sender: NSTextField) {
+        if let id = renamingMarker { model?.renameMarker(id, to: sender.stringValue) }
+        renamingMarker = nil; markerPopover?.close(); markerPopover = nil; needsDisplay = true
+    }
+
     /// ⌥ held when the edge drag began: roll instead of trim (T-932).
     private var rollTrim = false
+    /// ⌘-drag on a clip body: slip its media (T-932); the gesture's base project and pointer start.
+    private var slipDrag: (index: Int, startX: CGFloat, project: Project)?
 
     private func beginTrim(index: Int, edge: RecorderCore.Edge) {
         guard let model, model.project.clips.indices.contains(index) else { return }
@@ -5111,5 +5144,65 @@ extension TimelineView {
             model.cancelGesture()
             model.saveNow()
         }
+    }
+}
+
+// MARK: - v2 gesture self-test (headless: synthesized events on a windowless view)
+
+extension TimelineView {
+    /// ⌘-drag slip, ⌥-drag roll, M marker and ⌥K key through the real event handlers, on a temp copy of `package`.
+    @MainActor static func runV2GestureSelfTest(package: URL) async throws {
+        struct Fail: Error, CustomStringConvertible { let description: String }
+        let fm = FileManager.default, copy = fm.temporaryDirectory.appendingPathComponent("gestures-\(UUID().uuidString).recorder")
+        try fm.copyItem(at: package, to: copy)
+        defer { try? fm.removeItem(at: copy) }
+        let model = try loadEditorModel(package: copy)
+        model.edit("Split") { _ = $0.split(atOutput: 5) }
+        let view = TimelineView(frame: NSRect(x: 0, y: 0, width: 1200, height: 420))
+        view.model = model
+        view.layoutSubtreeIfNeeded()
+        func mouse(_ type: NSEvent.EventType, _ p: CGPoint, _ mods: NSEvent.ModifierFlags) -> NSEvent {
+            NSEvent.mouseEvent(with: type, location: view.convert(p, to: nil), modifierFlags: mods, timestamp: 0, windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+        }
+        func key(_ chars: String, _ mods: NSEvent.ModifierFlags = [], code: UInt16 = 0) -> NSEvent {
+            NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: mods, timestamp: 0, windowNumber: 0, context: nil,
+                             characters: chars, charactersIgnoringModifiers: chars, isARepeat: false, keyCode: code)!
+        }
+        let row = view.laneRow(.clip)
+        // ⌘-drag the second clip's body left by 1 s of output (it already ends at the recording's end): the media in-point
+        // moves 1 s × its rate earlier; place and length stay.
+        let before = model.project.clips[1], length = TimeMap(model.project.clips).outputDuration
+        let start = CGPoint(x: view.x(forOutput: 7), y: row.midY), px = CGFloat(view.geometry.pxPerSecond)
+        view.mouseDown(with: mouse(.leftMouseDown, start, .command))
+        view.mouseDragged(with: mouse(.leftMouseDragged, CGPoint(x: start.x - px, y: start.y), .command))
+        view.mouseUp(with: mouse(.leftMouseUp, CGPoint(x: start.x - px, y: start.y), .command))
+        let slipped = model.project.clips[1]
+        guard abs(before.mediaIn - slipped.mediaIn - before.speed / before.timeScale) < 0.02, slipped.sourceStart == before.sourceStart,
+              abs(TimeMap(model.project.clips).outputDuration - length) < 1e-6, model.undoStepNames.last == "Slip Clip" else {
+            throw Fail(description: "⌘-drag slip: \(before.mediaIn) → \(slipped.mediaIn), undo \(model.undoStepNames.suffix(2))")
+        }
+        model.undo()
+        // ⌥-drag the cut at 5 s to 6 s: roll, total length unchanged.
+        let edge = CGPoint(x: view.x(forOutput: 5) - 1, y: row.midY)
+        view.mouseDown(with: mouse(.leftMouseDown, edge, .option))
+        view.mouseDragged(with: mouse(.leftMouseDragged, CGPoint(x: view.x(forOutput: 6), y: row.midY), .option))
+        view.mouseUp(with: mouse(.leftMouseUp, CGPoint(x: view.x(forOutput: 6), y: row.midY), .option))
+        let cut = model.project.clips[0].outputDuration
+        guard abs(cut - 6) < 0.05, abs(TimeMap(model.project.clips).outputDuration - length) < 1e-6 else {
+            throw Fail(description: "⌥-drag roll: first clip \(cut) s, length \(TimeMap(model.project.clips).outputDuration) vs \(length)")
+        }
+        // Keys: M adds a marker at the playhead, I/O set the export range.
+        model.playhead = 2; view.keyDown(with: key("m"))
+        model.playhead = 1; view.keyDown(with: key("i")); model.playhead = 3; view.keyDown(with: key("o"))
+        guard model.project.markers.count == 1, model.exportRange == TimeRange(start: 1, end: 3) else {
+            throw Fail(description: "keys: markers \(model.project.markers.count), range \(String(describing: model.exportRange))")
+        }
+        // Double-click the flag: rename (the field's action commits, as Return would).
+        let flag = view.convert(CGPoint(x: view.x(forOutput: 2), y: 10), to: nil)
+        view.mouseDown(with: NSEvent.mouseEvent(with: .leftMouseDown, location: flag, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil, eventNumber: 0, clickCount: 2, pressure: 1)!)
+        guard view.renamingMarker == model.project.markers[0].id else { throw Fail(description: "double-click did not start a rename") }
+        view.commitMarkerRename(NSTextField(string: "Intro"))
+        guard model.project.markers[0].label == "Intro", model.undoStepNames.last == "Rename Marker" else { throw Fail(description: "rename") }
+        print(String(format: "timeline-gestures: ⌘-drag slip +%.2f s media, ⌥-drag roll cut → %.2f s (length kept), M marker, I/O range", slipped.mediaIn - before.mediaIn, cut))
     }
 }
