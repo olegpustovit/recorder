@@ -45,6 +45,41 @@ enum ShotAnalysis {
         return result
     }
 
+    /// Recording-time signals: the capture stream already has every frame in memory, so the stop writes the cache and
+    /// analyze.shots never decodes a new recording. Same ticks (latest frame at or before k/10 s), size and luma as `decode`.
+    final class Live {
+        private let queue = DispatchQueue(label: "recorder.shots.live", qos: .utility)
+        private var latest: CVPixelBuffer?, previous: [UInt8]?, signals: [FrameSignal] = [], w = 0, h = 0, off = false
+
+        /// Main-stream 4:2:0 frames only (BGRA window captures fall back to decoding); `t` = output seconds.
+        func add(_ buffer: CVPixelBuffer, at t: Double) {
+            queue.async { [self] in
+                guard !off else { return }
+                guard CVPixelBufferGetPixelFormatType(buffer) == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange else { off = true; return }
+                emit(upTo: t); latest = buffer
+            }
+        }
+
+        private func emit(upTo t: Double) {
+            guard let buffer = latest, Double(signals.count) / ShotAnalysis.fps < t else { return }
+            if w == 0 { (w, h) = (max(16, CVPixelBufferGetWidth(buffer) / 8 & ~1), max(16, CVPixelBufferGetHeight(buffer) / 8 & ~1)) }
+            let frame = ShotAnalysis.lumaBox(buffer, w: w, h: h)
+            signals.append(ShotAnalysis.signal(frame, previous, w: w, h: h)); previous = frame
+            while Double(signals.count) / ShotAnalysis.fps < t { signals.append(FrameSignal(diff: 0, ssim: 1)) }   // same frame held
+        }
+
+        /// Call after screen.mov is finalised: the cache key is that file's fingerprint.
+        func write(package: URL, duration: Double) {
+            let result: [FrameSignal]? = queue.sync { [self] in
+                let ticks = max(1, Int((duration * ShotAnalysis.fps).rounded(.down)))
+                emit(upTo: Double(ticks) / ShotAnalysis.fps); latest = nil
+                return off || signals.count < ticks ? nil : Array(signals.prefix(ticks))
+            }
+            guard let result, let key = try? "v\(ShotAnalysis.algorithmVersion)-" + ShotAnalysis.fingerprint(package.appendingPathComponent("screen.mov")) else { return }
+            try? JSONEncoder().encode(ShotAnalysis.Cache(key: key, signals: result)).write(to: package.appendingPathComponent(ShotAnalysis.cacheName), options: .atomic)
+        }
+    }
+
     private static func decode(_ url: URL, progress: @escaping (Double) -> Void) async throws -> [FrameSignal] {
         let asset = AVURLAsset(url: url)
         guard let track = try await asset.loadTracks(withMediaType: .video).first else {

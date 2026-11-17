@@ -148,7 +148,7 @@ client takes over a disconnected session's in-memory draft of this project, pref
 | `export` | `final {destination?, shortEdge?, fps?, srt=false}` → waits for approval → `{path, seconds, bytes}` or `DENIED` |
 | `ui` | `show {at, select?:[id]}` → moves the playhead / selection in the editor |
 
-Optional shot captions (T-832): `AgentCaptions.captionShots(storyboard, model:)` fills `Shot.caption` (6–10 words, Vision OCR on the shot's focus crop, classifier label fallback, shaped by Core `ShotCaption.shape`); `null` on any failure. Opt-in with `captions:true` on `analyze.shots`; captions are returned only, never cached or persisted.
+Optional shot captions (T-832): `AgentCaptions.captionShots(storyboard, model:)` fills `Shot.caption` (6–10 words, Vision OCR on the shot's focus crop, classifier label fallback, shaped by Core `ShotCaption.shape`); `null` on any failure. New recordings write the `analyze.shots` signal cache while recording (`ShotAnalysis.Live`, main 4:2:0 stream; multi-window BGRA captures and older recordings decode once on first call). Opt-in with `captions:true` on `analyze.shots`; captions are returned only, never cached or persisted.
 
 `draft=true` renders the project with the session's draft applied (or the live project when there is no draft).
 

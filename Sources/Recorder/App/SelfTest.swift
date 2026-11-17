@@ -32,6 +32,7 @@ enum SelfTest {
         "mcp-edit": { args in try await checkMCPEdit(args) },
         "mcp-shots": { args in try await checkMCPShots(args) },
         "shots-f1": { args in try await checkShotsF1(args) },
+        "shots-live": { args in try await checkShotsLive(args) },
         "report-ref": { args in try await checkReportReference(args) },
         "agent-visuals": { args in try await dumpAgentVisuals(args) },
         "shots-perf": { args in try await ShotAnalysis.selfTestPerf(args) },
@@ -7388,4 +7389,27 @@ private func shotsFixture(_ path: String) throws -> (package: URL, project: Proj
     let caps = captioned.shots.map { "\($0.id) \($0.kind.rawValue) \(String(format: "%.1f-%.1f", $0.from, $0.to)) focus=\(String(format: "%.2f,%.2f %.2fx%.2f", $0.focus.x, $0.focus.y, $0.focus.w, $0.focus.h)) caption=\($0.caption ?? "nil")" }
     try caps.joined(separator: "\n").write(to: out.appendingPathComponent("captions.txt"), atomically: true, encoding: .utf8)
     print("agent-visuals shots=\(board.shots.count) tiles=\(kept.count) captions=\(captioned.shots.filter { $0.caption != nil }.count)/\(captioned.shots.count) out=\(out.path)")
+}
+
+/// `--selftest shots-live <short package>`: the recording-time cache (ShotAnalysis.Live, fed the file's frames as capture
+/// would) is used by analyze.shots and agrees with decoding the file.
+@MainActor private func checkShotsLive(_ args: [String]) async throws {
+    guard let path = args.first else { throw MCPTestFailure(description: "usage: shots-live <package>") }
+    let f = try shotsFixture(path); defer { try? FileManager.default.removeItem(at: f.package.deletingLastPathComponent()) }
+    let media = f.package.appendingPathComponent("screen.mov"), asset = AVURLAsset(url: media)
+    let reader = try AVAssetReader(asset: asset)
+    let output = AVAssetReaderTrackOutput(track: try await asset.loadTracks(withMediaType: .video)[0],
+        outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange])
+    reader.add(output); reader.startReading()
+    let live = ShotAnalysis.Live()
+    while let sample = output.copyNextSampleBuffer() {
+        if let buffer = sample.imageBuffer { live.add(buffer, at: sample.presentationTimeStamp.seconds) }
+    }
+    live.write(package: f.package, duration: try await asset.load(.duration).seconds)
+    guard let recorded = ShotAnalysis.cachedSignals(package: f.package) else { throw MCPTestFailure(description: "no recording-time cache written") }
+    try FileManager.default.removeItem(at: f.package.appendingPathComponent("shots-cache.json"))
+    let decoded = try await ShotAnalysis.signals(package: f.package, progress: { _ in })
+    let a = storyboard(signals: recorded, events: f.events.events), b = storyboard(signals: decoded, events: f.events.events)
+    print("shots-live ticks \(recorded.count)/\(decoded.count) shots \(a.shots.count)/\(b.shots.count) boundaryF1 \(String(format: "%.2f", boundaryScore(detected: a.shots.dropFirst().map(\.from), truth: b.shots.dropFirst().map(\.from)).f1))")
+    guard recorded.count == decoded.count, abs(a.shots.count - b.shots.count) <= max(1, b.shots.count / 10) else { throw MCPTestFailure(description: "recording-time signals disagree with decode") }
 }
