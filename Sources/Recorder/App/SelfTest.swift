@@ -428,6 +428,7 @@ enum SelfTest {
         "graphics-png": { args in try await checkGraphicsPNG(args) },
         "graphics-ui": { args in try await checkGraphicsUI(args) },
         "markers": { args in try await checkMarkersUI(args) },
+        "transcript-edit": { args in try await checkTranscriptEdit(args) },
         "export-gif": { args in try await ExporterSelfTest.runExportGIFSelfTest(args) },
         "export-perf": { args in try await PerfSelfTest.runExportPerf(args) },
         "export-native": { _ in try await ExportSheetSelfTest.checkNativeHandoff() },
@@ -7610,4 +7611,40 @@ final class MainStallMonitor: @unchecked Sendable {
         throw MCPTestFailure(description: "menu item")
     }
     print("markers: add ×2, next/previous jump, remove at playhead, undo, menu")
+}
+
+/// T-931 (headless, temp copy): cutting words and removing fillers go through `EditorModel.apply([cutWords])` as one undo
+/// step each and shorten the edit; the TranscriptEditor renders offscreen to <out>/transcript.png.
+@MainActor private func checkTranscriptEdit(_ args: [String]) async throws {
+    guard args.count >= 2 else { throw MCPTestFailure(description: "usage: transcript-edit <package> <out-dir>") }
+    let fm = FileManager.default, out = URL(fileURLWithPath: args[1])
+    try fm.createDirectory(at: out, withIntermediateDirectories: true)
+    let copy = fm.temporaryDirectory.appendingPathComponent("transcript-\(UUID().uuidString).recorder")
+    try fm.copyItem(at: URL(fileURLWithPath: args[0]), to: copy)
+    defer { try? fm.removeItem(at: copy) }
+    var project = try Project.load(from: copy.appendingPathComponent("project.json"))
+    project.source.hasMic = true
+    try project.save(to: copy.appendingPathComponent("project.json"))
+    let text = "So um here is Golden Island we sketch the coast uh then the graph editor turns it into terrain".split(separator: " ")
+    let words = text.enumerated().map { Word(text: String($1), start: 1 + Double($0) * 0.5, end: 1.35 + Double($0) * 0.5) }
+    try JSONEncoder().encode(words).write(to: copy.appendingPathComponent("transcript.json"))
+    let model = try loadEditorModel(package: copy)
+    guard model.transcript?.count == words.count else { throw MCPTestFailure(description: "transcript not loaded") }
+    let before = model.project.exportDuration
+    let view = agentTranscript(model.project, words: words)
+    let error = model.apply([.cutWords(transcript: view.transcript, words: ["w3", "w4"], snap: true)], name: "Cut 2 Words")
+    guard error == nil, model.undoStepNames.last == "Cut 2 Words", model.project.exportDuration < before - 0.4 else {   // 1 s of media at the fixture's 2× = 0.5 s
+        throw MCPTestFailure(description: "cut words: \(error ?? "no error") \(before) → \(model.project.exportDuration) \(model.undoStepNames.suffix(2))")
+    }
+    let after = agentTranscript(model.project, words: words)
+    guard !after.words.contains(where: { $0.id == "w3" || $0.id == "w4" }), after.words.filter(\.filler).map(\.id) == ["w1", "w10"] else { throw MCPTestFailure(description: "transcript after cut: \(after.words.map(\.id))") }
+    guard model.apply([.cutWords(transcript: after.transcript, words: after.words.filter(\.filler).map(\.id), snap: true)], name: "Cut 2 Words") == nil,
+          agentTranscript(model.project, words: words).words.filter(\.filler).isEmpty else { throw MCPTestFailure(description: "remove fillers") }
+    model.undo(); model.undo()
+    guard abs(model.project.exportDuration - before) < 1e-6 else { throw MCPTestFailure(description: "undo") }
+    let renderer = ImageRenderer(content: TranscriptEditor(model: model).frame(width: 300).padding(16).background(Theme.bgPanelColor))
+    renderer.scale = 2
+    guard let image = renderer.cgImage, let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else { throw MCPTestFailure(description: "render") }
+    try png.write(to: out.appendingPathComponent("transcript.png"))
+    print(String(format: "transcript-edit: cut 2 words (%.2f → %.2f s), removed 2 fillers, undo ×2 restored", before, model.project.exportDuration))
 }

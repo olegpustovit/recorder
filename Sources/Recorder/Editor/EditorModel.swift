@@ -68,6 +68,17 @@ import RecorderCore
         return id
     }
 
+    /// Applies agent-language ops as one named undo step (EDITING-CORE D4: new discrete human commands use `EditOp`, so
+    /// the human and Claude share validation). Returns the error text instead of throwing so callers can show it.
+    @discardableResult
+    func apply(_ ops: [EditOp], name: String) -> String? {
+        do {
+            let result = try project.applying(ops, context: EditContext(words: transcript ?? []))
+            if result.project != project { edit(name) { $0 = result.project } }
+            return nil
+        } catch { return "\(error)" }
+    }
+
     /// `M` (T-930): adds "Marker N" at the playhead, or removes the marker already there (within 0.1 s); one undo step.
     func toggleMarkerAtPlayhead() {
         let markers = items(project).filter { $0.kind == .marker }
