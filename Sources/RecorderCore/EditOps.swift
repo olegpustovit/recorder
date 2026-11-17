@@ -123,8 +123,9 @@ public struct SetFields: Codable, Equatable, Sendable {
     public var text: String?, color: BlockColor?
     public var position: NormPoint?, size: Double?, scale: Double?, center: NormPoint?, follow: ZoomFollow?, ease: ZoomEase?
     public var kind: Mask.Kind?
-    public init(from: EditTime? = nil, to: EditTime? = nil, mediaStart: Double? = nil, mediaRate: Double? = nil, text: String? = nil, color: BlockColor? = nil,
-                position: NormPoint? = nil, size: Double? = nil, scale: Double? = nil, center: NormPoint? = nil, follow: ZoomFollow? = nil, ease: ZoomEase? = nil, kind: Mask.Kind? = nil) {
+    public init(from: EditTime? = nil, to: EditTime? = nil, text: String? = nil, position: NormPoint? = nil, size: Double? = nil, scale: Double? = nil,
+                center: NormPoint? = nil, follow: ZoomFollow? = nil, ease: ZoomEase? = nil, color: BlockColor? = nil,
+                mediaStart: Double? = nil, mediaRate: Double? = nil, kind: Mask.Kind? = nil) {
         self.from = from; self.to = to; self.mediaStart = mediaStart; self.mediaRate = mediaRate; self.text = text; self.color = color
         self.position = position; self.size = size; self.scale = scale; self.center = center; self.follow = follow; self.ease = ease; self.kind = kind
     }
@@ -134,10 +135,6 @@ public struct SetFields: Codable, Equatable, Sendable {
         let all: [(String, Any?)] = [("from", from), ("to", to), ("mediaStart", mediaStart), ("mediaRate", mediaRate), ("text", text), ("color", color),
                                      ("position", position), ("size", size), ("scale", scale), ("center", center), ("follow", follow), ("ease", ease), ("kind", kind)]
         return all.compactMap { $0.1 == nil ? nil : $0.0 }
-    }
-    /// The `update` this patch means for a non-layer item (`kind` is applied separately).
-    func update(_ id: String) -> EditOp {
-        .update(id: id, from: from, to: to, text: text, position: position, size: size, scale: scale, center: center, follow: follow, ease: ease, color: color)
     }
 }
 
@@ -151,9 +148,9 @@ public enum EditOp: Codable, Equatable, Sendable {
     case captions(maxWords: Int)
     case highlight(from: EditTime, to: EditTime, rect: NormRect, opacity: Double?)
     case marker(at: EditTime, label: String)
-    case update(id: String, from: EditTime?, to: EditTime?, text: String?, position: NormPoint?, size: Double?, scale: Double?, center: NormPoint?, follow: ZoomFollow? = nil, ease: ZoomEase? = nil, color: BlockColor? = nil)
     case remove(id: String)
-    /// Generic patch by id (T-903; T-912 widens it). Layers: from/to (output s), mediaStart (slip), mediaRate (speed), color.
+    /// The one patch op (EDITING-CORE D4): fields per item kind come from `editableFields`. Layers: from/to (output s),
+    /// mediaStart (slip), mediaRate (speed), color.
     case set(id: String, fields: SetFields)
     case style(patch: [String: JSONValue])
     case layer(from: EditTime, to: EditTime?, source: LayerSource, rect: NormRect?)
@@ -177,7 +174,6 @@ public enum EditOp: Codable, Equatable, Sendable {
         case "captions": self = try .captions(maxWords: optional(.maxWords) ?? 4)
         case "highlight": self = try .highlight(from: get(.from), to: get(.to), rect: get(.rect), opacity: optional(.opacity))
         case "marker": self = try .marker(at: get(.at), label: get(.label))
-        case "update": self = try .update(id: get(.id), from: optional(.from), to: optional(.to), text: optional(.text), position: optional(.position), size: optional(.size), scale: optional(.scale), center: optional(.center), follow: optional(.follow), ease: optional(.ease), color: optional(.color))
         case "remove": self = try .remove(id: get(.id))
         case "set": self = try .set(id: get(.id), fields: SetFields(from: decoder))
         case "style": self = try .style(patch: get(.patch))
@@ -212,9 +208,6 @@ public enum EditOp: Codable, Equatable, Sendable {
         case let .captions(maxWords): try put("captions", .op); try put(maxWords, .maxWords)
         case let .highlight(from, to, rect, opacity): try range("highlight", from, to); try put(rect, .rect); try optional(opacity, .opacity)
         case let .marker(at, label): try put("marker", .op); try put(at, .at); try put(label, .label)
-        case let .update(id, from, to, text, position, size, scale, center, follow, ease, color):
-            try put("update", .op); try put(id, .id); try optional(from, .from); try optional(to, .to); try optional(text, .text)
-            try optional(position, .position); try optional(size, .size); try optional(scale, .scale); try optional(center, .center); try optional(follow, .follow); try optional(ease, .ease); try optional(color, .color)
         case let .remove(id): try put("remove", .op); try put(id, .id)
         case let .set(id, fields): try put("set", .op); try put(id, .id); try fields.encode(to: encoder)
         case let .style(patch): try put("style", .op); try put(patch, .patch)
@@ -236,7 +229,7 @@ public enum EditOp: Codable, Equatable, Sendable {
              let .highlight(from, _, _, _), let .layer(from, _, _, _): time = from
         case let .marker(at, _): time = at
         case let .cutPauses(_, _, from, _, _): time = from
-        case let .update(_, from, _, _, _, _, _, _, _, _, _): time = from
+        case let .set(_, fields): time = fields.from
         default: time = nil
         }
         if case .seconds(let value)? = time { return value }
@@ -402,7 +395,7 @@ public extension Project {
         var prepared: [PreparedEdit] = []
         var refTimes: [String: Double] = [:]
         // `set` validates its fields against the item's kind (one table, `editableFields`), then non-layer items run the
-        // `update` path; ids created earlier in the batch skip the table check and get update's own validation (T-912).
+        // patch path below; ids created earlier in the batch skip the table check and get its per-kind validation (T-912).
         let kinds = Dictionary(items(self).map { ($0.id, $0.kind) } + markers.map { ($0.id, .marker) }, uniquingKeysWith: { a, _ in a })
         for (index, op) in ops.enumerated() {
             guard case let .set(id, fields) = op, let kind = kinds[id] else { continue }
@@ -412,9 +405,7 @@ public extension Project {
                                                                                : "\(kind.rawValue) does not take \(bad); valid: \(valid.joined(separator: ", "))")
             }
         }
-        for (index, raw) in ops.enumerated() {
-            let op: EditOp
-            if case let .set(id, fields) = raw, !layers.contains(where: { $0.id == id }) { op = fields.update(id) } else { op = raw }
+        for (index, op) in ops.enumerated() {
             var resolved: [TimeRange] = [], at = 0.0, note: String?, sourceAt: Double?
             var current: Project?
             func prefix() throws -> Project {
@@ -528,7 +519,8 @@ public extension Project {
                 }
                 resolved = baseMap.sourceRanges(forMedia: media)
                 at = resolved.first.flatMap { baseMap.outputTime(atSource: $0.start) } ?? 0
-            case let .update(id, from, to, _, _, _, _, _, _, _, _):
+            case let .set(id, fields) where !layers.contains(where: { $0.id == id }):
+                let (from, to) = (fields.from, fields.to)
                 let anchored = from?.isAnchor == true || to?.isAnchor == true
                 let block = try block(id, current: anchored)
                 guard let block else { throw EditError.invalidOp(index: index, reason: "unknown block \(id)") }
@@ -545,12 +537,12 @@ public extension Project {
                     if anchored {
                         let start = try from.map { try coordinate($0).source } ?? block.1
                         let end = try to.map { try coordinate($0).source } ?? block.2
-                        guard end - start >= 0.5 else { throw EditError.invalidOp(index: index, reason: "updated block needs at least 0.5 source seconds") }
+                        guard end - start >= 0.5 else { throw EditError.invalidOp(index: index, reason: "block needs at least 0.5 source seconds") }
                         resolved = [TimeRange(start: start, end: end)]
                         break
                     }
                     let mapped = try ranges(.seconds(at), to ?? .seconds(baseMap.outputTime(atSource: block.2) ?? duration))
-                    guard let first = mapped.first, let last = mapped.last else { throw EditError.invalidOp(index: index, reason: "updated range contains only gaps") }
+                    guard let first = mapped.first, let last = mapped.last else { throw EditError.invalidOp(index: index, reason: "range contains only gaps") }
                     resolved = [TimeRange(start: from == nil ? block.1 : first.start, end: to == nil ? block.2 : last.end)]
                 }
             case let .marker(time, _):
@@ -588,7 +580,7 @@ public extension Project {
             }
             let merged = mergedEditRanges(resolved)
             if let name = context.refs.first(where: { $0.value == index })?.key, let start = merged.first?.start { refTimes[name] = start }
-            prepared.append((raw, merged, at, note, sourceAt))
+            prepared.append((op, merged, at, note, sourceAt))
         }
         return try applyingPrepared(prepared, context: context)
     }
@@ -616,10 +608,7 @@ public extension Project {
                 let span = item.ranges.first.map { TimeRange(start: $0.start, end: item.ranges.last!.end) }
                 var summary: String
                 var note = item.note, skipped = false
-                var maskKind: Mask.Kind?
-                let op: EditOp
-                if case let .set(id, fields) = item.op, !result.layers.contains(where: { $0.id == id }) { op = fields.update(id); maskKind = fields.kind } else { op = item.op }
-                switch op {
+                switch item.op {
                 case .cut, .cutPauses, .cutWords:
                     cuts.append((index, item.ranges))
                     let kind: String
@@ -706,19 +695,21 @@ public extension Project {
                     result.markers.append(Marker(time: span?.start ?? baseMap.sourceTime(atOutput: item.at), label: label))
                     result.markers.sort { $0.time < $1.time }
                     summary = "Marker \(stamp(item.at))"
-                case let .update(id, from, to, text, position, size, scale, center, follow, ease, color):
+                case let .set(id, fields) where !result.layers.contains(where: { $0.id == id }):
+                    let (from, to, text, position, size, scale, center, follow, ease, color) =
+                        (fields.from, fields.to, fields.text, fields.position, fields.size, fields.scale, fields.center, fields.follow, fields.ease, fields.color)
                     try point(position, index: index); try point(center, index: index); try positive(size, index: index); try positive(scale, index: index)
                     if let i = result.markers.firstIndex(where: { $0.id == id }) {
                         guard to == nil, position == nil, size == nil, scale == nil, center == nil, follow == nil, ease == nil, color == nil else {
-                            throw EditError.invalidOp(index: index, reason: "marker update supports from and text (label) only")
+                            throw EditError.invalidOp(index: index, reason: "marker takes from and text (label)")
                         }
                         if let span { result.markers[i].time = span.start }
                         if let text { result.markers[i].label = text }
                         result.markers.sort { $0.time < $1.time }
-                        summary = "Update marker \(stamp(item.at))"
+                        summary = "Set marker \(stamp(item.at))"
                         break
                     }
-                    if let span, span.end - span.start < 0.5 { throw EditError.invalidOp(index: index, reason: "updated block needs at least 0.5 source seconds") }
+                    if let span, span.end - span.start < 0.5 { throw EditError.invalidOp(index: index, reason: "block needs at least 0.5 source seconds") }
                     if let i = result.zooms.firstIndex(where: { $0.id == id }) {
                         guard text == nil, position == nil, size == nil, scale == nil || scale! >= 1 else { throw EditError.invalidOp(index: index, reason: "zoom supports scale/center/follow/ease and times") }
                         if follow == .cursor, center != nil { throw EditError.invalidOp(index: index, reason: "follow:\"cursor\" takes no center; omit it or use follow:\"fixed\"") }
@@ -740,39 +731,15 @@ public extension Project {
                         if let color { result.texts[i].color = color }
                         result.texts.sort { $0.start < $1.start }
                     } else if let i = result.masks.firstIndex(where: { $0.id == id }) {
-                        guard text == nil, position == nil, size == nil, scale == nil, center == nil, follow == nil, ease == nil else { throw EditError.invalidOp(index: index, reason: "mask update supports times only") }
+                        guard text == nil, position == nil, size == nil, scale == nil, center == nil, follow == nil, ease == nil else { throw EditError.invalidOp(index: index, reason: "mask takes from, to, color, kind") }
                         if let color { result.masks[i].color = color }
+                        if let kind = fields.kind { result.masks[i].kind = kind }   // mask / highlight / blur
                         if let span { result.masks[i].start = span.start; result.masks[i].end = span.end }
                         result.masks.sort { $0.start < $1.start }
-                    } else if let i = result.layers.firstIndex(where: { $0.id == id }) {
-                        guard text == nil, position == nil, size == nil, scale == nil, center == nil, follow == nil, ease == nil else {
-                            throw EditError.invalidOp(index: index, reason: "layer update supports from/to and color")
-                        }
-                        if let color { result.layers[i].color = color }
-                        if let span, let layerID = UUID(uuidString: id) {
-                            let map = TimeMap(result.clips)
-                            var want = (map.outputTime(atSource: span.start) ?? 0, map.outputTime(atSource: span.end) ?? map.outputDuration)
-                            let old = result.layers[i]
-                            if from != nil, to == nil {
-                                // `from` alone moves the layer and keeps its length, like dragging it.
-                                want.1 = want.0 + old.end - old.start
-                                result.moveLayer(layerID, toOutput: want.0)
-                            } else {
-                                // shortcut: edges move one at a time, so a move a neighbour or the media length clamps is an error, not a slide.
-                                let later = want.0 >= (map.outputTime(atSource: old.start) ?? 0)
-                                for edge in later ? [Edge.trailing, .leading] : [.leading, .trailing] {
-                                    result.resizeLayer(layerID, edge: edge, toOutput: edge == .leading ? want.0 : want.1)
-                                }
-                            }
-                            let now = result.layers.first { $0.id == id }.flatMap { layer in map.outputTime(atSource: layer.start).map { ($0, $0 + layer.end - layer.start) } }
-                            guard let now, abs(now.0 - want.0) < 1e-6, abs(now.1 - want.1) < 1e-6 else {
-                                throw EditError.invalidOp(index: index, reason: String(format: "layer cannot span %.2f–%.2f s: a neighbour, the media length or the 0.5 s minimum blocks it", want.0, want.1))
-                            }
-                        }
                     } else if editBlocks(result).contains(where: { $0.0 == id }) {
-                        throw EditError.invalidOp(index: index, reason: "update does not support block \(id) (timeline.get editable:false); remove it with edit.remove or change it in Recorder")
+                        throw EditError.invalidOp(index: index, reason: "set does not support block \(id) (timeline.get editable:false); remove it with edit.remove or change it in Recorder")
                     } else { throw EditError.invalidOp(index: index, reason: "unknown block \(id)") }
-                    summary = "Update block \(stamp(item.at))"
+                    summary = "Set block \(stamp(item.at))"
                 case let .set(id, fields):
                     guard fields.text == nil else {
                         throw EditError.invalidOp(index: index, reason: "layer set supports \(SetFields.layerFields.joined(separator: ", "))")
@@ -889,12 +856,6 @@ public extension Project {
                     } catch let error as EditError { throw error }
                     catch { throw EditError.invalidOp(index: index, reason: "invalid style patch: \(error.localizedDescription)") }
                     summary = "Update styling"
-                }
-                if let maskKind {   // `set {kind}` on a mask: mask / highlight / blur
-                    guard case let .set(id, _) = item.op, let i = result.masks.firstIndex(where: { $0.id == id }) else {
-                        throw EditError.invalidOp(index: index, reason: "kind applies to mask blocks only")
-                    }
-                    result.masks[i].kind = maskKind
                 }
                 if let error = result.checkInvariants() { throw EditError.invariant("op \(index): \(error)") }
                 return EditChange(op: index, summary: summary, at: item.at, delta: TimeMap(result.clips).outputDuration - before, note: note, skipped: skipped, sourceAt: item.sourceAt)

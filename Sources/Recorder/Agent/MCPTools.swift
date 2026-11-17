@@ -53,7 +53,6 @@ enum MCPTools {
             op("captions", ["maxWords": ["type": "integer", "minimum": 1, "maximum": 100]], []),
             op("highlight", ["from": number, "to": number, "rect": rect, "opacity": number], ["from", "to", "rect"]),
             op("marker", ["at": number, "label": string], ["at", "label"]),
-            op("update", ["id": string, "from": number, "to": number, "text": string, "position": point, "size": textSize, "scale": number, "center": center, "follow": follow, "ease": ease, "color": color], ["id"]),
             op("set", ["id": string, "from": number, "to": number,
                 "mediaStart": ["type": "number", "minimum": 0, "description": "Layers: media in-point (slip; position and length stay)."],
                 "mediaRate": ["type": "number", "minimum": 0.25, "maximum": 16, "description": "Layers: playback rate; the output length follows (2 = twice as fast, half as long)."],
@@ -759,7 +758,6 @@ enum MCPTools {
                 switch op {
                 case .captions: kind = "captions"
                 case .highlight: kind = "highlight"
-                case .update: kind = "update"
                 case .set: kind = "set"
                 case .remove: kind = "remove"
                 case .style: kind = "style"

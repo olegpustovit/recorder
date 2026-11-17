@@ -19,11 +19,11 @@ public struct Item: Codable, Equatable, Sendable {
     public var spine: TimeRange?       // stored range for spine-anchored items
     public var media: Media?
     public var anchor: Anchor
-    public var editable: [String]      // fields `set`/`update` accept; empty = remove-only
+    public var editable: [String]      // fields `set` accepts; empty = remove-only
     public var label: String
 }
 
-/// Fields each kind accepts through `set`/`update` (the one table the agent schema and timeline.get read).
+/// Fields each kind accepts through `set` (the one table the agent schema and timeline.get read).
 public func editableFields(_ kind: Item.Kind) -> [String] {
     switch kind {
     case .zoom: ["from", "to", "scale", "center", "follow", "ease", "color"]

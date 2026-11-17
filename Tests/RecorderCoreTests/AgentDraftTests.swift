@@ -21,7 +21,7 @@ import Testing
         let ops: [EditOp] = [.marker(at: 8, label: "A"), .cut(from: 1, to: 2), .text(from: 3, to: 4, style: .title, text: "Title", position: nil, size: nil),
             .cutPauses(minDuration: 1, keepTail: 0.1, from: nil, to: nil), .speed(from: 4, to: 6, speed: 2), .zoom(from: 6, to: 8, scale: 2, center: nil),
             .cutWords(transcript: "t", words: ["w0"]), .captions(maxWords: 4), .style(patch: [:]), .remove(id: "x"),
-            .update(id: "x", from: nil, to: nil, text: nil, position: nil, size: nil, scale: nil, center: nil),
+            .set(id: "x", fields: SetFields()),
             .highlight(from: 1, to: 2, rect: NormRect(), opacity: nil)]
         let rows = ops.enumerated().map { index, op in
             AgentDraftRow(call: index / 3, index: index % 3, op: op,

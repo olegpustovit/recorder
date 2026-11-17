@@ -285,7 +285,6 @@ extension EnvironmentValues {
         case .captions: "Captions"
         case .highlight: "Highlight"
         case .marker: "Marker"
-        case .update: "Update block"
         case .set: "Set block"
         case .remove: "Remove block"
         case .style: "Styling"

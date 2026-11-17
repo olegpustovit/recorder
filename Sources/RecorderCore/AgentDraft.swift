@@ -10,7 +10,7 @@ public enum AgentChangeKind: String, CaseIterable, Sendable {
         case .zoom: self = .zoom
         case .text: self = .text
         case .marker: self = .markers
-        case .update, .set, .remove, .style, .captions, .highlight, .layer, .reframe: self = .other
+        case .set, .remove, .style, .captions, .highlight, .layer, .reframe: self = .other
         }
     }
 }

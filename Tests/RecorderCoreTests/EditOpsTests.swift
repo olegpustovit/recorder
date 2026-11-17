@@ -11,7 +11,7 @@ import Testing
         let ok = try base.applying([.zoom(from: 1, to: 3, scale: 2, center: NormPoint(x: 0, y: 1))], context: EditContext())
         let id = try #require(ok.project.zooms.first?.id)
         #expect(throws: EditError.self) {
-            try ok.project.applying([.update(id: id, from: nil, to: nil, text: nil, position: nil, size: nil, scale: nil, center: NormPoint(x: 2, y: 0.5))], context: EditContext())
+            try ok.project.applying([.set(id: id, fields: SetFields(center: NormPoint(x: 2, y: 0.5)))], context: EditContext())
         }
     }
 
@@ -25,16 +25,16 @@ import Testing
         #expect(implicit.zooms[0].mode == .manual && implicit.zooms[0].ease == nil)
         #expect(throws: EditError.self) { try base.applying([.zoom(from: 1, to: 3, scale: 2, center: NormPoint(), follow: .cursor)], context: EditContext()) }
         let id = cursor.zooms[0].id
-        let updated = try cursor.applying([.update(id: id, from: nil, to: nil, text: nil, position: nil, size: nil, scale: nil, center: nil, follow: .fixed, ease: .slow)], context: EditContext()).project
+        let updated = try cursor.applying([.set(id: id, fields: SetFields(follow: .fixed, ease: .slow))], context: EditContext()).project
         #expect(updated.zooms[0].mode == .manual && updated.zooms[0].ease == .slow)
-        let back = try updated.applying([.update(id: id, from: nil, to: nil, text: nil, position: nil, size: nil, scale: nil, center: nil, follow: .cursor)], context: EditContext()).project
+        let back = try updated.applying([.set(id: id, fields: SetFields(follow: .cursor))], context: EditContext()).project
         #expect(back.zooms[0].mode == .auto && back.zooms[0].ease == .slow)
-        #expect(throws: EditError.self) { try cursor.applying([.update(id: id, from: nil, to: nil, text: nil, position: nil, size: nil, scale: nil, center: NormPoint(), follow: .cursor)], context: EditContext()) }
+        #expect(throws: EditError.self) { try cursor.applying([.set(id: id, fields: SetFields(center: NormPoint(), follow: .cursor))], context: EditContext()) }
         // follow/ease belong to zooms only.
         let withText = try base.applying([.text(from: 1, to: 3, style: .label, text: "x", position: nil, size: nil)], context: EditContext()).project
-        #expect(throws: EditError.self) { try withText.applying([.update(id: withText.texts[0].id, from: nil, to: nil, text: nil, position: nil, size: nil, scale: nil, center: nil, ease: .rapid)], context: EditContext()) }
+        #expect(throws: EditError.self) { try withText.applying([.set(id: withText.texts[0].id, fields: SetFields(ease: .rapid))], context: EditContext()) }
         // JSON is flat and rejects unknown names.
-        let json = #"[{"op":"zoom","from":1,"to":3,"scale":2,"follow":"cursor","ease":"medium"},{"op":"update","id":"i","follow":"fixed","ease":"focused"}]"#
+        let json = #"[{"op":"zoom","from":1,"to":3,"scale":2,"follow":"cursor","ease":"medium"},{"op":"set","id":"i","follow":"fixed","ease":"focused"}]"#
         let ops = try JSONDecoder().decode([EditOp].self, from: Data(json.utf8))
         #expect(try JSONDecoder().decode([EditOp].self, from: JSONEncoder().encode(ops)) == ops)
         #expect(throws: DecodingError.self) { try JSONDecoder().decode(EditOp.self, from: Data(#"{"op":"zoom","from":1,"to":3,"scale":2,"ease":"bouncy"}"#.utf8)) }
@@ -51,15 +51,15 @@ import Testing
             #expect(throws: EditError.self) { try base.applying([.text(from: 1, to: 3, style: .title, text: "x", position: nil, size: size)], context: EditContext()) }
         }
         let id = made.texts[0].id
-        let updated = try made.applying([.update(id: id, from: nil, to: nil, text: nil, position: nil, size: 16, scale: nil, center: nil, color: .green)], context: EditContext()).project
+        let updated = try made.applying([.set(id: id, fields: SetFields(size: 16, color: .green))], context: EditContext()).project
         #expect(updated.texts[0].color == .green && updated.texts[0].size == 16)
-        #expect(throws: EditError.self) { try made.applying([.update(id: id, from: nil, to: nil, text: nil, position: nil, size: 500, scale: nil, center: nil)], context: EditContext()) }
+        #expect(throws: EditError.self) { try made.applying([.set(id: id, fields: SetFields(size: 500))], context: EditContext()) }
         // Colour tags also work on zooms and are rejected on markers.
         let zoomed = try base.applying([.zoom(from: 1, to: 3, scale: 2, center: nil), .marker(at: 6, label: "m")], context: EditContext()).project
-        let tagged = try zoomed.applying([.update(id: zoomed.zooms[0].id, from: nil, to: nil, text: nil, position: nil, size: nil, scale: nil, center: nil, color: .red)], context: EditContext()).project
+        let tagged = try zoomed.applying([.set(id: zoomed.zooms[0].id, fields: SetFields(color: .red))], context: EditContext()).project
         #expect(tagged.zooms[0].color == .red)
-        #expect(throws: EditError.self) { try zoomed.applying([.update(id: zoomed.markers[0].id, from: nil, to: nil, text: "n", position: nil, size: nil, scale: nil, center: nil, color: .red)], context: EditContext()) }
-        let json = #"[{"op":"text","from":1,"to":3,"style":"label","text":"a","color":"blue","size":30},{"op":"update","id":"i","color":"gray"}]"#
+        #expect(throws: EditError.self) { try zoomed.applying([.set(id: zoomed.markers[0].id, fields: SetFields(text: "n", color: .red))], context: EditContext()) }
+        let json = #"[{"op":"text","from":1,"to":3,"style":"label","text":"a","color":"blue","size":30},{"op":"set","id":"i","color":"gray"}]"#
         let ops = try JSONDecoder().decode([EditOp].self, from: Data(json.utf8))
         #expect(try JSONDecoder().decode([EditOp].self, from: JSONEncoder().encode(ops)) == ops)
         #expect(throws: DecodingError.self) { try JSONDecoder().decode(EditOp.self, from: Data(##"{"op":"text","from":1,"to":3,"style":"label","text":"a","color":"#ff0000"}"##.utf8)) }
@@ -173,7 +173,7 @@ import Testing
         #expect(agentTimeline(result.project).markers.map(\.at) == [6])
         let id = try #require(result.project.markers.first { $0.label == "Start" }?.id)
         let updated = try result.project.applying([
-            .update(id: id, from: 10, to: nil, text: "Updated", position: nil, size: nil, scale: nil, center: nil)
+            .set(id: id, fields: SetFields(from: 10, text: "Updated"))
         ], context: EditContext())
         #expect(updated.project.markers.first { $0.id == id }?.time == 12)
         #expect(agentTimeline(updated.project).markers.first?.label == "Updated")
@@ -190,7 +190,7 @@ import Testing
     }
 
     @Test func flatJSONRoundTrip() throws {
-        let json = #"[{"op":"cut","from":2,"to":4},{"op":"cutPauses"},{"op":"cutWords","transcript":"t-1","words":["w0"]},{"op":"speed","from":0,"to":1,"speed":2},{"op":"zoom","from":1,"to":3,"scale":2},{"op":"text","from":1,"to":3,"style":"title","text":"hello"},{"op":"captions"},{"op":"highlight","from":1,"to":3,"rect":{"x":0.1,"y":0.2,"w":0.3,"h":0.4}},{"op":"marker","at":3,"label":"chapter"},{"op":"update","id":"id","from":1,"text":"new"},{"op":"remove","id":"id"},{"op":"style","patch":{"frame":{"padding":0.06}}}]"#
+        let json = #"[{"op":"cut","from":2,"to":4},{"op":"cutPauses"},{"op":"cutWords","transcript":"t-1","words":["w0"]},{"op":"speed","from":0,"to":1,"speed":2},{"op":"zoom","from":1,"to":3,"scale":2},{"op":"text","from":1,"to":3,"style":"title","text":"hello"},{"op":"captions"},{"op":"highlight","from":1,"to":3,"rect":{"x":0.1,"y":0.2,"w":0.3,"h":0.4}},{"op":"marker","at":3,"label":"chapter"},{"op":"set","id":"id","from":1,"text":"new"},{"op":"remove","id":"id"},{"op":"style","patch":{"frame":{"padding":0.06}}}]"#
         let ops = try JSONDecoder().decode([EditOp].self, from: Data(json.utf8))
         #expect(ops.count == 12)
         #expect(try JSONDecoder().decode([EditOp].self, from: JSONEncoder().encode(ops)) == ops)
@@ -294,7 +294,7 @@ import Testing
         let block = TextBlock(start: 1, end: 3, text: "old")
         base.texts = [block]
         let result = try base.applying([
-            .update(id: block.id, from: 2, to: 4, text: "new", position: NormPoint(x: 0.2, y: 0.3), size: 42, scale: nil, center: nil),
+            .set(id: block.id, fields: SetFields(from: 2, to: 4, text: "new", position: NormPoint(x: 0.2, y: 0.3), size: 42)),
             .highlight(from: 5, to: 7, rect: NormRect(x: 0.1, y: 0.2, w: 0.3, h: 0.4), opacity: 0.6),
             .captions(maxWords: 4)
         ], context: EditContext(words: [Word(text: "hello", start: 10, end: 11)]))
@@ -421,7 +421,7 @@ import Testing
         let base = project()
         let create = EditOp.marker(at: 2, label: "Created")
         let id = try base.applying([create], context: EditContext(operationSeeds: ["created"])).project.markers[0].id
-        let ops: [EditOp] = [create, .update(id: id, from: 4, to: nil, text: "Updated", position: nil, size: nil, scale: nil, center: nil),
+        let ops: [EditOp] = [create, .set(id: id, fields: SetFields(from: 4, text: "Updated")),
             .marker(at: .marker(id, offset: 1), label: "Relative"), .remove(id: id)]
         let context = EditContext(operationSeeds: ["created", "update", "relative", "remove"])
         let result = try base.applying(ops, context: context)
@@ -553,17 +553,17 @@ import Testing
         }
         // Layer from/to use both ends, in either direction.
         let id = layer.uuidString
-        let moved = try base.applying([.update(id: id, from: 5, to: 9, text: nil, position: nil, size: nil, scale: nil, center: nil)], context: EditContext()).project
+        let moved = try base.applying([.set(id: id, fields: SetFields(from: 5, to: 9))], context: EditContext()).project
         #expect(try span(moved) == (5, 9))
-        let earlier = try moved.applying([.update(id: id, from: 1, to: 3, text: nil, position: nil, size: nil, scale: nil, center: nil)], context: EditContext()).project
+        let earlier = try moved.applying([.set(id: id, fields: SetFields(from: 1, to: 3))], context: EditContext()).project
         #expect(try span(earlier) == (1, 3))
-        let slid = try base.applying([.update(id: id, from: 5, to: nil, text: nil, position: nil, size: nil, scale: nil, center: nil)], context: EditContext()).project
+        let slid = try base.applying([.set(id: id, fields: SetFields(from: 5))], context: EditContext()).project
         #expect(try span(slid) == (5, 9))   // from alone moves, keeping the length
-        let longer = try base.applying([.update(id: id, from: nil, to: 8, text: nil, position: nil, size: nil, scale: nil, center: nil)], context: EditContext()).project
+        let longer = try base.applying([.set(id: id, fields: SetFields(to: 8))], context: EditContext()).project
         #expect(try span(longer) == (2, 8))
         // Lanes without update fields say so instead of "unknown block"; remove works on every lane.
-        do { _ = try base.applying([.update(id: "win", from: 1, to: nil, text: nil, position: nil, size: nil, scale: nil, center: nil)], context: EditContext()); Issue.record("window update accepted") }
-        catch { #expect("\(error)".contains("editable:false")) }
+        do { _ = try base.applying([.set(id: "win", fields: SetFields(from: 1))], context: EditContext()); Issue.record("window update accepted") }
+        catch { #expect("\(error)".contains("no settable fields")) }
         let removed = try base.applying([.remove(id: id), .remove(id: "win"), .remove(id: "lay"), .remove(id: base.audioClips[0].id)], context: EditContext()).project
         #expect(removed.layers.isEmpty && removed.audioClips.isEmpty && removed.windowShots.isEmpty && removed.layouts.isEmpty && removed.clips == base.clips)
         #expect(throws: EditError.self) { try base.applying([.remove(id: "nope")], context: EditContext()) }

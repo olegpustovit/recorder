@@ -44,7 +44,7 @@ import Testing
             case 1: return .set(id: layer.id, fields: SetFields(mediaStart: rng.range(0, 3)))
             default: return .set(id: layer.id, fields: SetFields(from: t(a), to: t(b + 1)))
             }
-        case 9: return ids.isEmpty ? .zoom(from: t(a), to: t(b), scale: 2, center: nil) : .update(id: rng.pick(ids), from: t(a), to: t(b), text: nil, position: nil, size: nil, scale: nil, center: nil)
+        case 9: return ids.isEmpty ? .zoom(from: t(a), to: t(b), scale: 2, center: nil) : .set(id: rng.pick(ids), fields: SetFields(from: t(a), to: t(b)))
         default: return .cutPauses(minDuration: 0.6, keepTail: 0.12, from: nil, to: nil, snap: true)
         }
     }

@@ -4737,7 +4737,7 @@ private final class MCPTestClient {
     model.undo()
     var dependent = try proposal([ops[2]], base: base)
     let textID = try dependent.project(context: EditContext()).texts[0].id
-    _ = try dependent.append([.update(id: textID, from: nil, to: nil, text: "Updated", position: nil, size: nil, scale: nil, center: nil)], context: EditContext())
+    _ = try dependent.append([.set(id: textID, fields: SetFields(text: "Updated"))], context: EditContext())
     session.draft = dependent; _ = try await tool("submit")
     try server.include([0, 0], in: session, included: false)
     guard model.project == base, session.draft?.skipped[[1, 0]] != nil else { throw MCPTestFailure(description: "Dependent update was not skipped") }
@@ -5136,7 +5136,7 @@ private final class MCPTestClient {
     guard let textID = (timeline["blocks"] as? [[String: Any]])?.first(where: { $0["lane"] as? String == "text" })?["id"] as? String,
           timeline["revision"] as? String == first["revision"] as? String else { throw MCPTestFailure(description: "Draft timeline/revision") }
     let second = try await tool("edit", ["action": "apply", "ifRevision": first["revision"]!, "ops": [
-        ["op": "update", "id": textID, "text": "Revised", "size": 44], ["op": "cut", "from": 1.8, "to": 2.1]]])
+        ["op": "set", "id": textID, "text": "Revised", "size": 44], ["op": "cut", "from": 1.8, "to": 2.1]]])
     let third = try await tool("edit", ["action": "apply", "ifRevision": second["revision"]!, "ops": [
         ["op": "zoom", "from": 0.15, "to": 0.85, "scale": 1.8, "center": ["x": 0.6, "y": 0.4]]]])
     guard let draft = session.draft else { throw MCPTestFailure(description: "Draft missing") }
@@ -7045,7 +7045,7 @@ private func runTimelineHeaderSelfTest() async throws {
         else if call == 2 { try await apply(zoom) }
         else {
             guard let textID = model.project.texts.first?.id else { throw MCPTestFailure(description: "Watching text missing") }
-            try await apply([["op": "update", "id": textID, "text": "Three live calls"],
+            try await apply([["op": "set", "id": textID, "text": "Three live calls"],
                 ["op": "highlight", "from": 0.1, "to": 1.2, "rect": ["x": 0.05, "y": 0.05, "w": 0.4, "h": 0.4], "opacity": 0.65]])
         }
         guard let draft = owner.draft, draft.calls.count == call, !draft.submitted,

@@ -14,7 +14,7 @@ public struct AgentTimeline: Codable, Equatable, Sendable {
         public var from: Double
         public var to: Double
         public var label: String
-        /// false: `edit.update` cannot change this block (`edit.remove` still can).
+        /// false: `set` cannot change this block (`edit.remove` still can).
         public var editable = true
         public var reason: String? = nil
     }
@@ -48,7 +48,7 @@ public func agentTimeline(_ project: Project, from: Double? = nil, to: Double? =
             guard included(item.out) else { continue }
             let editable = !item.editable.isEmpty
             blocks.append(.init(id: item.id, lane: item.kind.rawValue, from: agentTime(item.out.start), to: agentTime(item.out.end), label: item.label, editable: editable,
-                                reason: editable ? nil : "\(item.kind.rawValue) blocks have no edit.update fields; remove with edit.remove or change them in Recorder"))
+                                reason: editable ? nil : "\(item.kind.rawValue) blocks have no set fields; remove with edit.remove or change them in Recorder"))
         }
     }
     return AgentTimeline(duration: agentTime(project.exportDuration), clips: clips,

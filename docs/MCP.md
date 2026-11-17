@@ -173,9 +173,8 @@ Zoom centers are normalized0–1 in the source frame, with the origin at the top
 {"op":"captions","maxWords":4}                               // replaces Caption-style blocks from the transcript
 {"op":"highlight","from":20,"to":24,"rect":{"x":0.5,"y":0.3,"w":0.3,"h":0.2},"opacity":0.6}
 {"op":"marker","at":31,"label":"Recording"}
-{"op":"update","id":"…","from":2,"to":6,"text":"…","position":{…},"size":44,"scale":1.8,"center":{…}}
 {"op":"remove","id":"…"}
-{"op":"set","id":"<layer>","to":30,"mediaStart":21.05,"mediaRate":2}   // generic patch by id (T-912); each timeline.get item lists the fields it takes (zoom: from,to,scale,center,follow,ease,color · text: from,to,text,position,size,color · mask: from,to,color,kind · layer: from,to,mediaStart,mediaRate,color · marker: from,text); a field the item doesn't take is INVALID_OP naming the valid ones. Layers: from/to also past the clips' end, mediaStart = slip, mediaRate = speed (length follows). `update` is the older name for the same patch
+{"op":"set","id":"<layer>","to":30,"mediaStart":21.05,"mediaRate":2}   // generic patch by id (T-912); each timeline.get item lists the fields it takes (zoom: from,to,scale,center,follow,ease,color · text: from,to,text,position,size,color · mask: from,to,color,kind · layer: from,to,mediaStart,mediaRate,color · marker: from,text); a field the item doesn't take is INVALID_OP naming the valid ones. Layers: from/to also past the clips' end, mediaStart = slip, mediaRate = speed (length follows). `set` is the only patch op (`update` was removed 2026-11-17)
 {"op":"reframe","aspect":"9:16","mode":"perShot","focus":{"s12":{"x":0.7,"y":0.4}}}   // focus (optional): re-aim those shots; the result carries reframe:{keysBefore,keysAfter,changed,shots}   // "4:5"|"1:1"|"9:16"|"16:9"; sets output.aspect + time-varying crop per shot (needs analyze.shots; error "run analyze.shots first" otherwise). perShot holds the window when the next shot's is within 3 % and shows as much focus, eases over 0.3 s at non-cut shot boundaries, and only steps at `boundary:"cut"`. A shot with no usable focus (a full-screen view swap that then holds) aims at the next shot with one, within 3 s
 {"op":"style","patch":{"background":{"kind":"color","color":"#101010"},"frame":{"padding":0.06}}}   // merge into Preset
 ```
@@ -233,10 +232,10 @@ Shot anchors resolve through `EditContext.shotTime(id, isEnd) -> source seconds`
 storyboard; before analyze.shots ran they return `INVALID_OP: unknown anchor`.
 
 **Every block is addressable.** `edit.remove` removes any block `timeline.get` emits (zoom, text, mask, layout, camera,
-keys, window, layer, audio) or marker, only that block (linked clips and audio stay). `edit.update` covers zoom, text,
+keys, window, layer, audio) or marker, only that block (linked clips and audio stay). `set` covers zoom, text,
 mask, markers and layers (`from`/`to` move both ends of a layer on the output clock, either direction, and fail with the
-reachable limit when a neighbour, the media length or 0.5 s blocks it; `color`). Blocks `update` cannot change are
-emitted with `editable:false` and a `reason`, and an `update` on one says so instead of "unknown block".
+reachable limit when a neighbour, the media length or 0.5 s blocks it; `color`). Blocks `set` cannot change are
+emitted with `editable:false` and a `reason`, and a `set` on one says so instead of "unknown block".
 
 ---
 
