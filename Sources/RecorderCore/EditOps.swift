@@ -116,6 +116,17 @@ public enum LayerSource: Equatable, Sendable {
     case asset(String), path(String), recording(String)
 }
 
+/// Fields of the generic `set` op (EDITING-CORE D4): every field is optional; which ones an item accepts comes from its kind.
+public struct SetFields: Codable, Equatable, Sendable {
+    public var from: EditTime?, to: EditTime?
+    public var mediaStart: Double?, mediaRate: Double?
+    public var text: String?, color: BlockColor?
+    public init(from: EditTime? = nil, to: EditTime? = nil, mediaStart: Double? = nil, mediaRate: Double? = nil, text: String? = nil, color: BlockColor? = nil) {
+        self.from = from; self.to = to; self.mediaStart = mediaStart; self.mediaRate = mediaRate; self.text = text; self.color = color
+    }
+    public static let layerFields = ["from", "to", "mediaStart", "mediaRate", "color"]
+}
+
 public enum EditOp: Codable, Equatable, Sendable {
     case cut(from: EditTime, to: EditTime, snap: Bool = false)
     case cutPauses(minDuration: Double, keepTail: Double, from: EditTime?, to: EditTime?, snap: Bool = true)
@@ -128,6 +139,8 @@ public enum EditOp: Codable, Equatable, Sendable {
     case marker(at: EditTime, label: String)
     case update(id: String, from: EditTime?, to: EditTime?, text: String?, position: NormPoint?, size: Double?, scale: Double?, center: NormPoint?, follow: ZoomFollow? = nil, ease: ZoomEase? = nil, color: BlockColor? = nil)
     case remove(id: String)
+    /// Generic patch by id (T-903; T-912 widens it). Layers: from/to (output s), mediaStart (slip), mediaRate (speed), color.
+    case set(id: String, fields: SetFields)
     case style(patch: [String: JSONValue])
     case layer(from: EditTime, to: EditTime?, source: LayerSource, rect: NormRect?)
     /// T-831. `keys` is `reframePlan`'s result; the app fills it from the storyboard before the op is stored (like `layer` media), so replay is self-contained.
@@ -152,6 +165,7 @@ public enum EditOp: Codable, Equatable, Sendable {
         case "marker": self = try .marker(at: get(.at), label: get(.label))
         case "update": self = try .update(id: get(.id), from: optional(.from), to: optional(.to), text: optional(.text), position: optional(.position), size: optional(.size), scale: optional(.scale), center: optional(.center), follow: optional(.follow), ease: optional(.ease), color: optional(.color))
         case "remove": self = try .remove(id: get(.id))
+        case "set": self = try .set(id: get(.id), fields: SetFields(from: decoder))
         case "style": self = try .style(patch: get(.patch))
         case "layer":
             let sources: [(CodingKeys, (String) -> LayerSource)] = [(.asset, { .asset($0) }), (.path, { .path($0) }), (.recording, { .recording($0) })]
@@ -188,6 +202,7 @@ public enum EditOp: Codable, Equatable, Sendable {
             try put("update", .op); try put(id, .id); try optional(from, .from); try optional(to, .to); try optional(text, .text)
             try optional(position, .position); try optional(size, .size); try optional(scale, .scale); try optional(center, .center); try optional(follow, .follow); try optional(ease, .ease); try optional(color, .color)
         case let .remove(id): try put("remove", .op); try put(id, .id)
+        case let .set(id, fields): try put("set", .op); try put(id, .id); try fields.encode(to: encoder)
         case let .style(patch): try put("style", .op); try put(patch, .patch)
         case let .reframe(aspect, mode, keys): try put("reframe", .op); try put(aspect, .aspect); try put(mode, .mode); try optional(keys, .keys)
         case let .layer(from, to, source, rect):
@@ -372,6 +387,11 @@ public extension Project {
         var context = context
         var prepared: [PreparedEdit] = []
         var refTimes: [String: Double] = [:]
+        // `set` on anything but a layer is today's `update` (T-912 makes the field table generic).
+        let ops = ops.map { op -> EditOp in
+            guard case let .set(id, f) = op, !layers.contains(where: { $0.id == id }), f.mediaStart == nil, f.mediaRate == nil else { return op }
+            return .update(id: id, from: f.from, to: f.to, text: f.text, position: nil, size: nil, scale: nil, center: nil, color: f.color)
+        }
         for (index, op) in ops.enumerated() {
             var resolved: [TimeRange] = [], at = 0.0, note: String?, sourceAt: Double?
             var current: Project?
@@ -531,6 +551,14 @@ public extension Project {
                     guard end.source > start.source else { throw EditError.outOfRange(index: index, reason: "layer range must have from < to") }
                     resolved = [TimeRange(start: start.source, end: end.source)]
                 }
+            case let .set(id, fields):
+                guard let layer = layers.first(where: { $0.id == id }) else {
+                    throw EditError.invalidOp(index: index, reason: "unknown layer \(id): mediaStart/mediaRate apply to layers from timeline.get")
+                }
+                guard [fields.from, fields.to].allSatisfy({ $0 == nil || !$0!.isAnchor }) else {
+                    throw EditError.invalidOp(index: index, reason: "layer set takes numeric from/to (output seconds)")
+                }
+                if case .seconds(let value)? = fields.from { at = value } else { at = baseMap.outputTime(atSource: layer.start) ?? 0 }
             case .captions, .style, .reframe: break
             }
             let merged = mergedEditRanges(resolved)
@@ -717,6 +745,61 @@ public extension Project {
                         throw EditError.invalidOp(index: index, reason: "update does not support block \(id) (timeline.get editable:false); remove it with edit.remove or change it in Recorder")
                     } else { throw EditError.invalidOp(index: index, reason: "unknown block \(id)") }
                     summary = "Update block \(stamp(item.at))"
+                case let .set(id, fields):
+                    guard fields.text == nil else {
+                        throw EditError.invalidOp(index: index, reason: "layer set supports \(SetFields.layerFields.joined(separator: ", "))")
+                    }
+                    guard let i = result.layers.firstIndex(where: { $0.id == id }), let layerID = UUID(uuidString: id) else {
+                        throw EditError.invalidOp(index: index, reason: "unknown layer \(id)")
+                    }
+                    let old = result.layers[i], rate = old.mediaRate ?? 1
+                    let linked = result.audioClips.indices.filter { result.audioClips[$0].link == .layer && result.audioClips[$0].layer == id }
+                    func limit(_ what: String) -> EditError {
+                        .invalidOp(index: index, reason: "layer \(what) is blocked by the media length (\(old.kind == .recording ? String(format: "%.2f s", result.source.duration) : "file")), a neighbour on track \(old.track) or the minimum length")
+                    }
+                    if let newRate = fields.mediaRate {
+                        // Speed: same start and media in-point, the output length follows (connected items store output length).
+                        guard newRate.isFinite, (0.25...16).contains(newRate) else { throw EditError.invalidOp(index: index, reason: "mediaRate must be 0.25–16") }
+                        let length = (old.end - old.start) * rate / newRate
+                        result.layers[i].mediaRate = newRate == 1 && old.kind != .recording ? nil : newRate
+                        result.layers[i].end = old.start + length
+                        for a in linked { result.audioClips[a].mediaRate = newRate; result.audioClips[a].end = result.audioClips[a].start + length }
+                        guard result.checkInvariants() == nil else { throw limit("mediaRate \(newRate)") }
+                    }
+                    if let mediaStart = fields.mediaStart {
+                        // Slip: same position and length, other footage.
+                        guard mediaStart.isFinite, mediaStart >= 0, old.kind != .image else { throw EditError.invalidOp(index: index, reason: "mediaStart must be ≥ 0 seconds on a video or recording layer") }
+                        let shift = mediaStart - result.layers[i].mediaStart
+                        result.layers[i].mediaStart = mediaStart
+                        for a in linked { result.audioClips[a].mediaStart += shift }
+                        guard result.checkInvariants() == nil else { throw limit("mediaStart \(mediaStart)") }
+                    }
+                    if fields.from != nil || fields.to != nil {
+                        // Base output seconds → current output; past the clips' end the tail keeps its offset.
+                        let current = TimeMap(result.clips)
+                        func output(_ time: EditTime?) -> Double? {
+                            guard case .seconds(let t)? = time else { return nil }
+                            if t <= baseMap.outputDuration { return current.outputTime(atSource: baseMap.sourceTime(atOutput: t)) }
+                            return current.outputDuration + t - baseMap.outputDuration
+                        }
+                        let layer = result.layers[i]
+                        guard let start = current.outputTime(atSource: layer.start) else { throw EditError.outOfRange(index: index, reason: "layer start is in removed footage") }
+                        let want = (output(fields.from) ?? start, output(fields.to) ?? (output(fields.from).map { $0 + layer.end - layer.start } ?? start + layer.end - layer.start))
+                        guard want.0 >= 0, want.1 > want.0 else { throw EditError.outOfRange(index: index, reason: "layer needs 0 ≤ from < to") }
+                        if fields.to == nil {
+                            result.moveLayer(layerID, toOutput: want.0)
+                        } else {
+                            for edge in want.0 >= start ? [Edge.trailing, .leading] : [.leading, .trailing] {
+                                result.resizeLayer(layerID, edge: edge, toOutput: edge == .leading ? want.0 : want.1)
+                            }
+                        }
+                        let now = result.layers.first { $0.id == id }.flatMap { l in TimeMap(result.clips).outputTime(atSource: l.start).map { ($0, $0 + l.end - l.start) } }
+                        guard let now, abs(now.0 - want.0) < 1e-6, abs(now.1 - want.1) < 1e-6 else {
+                            throw EditError.invalidOp(index: index, reason: String(format: "layer cannot span %.2f–%.2f s: ", want.0, want.1) + "a neighbour, the media length or the minimum length blocks it" + (now.map { String(format: " (reachable now: %.2f–%.2f s)", $0.0, $0.1) } ?? ""))
+                        }
+                    }
+                    if let color = fields.color, let j = result.layers.firstIndex(where: { $0.id == id }) { result.layers[j].color = color }
+                    summary = "Set layer \(stamp(item.at))"
                 case let .remove(id):
                     if result.markers.contains(where: { $0.id == id }) {
                         result.markers.removeAll { $0.id == id }

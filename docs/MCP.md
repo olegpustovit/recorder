@@ -175,6 +175,7 @@ Zoom centers are normalized0–1 in the source frame, with the origin at the top
 {"op":"marker","at":31,"label":"Recording"}
 {"op":"update","id":"…","from":2,"to":6,"text":"…","position":{…},"size":44,"scale":1.8,"center":{…}}
 {"op":"remove","id":"…"}
+{"op":"set","id":"<layer>","to":30,"mediaStart":21.05,"mediaRate":2}   // generic patch by id; layers: from/to (also past the clips' end), mediaStart = slip, mediaRate = speed (length follows); other blocks: same fields as update
 {"op":"reframe","aspect":"9:16","mode":"perShot"}   // "4:5"|"1:1"|"9:16"|"16:9"; sets output.aspect + time-varying crop per shot (needs analyze.shots; error "run analyze.shots first" otherwise). perShot holds the window when the next shot's is within 3 % and shows as much focus, eases over 0.3 s at non-cut shot boundaries, and only steps at `boundary:"cut"`. A shot with no usable focus (a full-screen view swap that then holds) aims at the next shot with one, within 3 s
 {"op":"style","patch":{"background":{"kind":"color","color":"#101010"},"frame":{"padding":0.06}}}   // merge into Preset
 ```

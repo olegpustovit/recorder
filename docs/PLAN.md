@@ -741,7 +741,7 @@ TimelineOps primitive → EditOp → human command → selftest (D4), and fills 
 
 | Scope | Tasks | Done |
 |---|---|---|
-| A. Reliability (feedback run 6) | T-901…T-905 | 2/5 |
+| A. Reliability (feedback run 6) | T-901…T-905 | 3/5 |
 | B. Kernel: item view, fuzz, `set` | T-910…T-912 | 0/3 |
 | C. Keyframes + motion graphics | T-920…T-925 | 0/6 |
 | D. Human editor gaps | T-930…T-937 | 0/8 |
@@ -755,7 +755,7 @@ TimelineOps primitive → EditOp → human command → selftest (D4), and fills 
 - [x] **T-902 Media-time anchors** (D2) — `{shot}` anchors resolve base spine → media → spine of the batch prefix, so a
   `speed` earlier in the batch (which may switch to the output clock) no longer reports "removed footage". Verify:
   `make test FILTER=EditOps` (new `shotAnchorAfterSpeed`); `make test`.
-- [ ] **T-903 Layer trim and speed via `update`** — layer `to`, `mediaStart`, `mediaRate` (connected item; limits: media
+- [x] **T-903 Layer trim and speed via `update`** — layer `to`, `mediaStart`, `mediaRate` (connected item; limits: media
   length, 0.5 s minimum, track collisions; reports the reachable limit); works for layers beyond clips' end. Verify:
   `make test FILTER=LayerEdit` cases trim/slip/rate/limit/past-end; `make test`.
 - [ ] **T-904 No uncovered canvas** — `cut` over a range that is a gap (interior or before a connected layer) removes it
@@ -1792,3 +1792,4 @@ Closing run-4 leftovers · 2026-11-17 · Section names without captions:true: an
 Run 5 + UI responsiveness · 2026-11-17 · Measured with a main-thread watchdog in mcp-shots (now a hard guard: any tool > 250 ms fails). Before: analyze.shots 1311 ms, render.storyboard 586 ms, render.compare 312 ms of UI freeze on a 17 s clip; cause: renderFramesPNG decoded the video sequentially and PNG-encoded on the main actor, contact sheets composed on main, edit/lint reports (with dry-run applies) on main. Now sample reads, PNG and sheet encoding and reports run off main: worst 54 ms (edit.apply). R5-1 edit description lists the intent fields (clients that cache schemas read it); schemaNotice keeps the text item mirroring structuredContent (caught by mcp-render). R5-2 section names: 3 shots read per section, heading-like (ALL-CAPS word) captions first, OCR noise names nothing. R5-3 protect is per op (documented in the description). Not done: R5-4 (lint already flags the one hook flicker). Evidence: make test 281/281; release+debug build; mcp-schema, mcp-edit --headless, mcp-shots, mcp-render, mcp-roundtrip OK.
 T-901 · 2026-11-17 · verified: `make test` 282/282 (new `layersAreShotsAndDurationIsExport`); `--selftest mcp-edit --headless` OK; `--selftest mcp-shots <Bright Forest>` OK · Core `Storyboard.output(project:)` maps the media-keyed table through the viewed project's clips and full-canvas layers (recording layers of screen.mov show their media window's shots with `layer` set; image/video layers become `L:<id>` coverage); analyze.shots uses it (captions/sections copied by id), duration = exportDuration; `project.assets.layers` lists every layer incl. recording with track/mediaStart/mediaRate; library duration = exportDuration. Lint/report still read clip-only shots: layer-aware lint comes with T-904 (`uncovered`) and T-910.
 T-902 · 2026-11-17 · verified: `make test` 283/283; new `shotAnchorAfterSpeed` (Golden Island, Free mode, anchored shot inside a 3× range) fails without the fix (s70 marker 0.33 s off) and passes with it · `{shot}` anchors map base spine → media → prefix spine (`EditOps.coordinate`). Root cause: in Free mode `setSpeed` rewrites clip spine ranges, so base-spine shot seconds pointed at other footage. Markers/refs are stored in the project's own spine and are rewritten with it, so they keep the existing path.
+T-903 · 2026-11-17 · verified: `make test` 284/284 (new `GoldenIslandLayerTests.layerSetRateSlipTrim` on the feedback layout: 3× rate shortens the 2× recording layer to 2/3, slip to 30 s keeps position/length, trim to end−2 and extend to end+1 past the clips, slip past media fails naming the limit, text on a layer lists valid fields, JSON round-trip); `--selftest mcp-schema` OK; `mcp-edit --headless` OK · Delivered as the generic `set {id,…}` op (EDITING-CORE D4) rather than more `update` fields: layers accept from/to (numeric output s, also beyond the clips' end), mediaStart, mediaRate (length follows; linked layer audio follows), color; `set` on any other id lowers to `update`. Anchored from/to on layers is not supported yet (INVALID_OP says numeric).

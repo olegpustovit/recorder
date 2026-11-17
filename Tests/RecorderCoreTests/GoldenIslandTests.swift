@@ -179,3 +179,39 @@ import Testing
         #expect(sectionName([shot("a", 5, "tlow 1Im 016 ab 9")]) == nil)
     }
 }
+
+/// Feedback run 6 on the real layout: a recording layer (2×, media 21.05 s) appended after a 0.56 s tail gap.
+@Suite struct GoldenIslandLayerTests {
+    var base: Project { GoldenIslandTests.fixture.project }
+    var layer: LayerBlock { base.layers[0] }
+    func span(_ p: Project, _ id: String) -> (Double, Double)? {
+        p.layers.first { $0.id == id }.flatMap { l in TimeMap(p.clips).outputTime(atSource: l.start).map { ($0, $0 + l.end - l.start) } }
+    }
+
+    /// T-903: a layer past the clips' end can be sped up, slipped and trimmed through `set`.
+    @Test func layerSetRateSlipTrim() throws {
+        let (start, end) = try #require(span(base, layer.id))
+        let faster = try base.applying([.set(id: layer.id, fields: SetFields(mediaRate: 3))], context: EditContext()).project
+        let (s1, e1) = try #require(span(faster, layer.id))
+        #expect(abs(s1 - start) < 1e-9 && abs((e1 - s1) - (end - start) * 2 / 3) < 1e-6 && faster.layers[0].mediaRate == 3)
+        #expect(faster.checkInvariants() == nil && faster.exportDuration < base.exportDuration)
+
+        let slipped = try base.applying([.set(id: layer.id, fields: SetFields(mediaStart: 30))], context: EditContext()).project
+        #expect(slipped.layers[0].mediaStart == 30 && span(slipped, layer.id).map { abs($0.0 - start) + abs($0.1 - end) < 1e-9 } == true)
+
+        let trimmed = try base.applying([.set(id: layer.id, fields: SetFields(to: .seconds(end - 2)))], context: EditContext()).project
+        #expect(span(trimmed, layer.id).map { abs($0.1 - (end - 2)) < 1e-6 && abs($0.0 - start) < 1e-9 } == true)
+        let longer = try base.applying([.set(id: layer.id, fields: SetFields(to: .seconds(end + 1)))], context: EditContext()).project
+        #expect(span(longer, layer.id).map { abs($0.1 - (end + 1)) < 1e-6 } == true)
+
+        do { _ = try base.applying([.set(id: layer.id, fields: SetFields(mediaStart: 250))], context: EditContext()); Issue.record("slip past media end accepted") }
+        catch { #expect("\(error)".contains("media")) }
+        do { _ = try base.applying([.set(id: layer.id, fields: SetFields(text: "x"))], context: EditContext()); Issue.record("text on a layer accepted") }
+        catch { #expect("\(error)".contains("mediaRate")) }   // the error lists the valid fields
+        let json = #"{"op":"set","id":"L","to":3,"mediaStart":1,"mediaRate":2}"#
+        let op = try JSONDecoder().decode(EditOp.self, from: Data(json.utf8))
+        #expect(op == .set(id: "L", fields: SetFields(to: 3, mediaStart: 1, mediaRate: 2)))
+        #expect(try JSONDecoder().decode(EditOp.self, from: JSONEncoder().encode(op)) == op)
+    }
+
+}

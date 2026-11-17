@@ -54,6 +54,10 @@ enum MCPTools {
             op("highlight", ["from": number, "to": number, "rect": rect, "opacity": number], ["from", "to", "rect"]),
             op("marker", ["at": number, "label": string], ["at", "label"]),
             op("update", ["id": string, "from": number, "to": number, "text": string, "position": point, "size": textSize, "scale": number, "center": center, "follow": follow, "ease": ease, "color": color], ["id"]),
+            op("set", ["id": string, "from": number, "to": number,
+                "mediaStart": ["type": "number", "minimum": 0, "description": "Layers: media in-point (slip; position and length stay)."],
+                "mediaRate": ["type": "number", "minimum": 0.25, "maximum": 16, "description": "Layers: playback rate; the output length follows (2 = twice as fast, half as long)."],
+                "text": string, "color": color], ["id"]),
             op("layer", ["from": number, "to": number, "asset": ["type": "string", "description": "A media/ file listed by project.assets (reuse an existing layer's media)."],
                 "path": ["type": "string", "description": "Absolute path to an image or video in your home or temp folder; imported into the project when applied."],
                 "recording": ["type": "string", "description": "A library recording id from project.assets; its screen video becomes a video layer."],
@@ -738,6 +742,7 @@ enum MCPTools {
                 case .captions: kind = "captions"
                 case .highlight: kind = "highlight"
                 case .update: kind = "update"
+                case .set: kind = "set"
                 case .remove: kind = "remove"
                 case .style: kind = "style"
                 case .layer: kind = "layer"
