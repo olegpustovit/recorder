@@ -208,3 +208,14 @@ public extension Storyboard {
         return board
     }
 }
+
+/// Boundary precision/recall/F1 against reference times (T-827 acceptance): greedy one-to-one match within `tolerance`.
+public func boundaryScore(detected: [Double], truth: [Double], tolerance: Double = 0.3) -> (precision: Double, recall: Double, f1: Double) {
+    var unused = truth.sorted(), hits = 0
+    for d in detected.sorted() {
+        guard let i = unused.indices.min(by: { abs(unused[$0] - d) < abs(unused[$1] - d) }), abs(unused[i] - d) <= tolerance else { continue }
+        unused.remove(at: i); hits += 1
+    }
+    let p = detected.isEmpty ? 0 : Double(hits) / Double(detected.count), r = truth.isEmpty ? 0 : Double(hits) / Double(truth.count)
+    return (p, r, p + r == 0 ? 0 : 2 * p * r / (p + r))
+}

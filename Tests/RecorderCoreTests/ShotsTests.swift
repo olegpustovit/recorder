@@ -98,4 +98,10 @@ import Testing
     @Test func emptyInput() {
         #expect(storyboard(signals: [], events: []).shots.isEmpty)
     }
+
+    @Test func boundaryScoreMatchesOneToOneWithinTolerance() {
+        let s = boundaryScore(detected: [1.0, 1.1, 5.0, 9.0], truth: [1.2, 5.25, 7.0])
+        #expect(s.precision == 0.5 && abs(s.recall - 2.0 / 3) < 1e-9)   // 1.1 can't reuse 1.2; 9.0 has no match; 7.0 missed
+        #expect(boundaryScore(detected: [], truth: [1]).f1 == 0)
+    }
 }

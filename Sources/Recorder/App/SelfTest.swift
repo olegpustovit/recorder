@@ -31,6 +31,9 @@ enum SelfTest {
         "mcp-render": { args in try await checkMCPRender(args) },
         "mcp-edit": { args in try await checkMCPEdit(args) },
         "mcp-shots": { args in try await checkMCPShots(args) },
+        "shots-f1": { args in try await checkShotsF1(args) },
+        "report-ref": { args in try await checkReportReference(args) },
+        "agent-visuals": { args in try await dumpAgentVisuals(args) },
         "shots-perf": { args in try await ShotAnalysis.selfTestPerf(args) },
         "mcp-review": { args in try await checkMCPReview(args) },
         "mcp-live": { args in try await checkMCPLive(args) },
@@ -7307,4 +7310,82 @@ private func runTimelineHeaderSelfTest() async throws {
         throw MCPTestFailure(description: "discard left the project changed or the draft file behind")
     }
     print("mcp-shots draft ops \((status["ops"] as? [Any])?.count ?? -1), lint items \(((lint["report"] as? [String: Any])?["lint"] as? [Any])?.count ?? -1)")
+}
+
+/// Temp package with copies of a recording's screen.mov/project.json/events.json; analysis caches land there, never in the original.
+private func shotsFixture(_ path: String) throws -> (package: URL, project: Project, events: EventLog) {
+    let fm = FileManager.default, src = URL(fileURLWithPath: path)
+    let package = fm.temporaryDirectory.appendingPathComponent("recorder-shots-\(UUID().uuidString)/Fixture.recorder")
+    try fm.createDirectory(at: package, withIntermediateDirectories: true)
+    for name in ["screen.mov", "project.json", "events.json"] where fm.fileExists(atPath: src.appendingPathComponent(name).path) {
+        try fm.copyItem(at: src.appendingPathComponent(name), to: package.appendingPathComponent(name))
+    }
+    let events = (try? JSONDecoder().decode(EventLog.self, from: Data(contentsOf: package.appendingPathComponent("events.json")))) ?? EventLog(events: [])
+    return (package, try Project.load(from: package.appendingPathComponent("project.json")), events)
+}
+
+/// `--selftest shots-f1 <package> <labels.json> [tolerance]`: T-827 boundary F1 against reference labels (source seconds).
+@MainActor private func checkShotsF1(_ args: [String]) async throws {
+    guard args.count >= 2 else { throw MCPTestFailure(description: "usage: shots-f1 <package> <labels.json> [tolerance]") }
+    let f = try shotsFixture(args[0]); defer { try? FileManager.default.removeItem(at: f.package.deletingLastPathComponent()) }
+    struct Labels: Decodable { var boundaries: [Double] }
+    let truth = try JSONDecoder().decode(Labels.self, from: Data(contentsOf: URL(fileURLWithPath: args[1]))).boundaries
+    let signals = try await ShotAnalysis.signals(package: f.package, progress: { _ in })
+    let board = storyboard(signals: signals, fps: ShotAnalysis.fps, events: f.events.events)
+    let detected = board.shots.dropFirst().map(\.from)
+    let tol = args.count > 2 ? Double(args[2]) ?? 0.3 : 0.3
+    let s = boundaryScore(detected: detected, truth: truth, tolerance: tol)
+    print(String(format: "shots-f1 detected=%d truth=%d tol=%.2f precision=%.2f recall=%.2f f1=%.2f", detected.count, truth.count, tol, s.precision, s.recall, s.f1))
+    print("shots-f1 detected-times " + detected.map { String(format: "%.1f", $0) }.joined(separator: " "))
+}
+
+/// `--selftest report-ref <package> <out-dir>`: T-829 acceptance. Applies fitDuration 30 s, renders the result to MP4 and writes
+/// report.json; scripts compare it with ffmpeg freezedetect/scdet on that MP4.
+@MainActor private func checkReportReference(_ args: [String]) async throws {
+    guard args.count >= 2 else { throw MCPTestFailure(description: "usage: report-ref <package> <out-dir>") }
+    let f = try shotsFixture(args[0]); defer { try? FileManager.default.removeItem(at: f.package.deletingLastPathComponent()) }
+    let out = URL(fileURLWithPath: args[1]); try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+    let signals = try await ShotAnalysis.signals(package: f.package, progress: { _ in })
+    let board = storyboard(signals: signals, fps: ShotAnalysis.fps, events: f.events.events)
+    let lowered = try lowerIntents([.object(["op": .string("fitDuration"), "target": .number(30), "tolerance": .number(2)])], project: f.project, clicks: f.events.clicks(), storyboard: { board }).ops
+    let edited = try f.project.applying(MCPTools.decodeOps(JSONSerialization.jsonObject(with: JSONEncoder().encode(lowered))), context: EditContext()).project
+    let report = editReport(before: f.project, after: edited, storyboard: board)
+    let model = EditorModel(packageURL: f.package, project: edited, events: f.events)
+    let clip = try await AgentRender.clip(model: AgentRender.renderModel(for: model, project: edited), from: 0, to: edited.exportDuration, folder: out, progress: { _ in })
+    let movie = out.appendingPathComponent("edited.mp4")
+    try? FileManager.default.removeItem(at: movie); try FileManager.default.moveItem(at: clip, to: movie)
+    let enc = JSONEncoder(); enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+    try enc.encode(report).write(to: out.appendingPathComponent("report.json"))
+    print(String(format: "report-ref duration=%.2f asl=%.2f static=%.2f shots-kept=%d movie=%@", report.duration.after, report.aslSec.after, report.staticSec.after,
+                 board.mapped(through: TimeMap(edited.clips)).summary.shots, movie.path))
+}
+
+/// `--selftest agent-visuals <package> <out-dir>`: writes storyboard/strip/compare/reframe images and captions for visual review.
+@MainActor private func dumpAgentVisuals(_ args: [String]) async throws {
+    guard args.count >= 2 else { throw MCPTestFailure(description: "usage: agent-visuals <package> <out-dir>") }
+    let f = try shotsFixture(args[0]); defer { try? FileManager.default.removeItem(at: f.package.deletingLastPathComponent()) }
+    let out = URL(fileURLWithPath: args[1]), fm = FileManager.default
+    try fm.createDirectory(at: out, withIntermediateDirectories: true)
+    let signals = try await ShotAnalysis.signals(package: f.package, progress: { _ in })
+    let board = storyboard(signals: signals, fps: ShotAnalysis.fps, events: f.events.events)
+    let model = EditorModel(packageURL: f.package, project: f.project, events: f.events)
+    let map = TimeMap(f.project.clips)
+    let kept = board.shots.compactMap { s in AgentRender.keyframe(s, fps: board.fps, map: map).map { (s, $0.output, $0.kept) } }.prefix(48)
+    func save(_ url: URL, _ name: String) throws { try? fm.removeItem(at: out.appendingPathComponent(name)); try fm.copyItem(at: url, to: out.appendingPathComponent(name)) }
+    let folder = AgentRender.cacheFolder(session: UUID().uuidString); defer { try? fm.removeItem(at: folder) }
+    let safe = AgentRender.renderModel(for: model, project: f.project)
+    try save(try await AgentRender.sheet(model: safe, at: kept.map(\.1), labels: kept.map { String(format: "%@ %.1fs", $0.0.id, $0.2) }, columns: 6, folder: folder), "storyboard.jpg")
+    let strip = stride(from: 2.0, to: 8.0, by: 0.25).map { $0 }
+    try save(try await AgentRender.sheet(model: safe, at: strip, labels: strip.map(AgentRender.timecode), columns: 8, folder: folder), "strip.jpg")
+    var framed = f.project
+    let keys = reframePlan(storyboard: board, aspect: .r4x5, mode: .perShot, sourceSize: CGSize(width: f.project.source.pixelWidth, height: f.project.source.pixelHeight))
+    framed = try framed.applying([.reframe(aspect: .r4x5, mode: .perShot, keys: keys)], context: EditContext()).project
+    let draft = AgentRender.renderModel(for: EditorModel(packageURL: f.package, project: framed, events: f.events), project: framed)
+    let times = kept.prefix(12).map(\.1)
+    try save(try await AgentRender.sheet(model: draft, at: Array(times), labels: kept.prefix(12).map(\.0.id), columns: 6, folder: folder), "reframe-4x5.jpg")
+    try save(try await AgentRender.compare(base: safe, draft: draft, at: Array(times.prefix(3)), folder: folder), "compare.jpg")
+    let captioned = try await AgentCaptions.captionShots(Storyboard(duration: board.duration, fps: board.fps, shots: Array(board.shots.prefix(24)), summary: board.summary), model: model)
+    let caps = captioned.shots.map { "\($0.id) \($0.kind.rawValue) \(String(format: "%.1f-%.1f", $0.from, $0.to)) focus=\(String(format: "%.2f,%.2f %.2fx%.2f", $0.focus.x, $0.focus.y, $0.focus.w, $0.focus.h)) caption=\($0.caption ?? "nil")" }
+    try caps.joined(separator: "\n").write(to: out.appendingPathComponent("captions.txt"), atomically: true, encoding: .utf8)
+    print("agent-visuals shots=\(board.shots.count) tiles=\(kept.count) captions=\(captioned.shots.filter { $0.caption != nil }.count)/\(captioned.shots.count) out=\(out.path)")
 }
