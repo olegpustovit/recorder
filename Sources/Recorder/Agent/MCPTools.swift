@@ -66,10 +66,10 @@ enum MCPTools {
                 "where": ["type": "object", "description": "Keep shots by kind and energy instead of ids.", "properties": ["kind": ["type": "array", "items": ["type": "string", "enum": ShotKind.allCases.map(\.rawValue)]], "minEnergy": number], "additionalProperties": false],
                 "trim": ["type": "object", "description": "Source seconds trimmed from the start/end of each kept shot.", "properties": ["lead": number, "tail": number], "additionalProperties": false]], []),
             op("pace", ["beat": ["type": "object", "description": "Seconds a shot is held: default 0.9, payoff 1.3, motion 0.8.", "properties": ["default": number, "payoff": number, "motion": number], "additionalProperties": false],
-                "maxStatic": number, "speedFill": ["type": "object", "description": "Speed range used to squeeze holds and slow shots (default 1.5-6).", "properties": ["min": number, "max": number], "additionalProperties": false]], []),
+                "maxStatic": number, "profile": ["type": "string", "enum": ["reel", "demo", "tutorial"], "default": "reel", "description": "Rhythm: reel beat-cuts clicks tight (beats 0.9/1.3/0.8 s, cuts waits ≥ 0.5 s); demo 1.4/2.0/1.2 s, waits ≥ 1 s; tutorial 2.5/3.5/2.0 s, waits ≥ 2 s. maxStatic defaults to the profile's."], "speedFill": ["type": "object", "description": "Speed range used to squeeze holds and slow shots (default 1.5-6).", "properties": ["min": number, "max": number], "additionalProperties": false]], []),
             op("fitDuration", ["target": number, "tolerance": number, "protect": ["type": "array", "items": string, "description": "Shots never cut: ids, section:N or caption~regex."],
                 "minPerSection": ["type": "number", "minimum": 0, "description": "Output seconds every section (shot.section from analyze.shots) keeps at least; report.sections shows kept time per section."],
-                "balance": ["type": "string", "enum": ["energy", "even"], "default": "energy", "description": "energy: drop the least interesting shots first; even: take from the section that keeps the most."],
+                "balance": ["type": "string", "enum": ["energy", "even", "proportional"], "default": "energy", "description": "energy: drop the least interesting shots first; even: every section ends near the same seconds; proportional: sections keep time in proportion to their length."],
                 "drop": ["type": "array", "items": ["type": "integer", "minimum": 1], "description": "Sections cut whole first (weak scenes), protected shots excepted."]], ["target"]),
             op("autoZoom", ["lead": number, "tail": number, "scale": number, "from": number, "to": number], [])
         ]
@@ -615,6 +615,16 @@ enum MCPTools {
                         // Kept in the package so intent ops can protect "caption~…" shots without re-running OCR.
                         let captions = Dictionary(source.shots.compactMap { s in s.caption.map { (s.id, $0) } }, uniquingKeysWith: { a, _ in a })
                         try? JSONEncoder().encode(captions).write(to: captionsURL, options: .atomic)
+                    } else if Set(source.shots.compactMap(\.section)).count > 1 {
+                        // Sections are named without captions:true: OCR only each section's representative shot, once ("" = no text).
+                        var captions = (try? JSONDecoder().decode([String: String].self, from: Data(contentsOf: captionsURL))) ?? [:]
+                        let todo = source.sectionRepresentatives().filter { captions[$0.id] == nil }
+                        if !todo.isEmpty {
+                            let named = try await AgentCaptions.captionShots(Storyboard(duration: source.duration, fps: source.fps, shots: todo, summary: source.summary), model: model)
+                            for shot in named.shots { captions[shot.id] = shot.caption ?? "" }
+                            try? JSONEncoder().encode(captions).write(to: captionsURL, options: .atomic)
+                            for i in source.shots.indices { if let c = captions[source.shots[i].id], !c.isEmpty { source.shots[i].caption = c } }
+                        }
                     }
                     let board = source.mapped(through: TimeMap(viewed.clips))
                     payload = try object(board)
@@ -999,7 +1009,7 @@ enum MCPTools {
         let thresholds = (try? JSONDecoder().decode(ShotThresholds.self, from: Data(contentsOf: model.packageURL.appendingPathComponent(ShotAnalysis.thresholdsName)))) ?? ShotThresholds()
         var board = storyboard(signals: signals, fps: ShotAnalysis.fps, events: model.events.events, thresholds: thresholds).inSource(clips: model.liveProject.clips)
         if let captions = try? JSONDecoder().decode([String: String].self, from: Data(contentsOf: model.packageURL.appendingPathComponent(ShotAnalysis.captionsName))) {
-            for i in board.shots.indices { board.shots[i].caption = captions[board.shots[i].id] }
+            for i in board.shots.indices { board.shots[i].caption = captions[board.shots[i].id].flatMap { $0.isEmpty ? nil : $0 } }
         }
         return board
     }

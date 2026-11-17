@@ -36,7 +36,7 @@ func protects(_ list: [String], _ shot: Shot) -> Bool {
 /// speed: a subset), and every read below asserts its key is listed, so Core and the advertised schema cannot drift (R4-1).
 public let intentFields: [String: Set<String>] = [
     "keepShots": ["shots", "where", "trim", "protect"],
-    "pace": ["beat", "maxStatic", "speedFill"],
+    "pace": ["beat", "maxStatic", "speedFill", "profile"],
     "fitDuration": ["target", "tolerance", "protect", "minPerSection", "balance", "drop"],
     "autoZoom": ["lead", "tail", "scale", "from", "to"],
     "speed": ["from", "to", "speed", "ramp", "snap"]]
@@ -125,25 +125,31 @@ public func lowerIntents(_ ops: [JSONValue], project: Project, clicks: [InputEve
             if contentEnd - at > 0.05 { result += cutsAvoidingImported(at, contentEnd) }
         case "pace":
             let beat = arg("beat"), fill = arg("speedFill")
-            let dflt = try nested("default", 0.9, in: beat), payoff = try nested("payoff", 1.3, in: beat), motion = try nested("motion", 0.8, in: beat)
-            let maxStatic = try number("maxStatic", 1.2)
+            // The delivery profile sets the rhythm: reel beat-cuts tight; demo and tutorial hold longer and only cut real waits.
+            let profileName: String
+            switch arg("profile") { case nil: profileName = "reel"; case .string(let v)?: profileName = v; default: throw bad("profile must be reel, demo or tutorial") }
+            guard let profile = LintProfile(name: profileName) else { throw bad("profile must be reel, demo or tutorial") }
+            let pace: (dflt: Double, payoff: Double, motion: Double, wait: Double) =
+                profile.name == "tutorial" ? (2.5, 3.5, 2.0, 2.0) : profile.name == "demo" ? (1.4, 2.0, 1.2, 1.0) : (0.9, 1.3, 0.8, 0.5)
+            let dflt = try nested("default", pace.dflt, in: beat), payoff = try nested("payoff", pace.payoff, in: beat), motion = try nested("motion", pace.motion, in: beat)
+            let maxStatic = try number("maxStatic", profile.maxStatic)
             let lo = try nested("min", 1.5, in: fill), hi = try nested("max", 6, in: fill)
             guard dflt > 0, payoff > 0, motion > 0, maxStatic > 0, lo >= 1, hi >= lo else { throw bad("pace beats and maxStatic must be > 0 and speedFill 1 <= min <= max") }
             for s in try sb().segments(map) {
                 let a = s.range.start, b = s.range.end, d = s.duration
                 // Beat cut (R3-5/R4-5): a shot with clicks keeps [click - 0.1, click + beat] and loses the waiting around it,
-                // instead of a blanket speed-up. Gaps under 0.5 s stay (no flicker cuts); shots without clicks fall through.
+                // instead of a blanket speed-up. Waits shorter than the profile's (reel 0.5 s) stay; shots without clicks fall through.
                 let beats = s.shot.clicks.compactMap { map.outputTime(atSource: $0) }.filter { $0 >= a && $0 < b }.sorted()
                 if !s.shot.isStatic, !beats.isEmpty {
                     let hold = s.shot.kind == .payoff ? payoff : s.shot.kind == .motion ? motion : dflt
                     var windows: [(Double, Double)] = []
                     for c in beats {
                         let w = (max(a, c - 0.1), min(b, c + hold))
-                        if let last = windows.last, w.0 <= last.1 + 0.5 { windows[windows.count - 1].1 = max(last.1, w.1) } else { windows.append(w) }
+                        if let last = windows.last, w.0 <= last.1 + pace.wait { windows[windows.count - 1].1 = max(last.1, w.1) } else { windows.append(w) }
                     }
                     var at = a
-                    for w in windows { if w.0 - at >= 0.5 { result.append(cutJSON(at, w.0)) }; at = w.1 }
-                    if b - at >= 0.5 { result.append(cutJSON(at, b)) }
+                    for w in windows { if w.0 - at >= pace.wait { result.append(cutJSON(at, w.0)) }; at = w.1 }
+                    if b - at >= pace.wait { result.append(cutJSON(at, b)) }
                     continue
                 }
                 switch s.shot.kind {
@@ -194,7 +200,7 @@ public func lowerIntents(_ ops: [JSONValue], project: Project, clicks: [InputEve
             let rank: [ShotKind: Double] = [.static: 0, .cursorOnly: 1, .typing: 2, .motion: 3, .payoff: 4]
             let minPerSection = try number("minPerSection", 0)
             let balance: String
-            switch arg("balance") { case nil: balance = "energy"; case .string(let v)? where ["even", "energy"].contains(v): balance = v; default: throw bad("balance must be even or energy") }
+            switch arg("balance") { case nil: balance = "energy"; case .string(let v)? where ["even", "proportional", "energy"].contains(v): balance = v; default: throw bad("balance must be even, proportional or energy") }
             guard minPerSection >= 0 else { throw bad("minPerSection must be >= 0") }
             let all = try sb().segments(map)
             var kept = sectionSeconds(all)   // output seconds per section; minPerSection never lets one fall below it
@@ -210,12 +216,40 @@ public func lowerIntents(_ ops: [JSONValue], project: Project, clicks: [InputEve
                 if !ids.contains(s.shot.id) { ids.append(s.shot.id) }
             }
             order.removeAll { dropSections.contains($0.shot.section ?? 1) }
-            while length - target > tolerance {
+            if balance != "energy", length - target > tolerance {
+                // Balanced: give each section a quota, then cut it down to that, least interesting shots first and the last one
+                // trimmed, so the split is exact rather than whole-shot greedy. even: one shared level L (quota = min(own, L));
+                // proportional: one share p of each section's own length. Both never below minPerSection or protected footage.
+                let movable = Dictionary(grouping: order, by: { $0.shot.section ?? 1 })
+                let floor = kept.mapValues { _ in 0.0 }.merging(movable.mapValues { _ in 0.0 }) { a, _ in a }.reduce(into: [Int: Double]()) { acc, e in
+                    acc[e.key] = kept[e.key, default: 0] - (movable[e.key] ?? []).reduce(0) { $0 + $1.duration }   // protected seconds
+                }
+                func quota(_ k: Int, _ x: Double) -> Double {
+                    let have = kept[k, default: 0]
+                    return max(floor[k, default: 0], min(have, max(minPerSection, balance == "even" ? x : have * x)))
+                }
+                let excess = length - target
+                func removed(_ x: Double) -> Double { kept.keys.reduce(0) { $0 + kept[$1, default: 0] - quota($1, x) } }
+                var lo = 0.0, hi = balance == "even" ? (kept.values.max() ?? 0) : 1.0
+                for _ in 0..<60 { let mid = (lo + hi) / 2; if removed(mid) > excess { lo = mid } else { hi = mid } }
+                for k in kept.keys.sorted() {
+                    var need = kept[k, default: 0] - quota(k, hi)
+                    for s in movable[k] ?? [] where need > 0.05 {   // `order` is least interesting first
+                        if s.duration <= need + 0.05 || s.duration - need < 0.5 {   // a trim must not leave a flicker stub
+                            result.append(cutJSON(s.range.start, s.range.end)); need -= s.duration; length -= s.duration; kept[k, default: 0] -= s.duration
+                            if !ids.contains(s.shot.id) { ids.append(s.shot.id) }
+                        } else {
+                            if need >= 0.3 { result.append(cutJSON(s.range.end - need, s.range.end)); length -= need; kept[k, default: 0] -= need }
+                            need = 0
+                        }
+                    }
+                }
+            }
+            while balance == "energy", length - target > tolerance {
                 let excess = length - target
                 func amount(_ s: ShotSegment) -> Double { s.duration <= excess + tolerance ? s.duration : excess }
-                let eligible = order.indices.filter { kept[order[$0].shot.section ?? 1, default: 0] - amount(order[$0]) >= minPerSection - 1e-6 }
-                // energy: least interesting first; even: take from the section that still keeps the most (interest breaks ties).
-                guard let pick = balance == "even" ? eligible.max(by: { kept[order[$0].shot.section ?? 1]! < kept[order[$1].shot.section ?? 1]! || (kept[order[$0].shot.section ?? 1]! == kept[order[$1].shot.section ?? 1]! && $0 > $1) }) : eligible.first else { break }
+                // Least interesting first; minPerSection keeps every section at or above its floor.
+                guard let pick = order.indices.first(where: { kept[order[$0].shot.section ?? 1, default: 0] - amount(order[$0]) >= minPerSection - 1e-6 }) else { break }
                 let s = order.remove(at: pick)
                 kept[s.shot.section ?? 1, default: 0] -= amount(s)
                 if s.duration <= excess + tolerance {

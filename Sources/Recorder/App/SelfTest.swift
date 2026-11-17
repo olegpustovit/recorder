@@ -7313,6 +7313,13 @@ private func runTimelineHeaderSelfTest() async throws {
     let shots = board["shots"] as? [[String: Any]] ?? []
     guard let first = shots.first, first["focus"] != nil, first["reasons"] == nil, let firstID = first["id"] as? String else { throw MCPTestFailure(description: "analyze.shots concise storyboard: \(board.keys)") }
     print("mcp-shots analyze \(shots.count) shots in \(String(format: "%.1f", Date().timeIntervalSince(started)))s")
+    // Sections are named without captions:true: each section's representative was read once and cached ("" = no text).
+    let sections = Set(shots.compactMap { $0["section"] as? Int })
+    let cachedCaptions = (try? JSONDecoder().decode([String: String].self, from: Data(contentsOf: package.appendingPathComponent(ShotAnalysis.captionsName)))) ?? [:]
+    if sections.count > 1, !sections.allSatisfy({ k in shots.contains { $0["section"] as? Int == k && cachedCaptions[$0["id"] as? String ?? ""] != nil } }) {
+        throw MCPTestFailure(description: "analyze.shots did not read a representative per section: \(sections.sorted()) vs \(cachedCaptions.keys.sorted())")
+    }
+    print("mcp-shots \(sections.count) section(s), \(cachedCaptions.count) representative caption(s) cached")
     _ = try await tool("analyze", ["action": "shots", "thresholds": ["energyScale": 0]], error: "INVALID_OP")
     let (sb, sbImages) = try await tool("render", ["action": "storyboard", "draft": false])
     guard sbImages == 1, (sb["shots"] as? [String])?.isEmpty == false else { throw MCPTestFailure(description: "render.storyboard: \(sb)") }

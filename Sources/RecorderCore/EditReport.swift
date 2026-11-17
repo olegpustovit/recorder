@@ -252,7 +252,8 @@ private func sectionStats(_ sb: Storyboard, segs: [ShotSegment]) -> [SectionStat
     let kept = sectionSeconds(segs)
     return groups.keys.sorted().map { k in
         let shots = groups[k]!.sorted { $0.from < $1.from }, out = segs.filter { $0.shot.section == k }
-        return SectionStat(section: k, name: shots.compactMap(\.caption).first, srcFrom: r2(shots.first!.from), srcTo: r2(shots.last!.to),
+        // Named by its longest captioned shot (analyze.shots reads one representative per section).
+        return SectionStat(section: k, name: shots.filter { $0.caption != nil }.max { $0.duration < $1.duration }?.caption, srcFrom: r2(shots.first!.from), srcTo: r2(shots.last!.to),
                            outFrom: out.map(\.range.start).min().map(r2), outTo: out.map(\.range.end).max().map(r2),
                            shots: [shots.first!.id, shots.last!.id], keptSec: r2(kept[k] ?? 0))
     }

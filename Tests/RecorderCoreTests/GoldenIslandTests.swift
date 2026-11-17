@@ -132,4 +132,45 @@ import Testing
         #expect(sections.first { $0.section == 3 }?.keptSec == 0)
         #expect(sections.filter { $0.section != 3 }.allSatisfy { $0.keptSec >= 2 - 0.01 })
     }
+
+    /// pace follows the delivery profile: each lands in its own ASL range, slower profiles cut less and never flicker.
+    @Test func paceFollowsTheProfile() throws {
+        let kept = try apply(base, #"[{"op":"keepShots","where":{"minEnergy":0.05}}]"#)
+        var cuts: [Int] = []
+        for name in ["reel", "demo", "tutorial"] {
+            let paced = try applyLowered(kept, #"[{"op":"pace","profile":"\#(name)"}]"#)
+            let profile = try #require(LintProfile(name: name))
+            let report = editReport(before: base, after: paced.project, storyboard: board, profile: profile)
+            #expect(profile.asl.contains(report.aslSec.after), "\(name) asl \(report.aslSec.after)")
+            if name != "reel" { #expect(!report.lint.contains { $0.rule == "tinyShot" }, "\(name) flickers") }
+            cuts.append(paced.lowered[0].ops.filter { if case .object(let o) = $0 { return o["op"] == .string("cut") }; return false }.count)
+        }
+        #expect(cuts[0] > cuts[1] && cuts[1] > cuts[2], "cuts reel/demo/tutorial \(cuts)")
+    }
+
+    /// even = every section near the same seconds; proportional = long scenes keep more. Both exact enough to trust.
+    @Test func balanceModesSplitAsAdvertised() throws {
+        func sections(_ balance: String) throws -> [SectionStat] {
+            let p = try apply(base, #"[{"op":"fitDuration","target":30,"minPerSection":2,"balance":"\#(balance)"}]"#)
+            #expect(abs(p.exportDuration - 30) <= 2, "\(balance) duration \(p.exportDuration)")
+            return try #require(editReport(before: base, after: p, storyboard: board).sections)
+        }
+        let even = try sections("even").map(\.keptSec)
+        // Granularity: trims under 0.3 s are skipped and a trim never leaves a stub < 0.5 s, so a section can miss by ≤ 0.5 s.
+        #expect(even.max()! - even.min()! <= 0.75, "even \(even)")
+        let prop = try sections("proportional")
+        for a in prop { for b in prop where a.srcTo - a.srcFrom >= 2 * (b.srcTo - b.srcFrom) {
+            #expect(a.keptSec >= b.keptSec - 0.5, "proportional: \(a.section) (\(a.srcTo - a.srcFrom)s) keeps \(a.keptSec) < \(b.section) keeps \(b.keptSec)")
+        } }
+    }
+
+    /// Every section has a representative shot to name it (never a typing shot), and the report uses its caption.
+    @Test func sectionsHaveNamingShots() throws {
+        let reps = board.sectionRepresentatives()
+        #expect(Set(reps.compactMap(\.section)) == Set(board.shots.compactMap(\.section)))
+        #expect(reps.allSatisfy { $0.kind != .typing })
+        var named = board
+        for i in named.shots.indices where named.shots[i].id == reps[1].id { named.shots[i].caption = "Graph editor" }
+        #expect(editReport(before: base, after: base, storyboard: named).sections?.first { $0.section == reps[1].section }?.name == "Graph editor")
+    }
 }
