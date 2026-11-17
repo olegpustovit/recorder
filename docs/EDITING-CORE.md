@@ -114,34 +114,26 @@ stay. When keys exist they replace the entrance motion, and fades still multiply
 `Spring` presets. Positions are normalised 0–1 (top-left origin), the same coordinates zoom `center` and text
 `position` already use.
 
-**D6. Graphics = elements plus optional template.** `Project.graphics: [Graphic]` are connected items like
-layers (start on the spine clock, duration in output seconds), on `track` lanes (higher is in front).
+**D6. Graphics are a layer kind (elements plus an optional template).** Implemented as `LayerBlock.kind == .graphic`
+with a `graphic: Graphic` payload (`Graphics.swift`), not a separate array. That gives graphics every layer
+behaviour with no new code: connected timing, tracks, move/resize/settle on cuts, `keys`, and `motion`/`fadeIn`/`fadeOut`
+entrances. `LayerBlock.hasMedia` (video/recording) replaces the old "not an image" checks.
 
 ```swift
-public struct Graphic: Codable, Equatable, Sendable {
-    public enum Space: String, Codable, Sendable { case canvas, screen }   // screen: follows zoom/crop, pinned to recorded pixels
-    public var id: String, start: Double, end: Double, track: Int, space: Space
-    public var template: GraphicTemplate?     // {name, params}; elements are regenerated when params change
-    public var elements: [GraphicElement]     // what the compositor draws
-    public var keys: [Key]?                   // whole-graphic transform
-    public var enter: String?, exit: String?  // preset names: fade, pop, slide, wipe, typewriter (text only)
-    public var color: BlockColor?
-}
-public struct GraphicElement: Codable, Equatable, Sendable {
-    public enum Kind: String, Codable, Sendable { case rect, ellipse, line, arrow, text, image }
-    public var kind: Kind, frame: NormRect, fill: String?, stroke: String?, width: Double?, radius: Double?
-    public var text: String?, size: Double?, weight: String?, align: String?, file: String?
-    public var keys: [Key]?
+public struct Graphic { var space: Space /* canvas | screen */; var template: GraphicTemplate?; var elements: [GraphicElement] }
+public struct GraphicElement {
+    var kind: Kind /* rect ellipse line arrow text image */; var frame: NormRect /* 0–1 inside the layer rect */
+    var points: [NormPoint]?; var fill, stroke: String? /* #RRGGBB[AA] */; var width, radius, size: Double?
+    var text, weight, align, file: String?; var reveal: Double? /* grow or type out */; var count: [Double]?; var keys: [Key]?
 }
 ```
 
-Templates are pure Core functions `(params) -> [GraphicElement]` (`titleCard`, `callout` (arrow plus label at
-a screen point), `stepBadge`, `spotlight`, `progressBar`, `counter`). They work the same way intent ops lower to
-primitives. The human picks a template, and the inspector edits its params. "Detach" drops `template` and
-exposes the elements. An agent can send a template (short and valid) or raw elements (the escape hatch).
-`space: screen` is the screen-recorder twist: a callout on a button stays on the button through zooms and
-reframes. It is mapped through the same `ZoomTargetMapping` the cursor uses. The compositor draws graphics with
-CoreGraphics into a cached texture per (graphic, frame), so preview and export stay pixel-identical (AC-ED-2).
+Templates are pure Core functions `(params) -> Graphic` (`titleCard`, `callout`, `stepBadge`, `spotlight`,
+`progressBar`, `counter`). They work the same way intent ops lower to primitives. Template params are stored, so the
+inspector can edit them, and "Detach" drops `template`. `space: screen` puts the box in source-frame coordinates, so
+a callout stays on its button through zoom and crop. The compositor draws elements with CoreGraphics into a cached
+texture per (graphic, frame), so preview and export stay pixel-identical. A graphic never counts as canvas
+coverage or as a shot.
 
 **D7. Time stays `Double` seconds.** Every op quantises output boundaries it creates to 1/240 s (the LUT rate).
 `// ponytail: Double seconds, quantised; switch to Int64 ticks only if a frame-accuracy bug survives quantisation.`

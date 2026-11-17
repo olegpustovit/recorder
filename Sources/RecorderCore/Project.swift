@@ -450,7 +450,7 @@ public struct SceneEffects: Codable, Equatable, Sendable {
 }
 
 public struct LayerBlock: Codable, Equatable, Sendable {
-    public enum Kind: String, Codable, Sendable { case image, video, recording }
+    public enum Kind: String, Codable, Sendable { case image, video, recording, graphic }
     public enum Backdrop: String, Codable, Sendable { case none, dim, blur }
     public enum Motion: String, Codable, Sendable { case fade, scale, slide }
     public var id: String
@@ -471,6 +471,10 @@ public struct LayerBlock: Codable, Equatable, Sendable {
     public var color: BlockColor? = nil
     /// Keyframed transform (T-920), output seconds since `start`; when set it replaces the `motion` entrance (fades still apply).
     public var keys: [Key]? = nil
+    /// `kind == .graphic` only: shapes/text drawn by the compositor (T-921, EDITING-CORE D6). `rect` is the graphic's box.
+    public var graphic: Graphic? = nil
+    /// Video and recording layers play a file; image and graphic layers are stills or drawn.
+    public var hasMedia: Bool { kind == .video || kind == .recording }
 
     public init(id: String = makeProjectID().uuidString, kind: Kind, start: Double, end: Double, file: String,
                 mediaStart: Double = 0, track: Int = 0, rect: NormRect, backdrop: Backdrop = .dim,
@@ -481,7 +485,7 @@ public struct LayerBlock: Codable, Equatable, Sendable {
         self.motion = motion; self.fadeIn = fadeIn; self.fadeOut = fadeOut; self.aboveCamera = aboveCamera
     }
     enum CodingKeys: String, CodingKey {
-        case id, kind, start, end, file, mediaStart, track, rect, backdrop, motion, fadeIn, fadeOut, aboveCamera, color, mediaRate, scene, keys
+        case id, kind, start, end, file, mediaStart, track, rect, backdrop, motion, fadeIn, fadeOut, aboveCamera, color, mediaRate, scene, keys, graphic
     }
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -502,6 +506,7 @@ public struct LayerBlock: Codable, Equatable, Sendable {
         aboveCamera = try container.value(.aboveCamera, default: false)
         color = try? container.decodeIfPresent(BlockColor.self, forKey: .color)
         keys = try container.decodeIfPresent([Key].self, forKey: .keys)
+        graphic = try container.decodeIfPresent(Graphic.self, forKey: .graphic)
     }
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
@@ -515,6 +520,7 @@ public struct LayerBlock: Codable, Equatable, Sendable {
         try container.encodeIfPresent(mediaRate, forKey: .mediaRate); try container.encodeIfPresent(scene, forKey: .scene)
         try container.encodeIfPresent(color, forKey: .color)
         try container.encodeIfPresent(keys, forKey: .keys)
+        try container.encodeIfPresent(graphic, forKey: .graphic)
     }
 }
 

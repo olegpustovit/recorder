@@ -5,7 +5,7 @@ import Foundation
 /// the arrays its own way, so layers, audio and markers can no longer be forgotten by one tool.
 public struct Item: Codable, Equatable, Sendable {
     public enum Kind: String, Codable, Sendable, CaseIterable {
-        case clip, gap, zoom, layout, camera, keys, mask, text, window, layer, audio, marker
+        case clip, gap, zoom, layout, camera, keys, mask, text, window, layer, graphic, audio, marker
     }
     /// spine: stored on the spine clock, follows cuts · connected: starts on the spine, keeps its own output length.
     public enum Anchor: String, Codable, Sendable { case spine, connected }
@@ -30,6 +30,7 @@ public func editableFields(_ kind: Item.Kind) -> [String] {
     case .text: ["from", "to", "text", "position", "size", "color"]
     case .mask: ["from", "to", "color", "kind"]
     case .layer: SetFields.layerFields
+    case .graphic: ["from", "to", "color"]
     case .marker: ["from", "text"]
     case .clip, .gap, .layout, .camera, .keys, .window, .audio: []
     }
@@ -69,9 +70,10 @@ public func items(_ project: Project) -> [Item] {
     for layer in project.layers {
         guard let start = map.outputTime(atSource: layer.start) else { continue }
         let length = layer.end - layer.start, rate = layer.mediaRate ?? 1
-        out.append(Item(id: layer.id, kind: .layer, track: layer.track, out: TimeRange(start: start, end: start + length), spine: nil,
-                        media: layer.kind == .image ? nil : .init(file: layer.file, start: layer.mediaStart, end: layer.mediaStart + length * rate, rate: rate),
-                        anchor: .connected, editable: editableFields(.layer), label: layer.kind.rawValue))
+        let kind: Item.Kind = layer.kind == .graphic ? .graphic : .layer
+        out.append(Item(id: layer.id, kind: kind, track: layer.track, out: TimeRange(start: start, end: start + length), spine: nil,
+                        media: layer.hasMedia ? .init(file: layer.file, start: layer.mediaStart, end: layer.mediaStart + length * rate, rate: rate) : nil,
+                        anchor: .connected, editable: editableFields(kind), label: layer.graphic?.template?.name ?? layer.kind.rawValue))
     }
     for audio in project.audioClips {
         let connected = audio.link != .screen && audio.link != .camera   // same rule as TimeMap.audioSegments

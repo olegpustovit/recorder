@@ -171,7 +171,7 @@ public func uncoveredRanges(_ project: Project) -> [TimeRange] {
         if !clip.isEmpty { covered.append(TimeRange(start: offset, end: offset + clip.outputDuration)) }
         offset += clip.outputDuration
     }
-    for layer in project.layers where layer.rect.w >= 0.999 && layer.rect.h >= 0.999 {
+    for layer in project.layers where layer.kind != .graphic && layer.rect.w >= 0.999 && layer.rect.h >= 0.999 {   // a graphic box is mostly transparent
         if let start = map.outputTime(atSource: layer.start) { covered.append(TimeRange(start: start, end: start + layer.end - layer.start)) }
     }
     var gaps: [TimeRange] = [], cursor = 0.0

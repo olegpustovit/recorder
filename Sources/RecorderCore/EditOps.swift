@@ -763,7 +763,7 @@ public extension Project {
                     }
                     if let mediaStart = fields.mediaStart {
                         // Slip: same position and length, other footage.
-                        guard mediaStart.isFinite, mediaStart >= 0, old.kind != .image else { throw EditError.invalidOp(index: index, reason: "mediaStart must be ≥ 0 seconds on a video or recording layer") }
+                        guard mediaStart.isFinite, mediaStart >= 0, old.hasMedia else { throw EditError.invalidOp(index: index, reason: "mediaStart must be ≥ 0 seconds on a video or recording layer") }
                         let known = old.kind == .recording ? result.source.duration : context.assets[old.file]?.duration
                         guard known.map({ mediaStart + (old.end - old.start) * rate <= $0 + 1e-9 }) ?? (mediaStart <= old.mediaStart) else { throw limit("mediaStart \(mediaStart)") }
                         let shift = mediaStart - result.layers[i].mediaStart

@@ -743,7 +743,7 @@ TimelineOps primitive → EditOp → human command → selftest (D4), and fills 
 |---|---|---|
 | A. Reliability (feedback run 6) | T-901…T-905 | 5/5 |
 | B. Kernel: item view, fuzz, `set` | T-910…T-912 | 3/3 |
-| C. Keyframes + motion graphics | T-920…T-925 | 1/6 |
+| C. Keyframes + motion graphics | T-920…T-925 | 2/6 |
 | D. Human editor gaps | T-930…T-937 | 0/8 |
 | E. Docs + eval | T-940 | 0/1 |
 
@@ -775,7 +775,7 @@ TimelineOps primitive → EditOp → human command → selftest (D4), and fills 
 - [x] **T-920 Keyframes core** (D5) — `Key`, `Transform`, `evaluate` (per-property neighbours, eases, spring via
   `Spring`); optional `keys` on LayerBlock/TextBlock; version 7 only when used; invariants (sorted, inside item).
   Verify: `make test FILTER=Keyframes`; `make test`.
-- [ ] **T-921 Graphic model** (D6) — `Project.graphics`, `GraphicElement`, connected-item TimelineOps (add/move/resize/
+- [x] **T-921 Graphic model** (D6) — `Project.graphics`, `GraphicElement`, connected-item TimelineOps (add/move/resize/
   delete/duplicate via the generic timed-block ops), invariants, v7 rule. Verify: `make test FILTER=Graphics`.
 - [ ] **T-922 Templates** — `titleCard`, `callout`, `stepBadge`, `spotlight`, `progressBar`, `counter` as pure
   `(params) -> [GraphicElement]` with param schemas (for `project.templates`). Verify: `make test FILTER=Graphics`.
@@ -1800,3 +1800,4 @@ T-911 · 2026-11-17 · verified: `make test` 288/288 (new `KernelFuzzTests`: 500
 T-912 · 2026-11-17 · verified: `make test` 289/289 (new `genericSetUsesTheFieldTable`: zoom scale, text text+position, mask from+kind blur, text-on-zoom error lists valid fields, layout has none, JSON decode); `mcp-schema` OK; `mcp-edit --headless` OK · `SetFields` carries every update field + mask `kind`; `set` validates against `editableFields(item.kind)` from `items(base)`, then non-layer items run the existing update path per phase (the stored op stays `set`, so replay/IDs are unchanged); mask kind applied after it. `update` kept as the older name (no deprecation churn for existing drafts).
 T-920 · 2026-11-17 · verified: `make test` 292/292 (new `KeyframesTests`: per-property neighbours, holds before/after, eases 0→1 incl. spring overshoot, validation, round-trip, invariant); `mcp-edit --headless` OK · `Keyframes.swift`: `Key`, `Transform`, `eased`, `evaluate`, `keysError`; optional `keys` on TextBlock (spine s since start) and LayerBlock (output s since start), checked in `checkInvariants`. User direction mid-task (no backward compatibility): `save` now always writes `currentVersion` 7; the per-feature minimum-version rule and its tests are gone (tests now assert the single version); loading keeps defaults so existing projects open. SPEC §5 and EDITING-CORE D1 updated. Spring ease is closed-form (`shortcut:` comment).
 Clean core · 2026-11-17 · verified: `make test` 292/292; `mcp-schema`, `mcp-edit --headless` OK · Per the user (no backward compatibility): removed `EditOp.update` and its JSON name; `set` is the only patch op (Core prepare/apply branches now match `.set` for non-layer items, the dead layer branch of the old update path is deleted, mask `kind` lives in the mask branch); tests and selftests converted mechanically; MCP schema/docs list only `set`. Persisted drafts containing "update" ops will not replay (reported as unrecoverable and kept as agent-draft.failed.json).
+T-921 · 2026-11-17 · verified: `make test` 295/295 (new `GraphicsTests`: connected placement/cut ripple/set move/remove, table rejects mediaStart, validation, count/type-out text, colour parse); `mcp-edit --headless` OK · Graphic = `LayerBlock.kind .graphic` + `graphic` payload (D6 revised: reuse layer machinery, no new array); `hasMedia` replaces 18 `kind != .image` checks; `Item.Kind.graphic`; graphics never count as coverage or shots; `Project.addGraphic`.

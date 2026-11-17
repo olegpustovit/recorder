@@ -10,7 +10,7 @@ public enum Edge: Sendable {
 /// `assert`. The x-axis callers work in is *output* time; conversion to *source* time (where
 /// clips live) goes only through `TimeMap`. See docs/SPEC.md §7.4.
 public extension Project {
-    var videoLayerLanes: [Int] { Set(layers.filter { $0.kind != .image }.map(\.track)).sorted() }
+    var videoLayerLanes: [Int] { Set(layers.filter { $0.hasMedia }.map(\.track)).sorted() }
 
     /// Replay a lifted scene on its original clock so boundary springs and mask fades keep their history.
     func recordingScene(for layer: LayerBlock) -> (project: Project, clip: Clip, sourceStart: Double, sourceRate: Double) {
@@ -101,7 +101,7 @@ public extension Project {
         guard preferred >= 0, preferred < Int.max else { return nil }
         var track = preferred
         while !available(track) { guard track < Int.max - 1 else { return nil }; track += 1 }
-        if kind != .image, videoLayerLanes.count >= 4, !videoLayerLanes.contains(track) { return videoLayerLanes.first(where: available) }
+        if kind == .video || kind == .recording, videoLayerLanes.count >= 4, !videoLayerLanes.contains(track) { return videoLayerLanes.first(where: available) }
         return track
     }
 
@@ -1523,13 +1523,13 @@ public extension Project {
         switch edge {
         case .leading:
             let lower = max(neighbours.filter { $0.end <= range.start + 1e-9 }.map(\.end).max() ?? 0,
-                            layer.kind != .image ? range.start - layer.mediaStart / (layer.mediaRate ?? 1) : 0)
+                            layer.hasMedia ? range.start - layer.mediaStart / (layer.mediaRate ?? 1) : 0)
             changed.start = min(max(requested, lower), range.end - (layer.kind == .recording ? Self.minClipLength / (layer.mediaRate ?? 1) : 0.5))
             changed.advanceMedia(by: changed.start - range.start)
         case .trailing:
             let upper = min(neighbours.filter { $0.start >= range.end - 1e-9 }.map(\.start).min() ?? .infinity,
                             // An imported video whose length the caller doesn't know may shrink but not run past its current media end (T-911 fuzz).
-                            layer.kind != .image ? range.start + ((mediaDuration ?? (layer.kind == .recording ? source.duration : layer.mediaStart + (range.end - range.start) * (layer.mediaRate ?? 1))) - layer.mediaStart) / (layer.mediaRate ?? 1) : .infinity)
+                            layer.hasMedia ? range.start + ((mediaDuration ?? (layer.kind == .recording ? source.duration : layer.mediaStart + (range.end - range.start) * (layer.mediaRate ?? 1))) - layer.mediaStart) / (layer.mediaRate ?? 1) : .infinity)
             changed.end = max(min(requested, upper), range.start + (layer.kind == .recording ? Self.minClipLength / (layer.mediaRate ?? 1) : 0.5))
         }
         guard changed.start != range.start || changed.end != range.end else { return }
@@ -1600,7 +1600,7 @@ public extension Project {
                     return (TimeRange(start: start, end: start + $0.outputDuration), nil)
                 }
             case .camera: targets = cameraClips.compactMap { camera in outputRange(camera, connected: false).map { ($0, nil) } }
-            case .layer: targets = layers.filter { $0.kind != .image && ($0.file == audio.file || ($0.kind == .recording && ["mic.m4a", "system.m4a"].contains(audio.file))) && (targetLayer == nil || $0.id == targetLayer) }.compactMap { layer in
+            case .layer: targets = layers.filter { $0.hasMedia && ($0.file == audio.file || ($0.kind == .recording && ["mic.m4a", "system.m4a"].contains(audio.file))) && (targetLayer == nil || $0.id == targetLayer) }.compactMap { layer in
                 outputRange(layer, connected: true).map { ($0, layer.id) }
             }
             }
@@ -1667,7 +1667,7 @@ public extension Project {
             referenceRate = (camera.mediaRate ?? 1) * clips[index].timeScale
         case .layer:
             guard let layer = layers.first(where: { layer in
-                guard layer.kind != .image, let interval = outputRange(layer, connected: true) else { return false }
+                guard layer.hasMedia, let interval = outputRange(layer, connected: true) else { return false }
                 return audio.link == .layer ? layer.id == audio.layer : layer.file == audio.file && interval.start < range.end && interval.end > range.start
             }), let start = map.outputTime(atSource: layer.start) else { return nil }
             referenceRate = layer.mediaRate ?? 1
@@ -2187,7 +2187,7 @@ public extension Project {
                 return "audio \(index) media range outside file"
             }
             if audioClip.link == .layer {
-                guard let layer = audioClip.layer, layers.contains(where: { $0.id == layer && $0.kind != .image }) else {
+                guard let layer = audioClip.layer, layers.contains(where: { $0.id == layer && $0.hasMedia }) else {
                     return "audio \(index) dangling layer link"
                 }
             } else if audioClip.layer != nil { return "audio \(index) layer without layer link" }
@@ -2234,7 +2234,9 @@ public extension Project {
             }
             if layer.kind == .recording && (!(0.25...16).contains(rate) || layer.file != "screen.mov") { return "recording layer \(index) invalid file or rate" }
             if let keys = layer.keys, let e = keysError(keys, length: layer.end - layer.start) { return "layer \(index) \(e)" }
-            if layer.kind != .image && !mediaIsValid(file: layer.file, start: layer.mediaStart, length: (layer.end - layer.start) * rate) {
+            if (layer.kind == .graphic) != (layer.graphic != nil) { return "layer \(index) graphic payload must match its kind" }
+            if let g = layer.graphic, let e = graphicError(g, length: layer.end - layer.start) { return "graphic layer \(index) \(e)" }
+            if layer.hasMedia && !mediaIsValid(file: layer.file, start: layer.mediaStart, length: (layer.end - layer.start) * rate) {
                 return "layer \(index) media range outside file"
             }
         }
@@ -2318,7 +2320,7 @@ extension LayerBlock: TimedBlock {
         scene = carried
     }
     mutating func advanceMedia(by delta: Double) {
-        guard kind != .image else { return }
+        guard hasMedia else { return }
         mediaStart += delta * (mediaRate ?? 1)
         if kind == .recording, var carried = scene {
             for i in carried.zooms.indices { carried.zooms[i].start -= delta; carried.zooms[i].end -= delta }

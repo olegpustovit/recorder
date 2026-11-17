@@ -668,7 +668,7 @@ enum ExporterSelfTest {
             times.insert(start + length / 2)
             times.insert(start + min(layer.fadeIn ?? 0, length) / 2)
             times.insert(start + length - min(layer.fadeOut ?? 0, length) / 2)
-            if layer.kind != .image, length > 1.1 {
+            if layer.hasMedia, length > 1.1 {
                 times.insert(start + 1 - 1.0 / 60)
                 times.insert(start + 1 + 1.0 / 60)
             }
@@ -816,7 +816,7 @@ enum ExporterSelfTest {
 
             // (3) both call `makeFrameState` with the identical outputTime/size (see `render` above).
             var previewLayers: [Int: FrameState.Texture] = [:]
-            let activeLanes = Set(project.layerStates(atOutput: t).filter { $0.block.kind != .image }.map { $0.block.track })
+            let activeLanes = Set(project.layerStates(atOutput: t).filter { $0.block.hasMedia }.map { $0.block.track })
             for (lane, decoder) in layerPlayers where activeLanes.contains(lane) {
                 _ = await decoder.player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
                 guard let buffer = decoder.output.copyPixelBuffer(forItemTime: time, itemTimeForDisplay: nil), let texture = textureCache.texture(from: buffer) else { throw SelfTestArgError.usage("No layer preview frame on lane \(lane) at \(t)") }

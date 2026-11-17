@@ -103,7 +103,7 @@ func makeFrameState(model: EditorModel, outputTime: Double, screen: FrameState.T
                        keyChip: inTimeline ? keyChip : nil, texts: inTimeline ? texts : [],
                        layers: model.project.layerStates(atOutput: outputTime).map { sample in
                            var layer = FrameState.Layer(block: sample.block, opacity: sample.opacity, progress: sample.progress, rect: sample.rect)
-                           if layer.block.kind != .image, let transform = layerTransforms[layer.block.file] {
+                           if layer.block.hasMedia, let transform = layerTransforms[layer.block.file] {
                                layer.texture = layerTextures[layer.block.track]
                                layer.texture?.preferredTransform = transform
                            }

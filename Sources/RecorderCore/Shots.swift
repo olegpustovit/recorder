@@ -280,7 +280,7 @@ public extension Storyboard {
     func output(project: Project) -> Storyboard {
         let map = TimeMap(project.clips)
         var out = inSource(clips: project.clips).mapped(through: map).shots
-        for layer in project.layers.sorted(by: { $0.track < $1.track }) where layer.rect.w >= 0.999 && layer.rect.h >= 0.999 {
+        for layer in project.layers.sorted(by: { $0.track < $1.track }) where layer.kind != .graphic && layer.rect.w >= 0.999 && layer.rect.h >= 0.999 {
             guard let start = map.outputTime(atSource: layer.start) else { continue }
             let end = start + layer.end - layer.start
             guard end - start > 1e-9 else { continue }
