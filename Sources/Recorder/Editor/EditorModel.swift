@@ -55,6 +55,31 @@ import RecorderCore
         return id
     }
 
+    /// Adds a motion graphic from a template at the playhead (T-924, `G` / Edit ▸ Add Graphic) and selects it; one undo step.
+    @discardableResult
+    func addGraphic(template name: String, length: Double = 3) -> UUID? {
+        let info = GraphicTemplates.catalog.first { $0.name == name }
+        guard let made = try? GraphicTemplates.make(name, params: info?.example ?? [:], length: length) else { return nil }
+        var id: UUID?
+        edit("Add Graphic") { project in
+            for track in 0..<8 where id == nil { id = project.addGraphic(made.graphic, atOutput: playhead, duration: length, rect: made.rect, track: track) }
+        }
+        if let id { isPlaying = false; selectedClips = []; selection = [id]; inspectorShowsProject = false }
+        return id
+    }
+
+    /// ⌥K (T-924): key the selected layer/graphic at the playhead with its current transform (so nothing jumps), one undo step.
+    func addKeyAtPlayhead() {
+        guard let id = selection.first, let index = project.layers.firstIndex(where: { $0.id == id.uuidString }),
+              let start = timeMap.outputTime(atSource: project.layers[index].start) else { return }
+        let layer = project.layers[index], t = playhead - start
+        guard t >= 0, t <= layer.end - layer.start else { return }
+        let now = evaluate(layer.keys ?? [], at: t)
+        var keys = (layer.keys ?? []).filter { abs($0.t - t) > 1e-3 }
+        keys.append(Key(t: t, x: now.x, y: now.y, scale: now.scale, rotation: now.rotation, opacity: now.opacity))
+        edit("Add Keyframe") { $0.layers[index].keys = keys.sorted { $0.t < $1.t } }
+    }
+
     /// SPEC §7.3 ↑/↓: the nearest edit point (clip boundary or block edge, output time) before/after `t`.
     func editPoint(from t: Double, forward: Bool) -> Double? {
         var points: [Double] = [0]

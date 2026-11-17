@@ -2501,13 +2501,15 @@ final class TimelineView: NSView {
             NSGraphicsContext.saveGraphicsState()
             defer { NSGraphicsContext.restoreGraphicsState() }
             applyReviewMask(rect, id: layer.id)
-            let color = tinted(layer.kind == .image ? Theme.mask : Theme.zoom, layer.color)
-            drawBlock(rect, fill: color, tornLeft: false, tornRight: false, label: nil, selected: UUID(uuidString: layer.id).map(model.selection.contains) ?? false)
+            let color = tinted(layer.kind == .graphic ? Theme.layout : layer.kind == .image ? Theme.mask : Theme.zoom, layer.color)
+            let selected = UUID(uuidString: layer.id).map(model.selection.contains) ?? false
+            drawBlock(rect, fill: color, tornLeft: false, tornRight: false, label: nil, selected: selected)
             NSGraphicsContext.saveGraphicsState()
             rect.clip()
             let url = model.packageURL.appendingPathComponent(layer.file).standardizedFileURL.resolvingSymlinksInPath()
-            let missing = !url.path.hasPrefix(model.packageURL.standardizedFileURL.resolvingSymlinksInPath().path + "/") || !FileManager.default.fileExists(atPath: url.path)
+            let missing = layer.kind != .graphic && (!url.path.hasPrefix(model.packageURL.standardizedFileURL.resolvingSymlinksInPath().path + "/") || !FileManager.default.fileExists(atPath: url.path))
             if missing { drawAudioHatch(rect) }
+            else if layer.kind == .graphic {}   // drawn by the compositor; no file thumbnails
             else {
                 var pixel = rect.minX + floor(max(0, gutterWidth - rect.minX) / 54) * 54
                 while pixel < min(bounds.width, rect.maxX) {
@@ -2521,7 +2523,15 @@ final class TimelineView: NSView {
             }
             color.withAlphaComponent(0.92).setFill(); CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: 12).fill()
             drawTagStripe(rect, layer.color)
-            let label = missing ? "Missing media" : String(format: "%@ · %.1f s", layer.kind == .image ? "Image" : "Video", layer.end - layer.start)
+            let name = layer.kind == .graphic ? (layer.graphic?.template?.name ?? "Graphic") : layer.kind == .image ? "Image" : "Video"
+            let label = missing ? "Missing media" : String(format: "%@ · %.1f s", name, layer.end - layer.start)
+            if selected { // keyframe diamonds (T-924)
+                Theme.mediaMatte.setFill()
+                for key in layer.keys ?? [] {
+                    let cx = rect.minX + CGFloat(key.t * geometry.pxPerSecond), cy = rect.midY + 4
+                    let d = NSBezierPath(); d.move(to: CGPoint(x: cx, y: cy - 4)); d.line(to: CGPoint(x: cx + 4, y: cy)); d.line(to: CGPoint(x: cx, y: cy + 4)); d.line(to: CGPoint(x: cx - 4, y: cy)); d.close(); d.fill()
+                }
+            }
             (label as NSString).draw(at: CGPoint(x: max(rect.minX + 18, gutterWidth + 4), y: rect.minY), withAttributes: [.font: Theme.captionFont, .foregroundColor: Theme.mediaMatte])
             for zoom in layer.scene?.zooms ?? [] { // carried zooms, dimmed (they belong to the scene, not the Zoom lane)
                 Theme.zoom.withAlphaComponent(0.4).setFill()
@@ -2687,6 +2697,16 @@ final class TimelineView: NSView {
             addZoom(atOutput: model?.playhead ?? 0)
         } else if !cmd, !shift, chars?.lowercased() == "t", let model { // `T` = add text at the playhead
             model.addText(atSource: model.timeMap.sourceTime(atOutput: model.playhead))
+        } else if !cmd, !shift, event.modifierFlags.contains(.option), event.charactersIgnoringModifiers?.lowercased() == "k", let model { // `⌥K` = keyframe
+            model.addKeyAtPlayhead()
+        } else if !cmd, !shift, chars?.lowercased() == "g" { // `G` = template menu at the pointer (T-924)
+            let menu = NSMenu(title: "Add Graphic")
+            for info in GraphicTemplates.catalog {
+                let entry = NSMenuItem(title: info.name.prefix(1).uppercased() + info.name.dropFirst(), action: #selector(EditorWindowController.addGraphicAtPlayhead(_:)), keyEquivalent: "")
+                entry.representedObject = info.name; entry.toolTip = info.summary
+                menu.addItem(entry)
+            }
+            menu.popUp(positioning: nil, at: convert(event.locationInWindow, from: nil), in: self)
         } else if cmd, chars?.lowercased() == "d" { // `⌘D` = duplicate the selected zoom/mask after itself
             duplicateSelection()
         } else {

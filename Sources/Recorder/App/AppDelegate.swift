@@ -1,4 +1,5 @@
 import AppKit
+import RecorderCore
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -385,6 +386,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         edit.addItem(item("Record / Re-record Voiceover", "r", [.shift], action: #selector(EditorWindowController.recordVoiceover(_:))))
         edit.addItem(item("Remove", "\u{8}", [], action: #selector(EditorWindowController.removeSelected(_:))))
         edit.addItem(item("Add Zoom", "z", [], action: #selector(EditorWindowController.addZoomAtPlayhead(_:))))
+        let graphics = NSMenu(title: "Add Graphic")
+        for info in GraphicTemplates.catalog {
+            let entry = item(info.name.prefix(1).uppercased() + info.name.dropFirst(), action: #selector(EditorWindowController.addGraphicAtPlayhead(_:)))
+            entry.representedObject = info.name; entry.toolTip = info.summary
+            graphics.addItem(entry)
+        }
+        edit.addItem(item("Add Graphic", submenu: graphics))
+        edit.addItem(item("Add Keyframe", "k", [.option], action: #selector(EditorWindowController.addKeyframe(_:))))
         edit.addItem(item("Regenerate Auto Zooms", action: #selector(EditorWindowController.regenerateAutoZooms(_:))))
         edit.addItem(item("Remove All Zooms", action: #selector(EditorWindowController.removeAllZooms(_:))))
         edit.addItem(item("Restore All Cuts", action: #selector(EditorWindowController.restoreAllCuts(_:))))

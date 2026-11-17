@@ -24,6 +24,10 @@ struct LayerPanel: View {
     }
 
     var body: some View {
+        if layer?.kind == .graphic { GraphicPanel(model: model, layerID: layerID) } else { mediaBody }
+    }
+
+    private var mediaBody: some View {
         VStack(alignment: .leading, spacing: 12) {
             InspectorSelectionHeader(title: layer?.kind == .video ? "Video layer" : "Image layer") { model.selection = [] }
             if let layer {
@@ -282,5 +286,73 @@ extension LayerPanel {
             try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/recorder-t649-panel-\(name).png"))
         }
         print("layer-panel: thumbnail, placements/cancellation, backdrop/motion/order, connected replay, fade binding/undo and native default/minimum/scroll/corner/missing renders verified")
+    }
+}
+
+/// Inspector for a motion graphic (T-924): template params, space, keyframes, fades. Every change is one undo step via
+/// `changeLayer`; params regenerate the elements through the same `GraphicTemplates.make` the agent's `graphic` op uses.
+struct GraphicPanel: View {
+    let model: EditorModel
+    let layerID: UUID
+    var layer: LayerBlock? { model.project.layers.first { $0.id == layerID.uuidString } }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            InspectorSelectionHeader(title: "Graphic") { model.selection = [] }
+            if let layer, let graphic = layer.graphic {
+                if let template = graphic.template, let info = GraphicTemplates.catalog.first(where: { $0.name == template.name }) {
+                    Text(info.name.prefix(1).uppercased() + info.name.dropFirst()).font(Font(Theme.headingFont(22))).foregroundStyle(Theme.textPrimaryColor)
+                    Text(info.summary).font(Font(Theme.captionFont)).foregroundStyle(Theme.textSecondaryColor)
+                    ForEach(info.params.keys.sorted(), id: \.self) { key in
+                        HStack {
+                            Text(key).foregroundStyle(Theme.textSecondaryColor).frame(width: 70, alignment: .leading)
+                            TextField(info.params[key] ?? key, text: Binding(get: { Self.string(template.params[key]) }, set: { setParam(key, $0, template: template, layer: layer) }))
+                                .textFieldStyle(.roundedBorder).accessibilityLabel(key)
+                        }
+                    }
+                    Button("Detach to elements") { model.changeLayer(layerID, name: "Detach Graphic") { $0.graphic?.template = nil } }
+                        .buttonStyle(TechButtonStyle(kind: .secondary, compact: true))
+                } else {
+                    Text("\(graphic.elements.count) elements (detached)").font(Font(Theme.captionFont)).foregroundStyle(Theme.textSecondaryColor)
+                }
+                Text("Space").font(Font(Theme.headingFont(22))).foregroundStyle(Theme.textPrimaryColor)
+                TechSegmentedControl(selection: Binding(get: { graphic.space }, set: { value in
+                    model.changeLayer(layerID, name: "Graphic Space") { $0.graphic?.space = value }
+                }), options: [(.canvas, "Canvas"), (.screen, "Screen (follows zoom)")])
+                Divider()
+                Text("Keyframes").font(Font(Theme.headingFont(22))).foregroundStyle(Theme.textPrimaryColor)
+                ForEach(Array((layer.keys ?? []).enumerated()), id: \.offset) { index, key in
+                    HStack {
+                        Text(Self.describe(key)).font(Font(Theme.timecodeFont(11))).foregroundStyle(Theme.textSecondaryColor).fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
+                        Button { model.changeLayer(layerID, name: "Delete Keyframe") { $0.keys?.remove(at: index); if $0.keys?.isEmpty == true { $0.keys = nil } } } label: { Image(systemName: "minus.circle") }
+                            .buttonStyle(.plain).accessibilityLabel("Delete keyframe at \(String(format: "%.2f", key.t)) seconds")
+                    }
+                }
+                HStack {
+                    Button("Key at playhead  ⌥K") { model.addKeyAtPlayhead() }.buttonStyle(TechButtonStyle(kind: .secondary, compact: true))
+                    if layer.keys != nil { Button("Clear") { model.changeLayer(layerID, name: "Clear Keyframes") { $0.keys = nil } }.buttonStyle(TechButtonStyle(kind: .secondary, compact: true)) }
+                }
+                Text("Keys set position, scale, rotation and opacity over time; move the playhead, adjust, then key again.")
+                    .font(Font(Theme.captionFont)).foregroundStyle(Theme.textSecondaryColor)
+            }
+        }
+    }
+
+    static func string(_ value: JSONValue?) -> String {
+        switch value { case .string(let s)?: s; case .number(let n)?: n == n.rounded() ? String(Int(n)) : String(n); default: "" }
+    }
+    static func describe(_ k: Key) -> String {
+        let parts: [(String, Double?)] = [("x", k.x), ("y", k.y), ("scale", k.scale), ("rot", k.rotation), ("opacity", k.opacity)]
+        return String(format: "◆ %.2fs ", k.t) + parts.compactMap { name, v in v.map { String(format: "%@ %.2f", name, $0) } }.joined(separator: " ")
+    }
+
+    private func setParam(_ key: String, _ text: String, template: GraphicTemplate, layer: LayerBlock) {
+        var params = template.params
+        params[key] = Double(text).map(JSONValue.number) ?? .string(text)
+        // Invalid params (empty text, out-of-range numbers) are simply not applied; the field keeps what was typed.
+        // shortcut: one undo step per keystroke; coalesce with beginGesture/commitGesture on focus if undo history gets noisy.
+        guard let made = try? GraphicTemplates.make(template.name, params: params, length: layer.end - layer.start) else { return }
+        model.changeLayer(layerID, name: "Graphic \(key)") { $0.graphic = made.graphic }
     }
 }

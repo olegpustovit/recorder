@@ -426,6 +426,7 @@ enum SelfTest {
         "export": { args in try await ExporterSelfTest.runExportSelfTest(args) },
         "parity": { args in try await ExporterSelfTest.runParitySelfTest(args) },
         "graphics-png": { args in try await checkGraphicsPNG(args) },
+        "graphics-ui": { args in try await checkGraphicsUI(args) },
         "export-gif": { args in try await ExporterSelfTest.runExportGIFSelfTest(args) },
         "export-perf": { args in try await PerfSelfTest.runExportPerf(args) },
         "export-native": { _ in try await ExportSheetSelfTest.checkNativeHandoff() },
@@ -7549,4 +7550,39 @@ final class MainStallMonitor: @unchecked Sendable {
         guard changed > 50 else { throw MCPTestFailure(description: "graphics at \(t) s changed only \(changed) sampled pixels") }
         print(String(format: "graphics-png %.1f s: %d sampled pixels changed", t, changed))
     }
+}
+
+/// T-924 (headless): the real EditorModel commands behind Edit ▸ Add Graphic / `G` and ⌥K, the menu wiring, and the
+/// GraphicPanel rendered offscreen with ImageRenderer (no window) to <out>/graphic-panel.png.
+@MainActor private func checkGraphicsUI(_ args: [String]) async throws {
+    guard args.count >= 2 else { throw MCPTestFailure(description: "usage: graphics-ui <package> <out-dir>") }
+    let out = URL(fileURLWithPath: args[1]), fm = FileManager.default
+    try fm.createDirectory(at: out, withIntermediateDirectories: true)
+    let package = out.appendingPathComponent("graphics-ui.recorder")
+    try? fm.removeItem(at: package); try fm.copyItem(at: URL(fileURLWithPath: args[0]), to: package)
+    let model = try loadEditorModel(package: package)
+    model.playhead = 1
+    guard let id = model.addGraphic(template: "callout"), model.selection == [id],
+          let layer = model.project.layers.first(where: { $0.id == id.uuidString }), layer.kind == .graphic,
+          model.undoStepNames.last == "Add Graphic" else { throw MCPTestFailure(description: "Add Graphic command") }
+    model.playhead = 1.2; model.addKeyAtPlayhead()
+    model.playhead = 2.5; model.addKeyAtPlayhead()
+    guard model.project.layers.first(where: { $0.id == id.uuidString })?.keys?.map(\.t).map({ ($0 * 100).rounded() / 100 }) == [0.2, 1.5],
+          model.project.checkInvariants() == nil else { throw MCPTestFailure(description: "⌥K keys: \(String(describing: model.project.layers.first?.keys))") }
+    model.undo()
+    guard model.project.layers.first(where: { $0.id == id.uuidString })?.keys?.count == 1 else { throw MCPTestFailure(description: "keyframe undo") }
+    let menu = AppDelegate.buildMainMenu()
+    let edit = menu.items.first { $0.title == "Edit" }?.submenu
+    guard let add = edit?.items.first(where: { $0.title == "Add Graphic" })?.submenu, add.items.count == GraphicTemplates.catalog.count,
+          add.items.allSatisfy({ $0.action == #selector(EditorWindowController.addGraphicAtPlayhead(_:)) && $0.representedObject is String }),
+          edit?.items.contains(where: { $0.title == "Add Keyframe" && $0.keyEquivalent == "k" && $0.keyEquivalentModifierMask == .option }) == true else {
+        throw MCPTestFailure(description: "Edit menu graphics items")
+    }
+    let renderer = ImageRenderer(content: GraphicPanel(model: model, layerID: id).frame(width: 320).padding(16).background(Theme.bgPanelColor).environment(model))
+    renderer.scale = 2
+    guard let image = renderer.cgImage, let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else {
+        throw MCPTestFailure(description: "GraphicPanel render")
+    }
+    try png.write(to: out.appendingPathComponent("graphic-panel.png"))
+    print("graphics-ui: add/select/undo name, ⌥K keys at 0.2 s and 1.5 s, undo, menu wiring; panel \(image.width)×\(image.height) px")
 }

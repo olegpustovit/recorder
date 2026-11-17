@@ -603,6 +603,11 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
     @objc func toggleCompactTrackHeaders(_ sender: Any?) { coreTimelineView.toggleCompactTrackHeaders() }
 
     /// `Z`: adds and selects a zoom at the playhead’s source time.
+    @objc func addGraphicAtPlayhead(_ sender: Any?) {
+        model.addGraphic(template: (sender as? NSMenuItem)?.representedObject as? String ?? "titleCard")
+    }
+    @objc func addKeyframe(_ sender: Any?) { model.addKeyAtPlayhead() }
+
     @objc func addZoomAtPlayhead(_ sender: Any?) {
         let s = model.timeMap.sourceTime(atOutput: model.playhead)
         model.addZoom(atSource: s)
