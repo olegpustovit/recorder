@@ -2810,15 +2810,14 @@ public extension Project {
     @discardableResult
     mutating func insertStill(file: String, atOutput time: Double, duration: Double) -> Bool {
         let before = self
-        guard time.isFinite, duration.isFinite, duration >= 0.1, time >= 0, time <= TimeMap(clips).outputDuration else { return false }
+        guard time.isFinite, duration.isFinite, duration >= 0.5, time >= 0, time <= TimeMap(clips).outputDuration else { return false }   // image-layer minimum
         if time > 1e-6, time < TimeMap(clips).outputDuration - 1e-6, !clips.indices.contains(where: { i in
             abs(clips[..<i].reduce(0) { $0 + $1.outputDuration } - time) < 1e-6 }) {
             guard split(atOutput: time) else { self = before; return false }
         }
         var offset = 0.0, index = clips.count
         for (i, clip) in clips.enumerated() { if abs(offset - time) < 1e-6 { index = i; break }; offset += clip.outputDuration }
-        guard let id = addLayer(kind: .image, file: file, atOutput: time, duration: max(0.5, duration), rect: NormRect()) else { self = before; return false }
-        if duration < 0.5, let i = layers.firstIndex(where: { $0.id == id.uuidString }) { layers[i].end = layers[i].start + duration }
+        guard let id = addLayer(kind: .image, file: file, atOutput: time, duration: duration, rect: NormRect()) else { self = before; return false }
         guard let inserted = insertLayers([id], intoVideoAt: index, copy: false).first else { self = before; return false }
         // `file` is the finished frame (background, zoom, cursor), so it must not be framed again as screen footage: the
         // inserted time becomes a gap and the still is a full-canvas image layer over it (drawn unframed).
@@ -2828,6 +2827,44 @@ public extension Project {
               let i = layers.firstIndex(where: { $0.id == still.uuidString }) else { self = before; return false }
         layers[i].end = layers[i].start + clips[inserted].outputDuration
         layers[i].backdrop = .none; layers[i].fadeIn = nil; layers[i].fadeOut = nil
+        guard checkInvariants() == nil else { self = before; return false }
+        return true
+    }
+}
+
+// MARK: - Seam transitions (T-934)
+
+public enum SeamTransition: String, Codable, Sendable, CaseIterable { case dissolve, dip }
+
+public extension Project {
+    /// Output time of the clip boundary nearest `time` (within 0.5 s), with the index of the clip before it.
+    func seam(near time: Double) -> (index: Int, at: Double)? {
+        var offset = 0.0, best: (index: Int, at: Double)?
+        for i in clips.indices.dropLast() {
+            offset += clips[i].outputDuration
+            if abs(offset - time) <= 0.5, best.map({ abs(offset - time) < abs($0.at - time) }) ?? true { best = (i, offset) }
+        }
+        return best
+    }
+
+    /// dissolve: `file` (the outgoing clip's last frame, rendered by the caller) is a full-canvas still that fades out over
+    /// the first `duration` s of the next clip · dip: the clips fade out/in through the background (existing clip fades).
+    @discardableResult
+    mutating func addTransition(_ kind: SeamTransition, near time: Double, duration: Double, file: String? = nil) -> Bool {
+        // A dissolve's still is an image layer, so it shares the 0.5 s layer minimum; a dip can be shorter.
+        guard duration.isFinite, (kind == .dissolve ? 0.5...3 : 0.1...3).contains(duration), let seam = seam(near: time),
+              !clips[seam.index].isEmpty, !clips[seam.index + 1].isEmpty else { return false }
+        let before = self
+        switch kind {
+        case .dip:
+            clips[seam.index].fadeOut = duration / 2; clips[seam.index + 1].fadeIn = duration / 2
+        case .dissolve:
+            guard let file, clips[seam.index + 1].outputDuration >= duration,
+                  let id = addLayer(kind: .image, file: file, atOutput: seam.at, duration: max(0.5, duration), rect: NormRect()),
+                  let i = layers.firstIndex(where: { $0.id == id.uuidString }) else { self = before; return false }
+            layers[i].end = layers[i].start + duration
+            layers[i].backdrop = .none; layers[i].motion = .fade; layers[i].fadeIn = nil; layers[i].fadeOut = duration
+        }
         guard checkInvariants() == nil else { self = before; return false }
         return true
     }

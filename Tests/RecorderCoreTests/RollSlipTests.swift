@@ -65,3 +65,21 @@ import Testing
     let bad = p.insertStill(file: "media/freeze.png", atOutput: 99, duration: 1)
     #expect(!bad)
 }
+
+/// T-934: transitions find the nearest seam; dissolve = fading still over the next clip, dip = clip fades.
+@Test func seamTransitions() throws {
+    var p = Project(source: Source(duration: 20), clips: [Clip(sourceStart: 0, sourceEnd: 20)])
+    _ = p.split(atOutput: 8)
+    #expect(p.seam(near: 8.3)?.at == 8 && p.seam(near: 9) == nil)
+    var dip = p
+    let dipped = dip.addTransition(.dip, near: 8.2, duration: 0.6)
+    #expect(dipped && dip.clips[0].fadeOut == 0.3 && dip.clips[1].fadeIn == 0.3)
+    var dissolve = p
+    let dissolved = dissolve.addTransition(.dissolve, near: 7.9, duration: 0.5, file: "media/t.png")
+    let still = try #require(dissolve.layers.first)
+    #expect(dissolved && still.fadeOut == 0.5 && still.rect == NormRect() && items(dissolve).first { $0.id == still.id }?.out == TimeRange(start: 8, end: 8.5))
+    let states = dissolve.layerStates(atOutput: 8.25)
+    #expect(states.first.map { abs($0.opacity - 0.5) < 0.05 } == true)          // halfway through, the still is half faded
+    let missing = p.addTransition(.dissolve, near: 8, duration: 0.5)
+    #expect(!missing)                                                              // dissolve needs the rendered frame
+}

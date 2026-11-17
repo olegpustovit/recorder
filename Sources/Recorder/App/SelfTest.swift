@@ -430,6 +430,7 @@ enum SelfTest {
         "markers": { args in try await checkMarkersUI(args) },
         "transcript-edit": { args in try await checkTranscriptEdit(args) },
         "freeze": { args in try await checkFreeze(args) },
+        "transitions": { args in try await checkTransitions(args) },
         "export-gif": { args in try await ExporterSelfTest.runExportGIFSelfTest(args) },
         "export-perf": { args in try await PerfSelfTest.runExportPerf(args) },
         "export-native": { _ in try await ExportSheetSelfTest.checkNativeHandoff() },
@@ -7693,4 +7694,29 @@ final class MainStallMonitor: @unchecked Sendable {
     guard abs(model.project.exportDuration - before) < 1e-6 else { throw MCPTestFailure(description: "undo") }
     guard MCPTools.operationSchemas.contains(where: { (($0["properties"] as? [String: Any])?["op"] as? [String: Any])?["enum"] as? [String] == ["freeze"] }) else { throw MCPTestFailure(description: "schema") }
     print(String(format: "freeze: +1.50 s, held frame mean delta %.2f/255 vs original, undo restored", meanDelta))
+}
+
+/// T-934 (headless, temp copy): ⌘T's command renders the outgoing frame and adds a fading still at the seam; Add Dip sets
+/// the clip fades; each is one undo step; the agent op is in the schema.
+@MainActor private func checkTransitions(_ args: [String]) async throws {
+    guard let path = args.first else { throw MCPTestFailure(description: "usage: transitions <package>") }
+    let fm = FileManager.default, copy = fm.temporaryDirectory.appendingPathComponent("transitions-\(UUID().uuidString).recorder")
+    try fm.copyItem(at: URL(fileURLWithPath: path), to: copy)
+    defer { try? fm.removeItem(at: copy) }
+    let model = try loadEditorModel(package: copy)
+    model.edit("Split") { _ = $0.split(atOutput: 4) }
+    model.playhead = 4.2
+    await model.addTransition(.dissolve, duration: 0.5)
+    guard let still = model.project.layers.first(where: { $0.file.hasPrefix("media/transition-") }), fm.fileExists(atPath: copy.appendingPathComponent(still.file).path),
+          still.fadeOut == 0.5, model.undoStepNames.last == "Add Dissolve" else {
+        var trial = model.project
+        throw MCPTestFailure(description: "dissolve: clips \(model.project.clips.count) seam \(String(describing: model.project.seam(near: 4.2))) layers \(model.project.layers.map(\.file)) undo \(model.undoStepNames.suffix(2)) core \(trial.addTransition(.dissolve, near: 4.2, duration: 0.4, file: "media/x.png")) \(String(describing: trial.checkInvariants()))")
+    }
+    model.undo()
+    await model.addTransition(.dip, duration: 0.6)
+    guard model.project.clips[0].fadeOut == 0.3, model.project.clips[1].fadeIn == 0.3, model.undoStepNames.last == "Add Dip" else { throw MCPTestFailure(description: "dip") }
+    model.playhead = 10; await model.addTransition(.dip)
+    guard model.undoStepNames.last == "Add Dip", model.project.clips[0].fadeOut == 0.3 else { throw MCPTestFailure(description: "no seam should be a no-op") }
+    guard MCPTools.operationSchemas.contains(where: { (($0["properties"] as? [String: Any])?["op"] as? [String: Any])?["enum"] as? [String] == ["transition"] }) else { throw MCPTestFailure(description: "schema") }
+    print("transitions: dissolve still at the seam (fade 0.5 s, file in media/), undo, dip fades 0.3/0.3, no seam → no-op")
 }

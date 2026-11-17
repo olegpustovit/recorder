@@ -96,6 +96,26 @@ import RecorderCore
         edit("Freeze Frame") { $0 = trial }
     }
 
+    /// ⌘T / Edit ▸ Add Dip (T-934): transition at the seam nearest the playhead; a dissolve renders the outgoing frame.
+    func addTransition(_ kind: SeamTransition, duration: Double = 0.5) async {
+        guard let seam = project.seam(near: playhead) else { NSSound.beep(); return }
+        var file: String?
+        if kind == .dissolve {
+            guard let png = try? await EditorWindowController.renderFramesPNG(model: self, at: [max(0, seam.at - 1.0 / 60)], longEdge: nil).first else { NSSound.beep(); return }
+            file = "media/transition-\(UUID().uuidString).png"
+            do {
+                try FileManager.default.createDirectory(at: packageURL.appendingPathComponent("media"), withIntermediateDirectories: true)
+                try png.write(to: packageURL.appendingPathComponent(file!), options: .atomic)
+            } catch { NSSound.beep(); return }
+        }
+        var trial = project
+        guard trial.addTransition(kind, near: seam.at, duration: duration, file: file) else {
+            if let file { try? FileManager.default.removeItem(at: packageURL.appendingPathComponent(file)) }
+            NSSound.beep(); return
+        }
+        edit(kind == .dissolve ? "Add Dissolve" : "Add Dip") { $0 = trial }
+    }
+
     /// `M` (T-930): adds "Marker N" at the playhead, or removes the marker already there (within 0.1 s); one undo step.
     func toggleMarkerAtPlayhead() {
         let markers = items(project).filter { $0.kind == .marker }

@@ -66,7 +66,8 @@ enum MCPTools {
                 "space": ["type": "string", "enum": ["canvas", "screen"], "description": "screen: positions are source-frame 0–1 and follow zoom/crop."],
                 "anchor": point, "rect": rect,
                 "keys": ["type": "array", "description": "Whole-graphic keyframes [{t (s since start), x, y (offsets 0–1), scale, rotation (deg), opacity, ease linear|hold|easeIn|easeOut|easeInOut|spring}]", "items": ["type": "object"], "maxItems": 64]], ["from", "to"]),
-            op("freeze", ["at": number, "duration": ["type": "number", "minimum": 0.1, "maximum": 10, "description": "Seconds to hold the frame at `at`; later footage moves back."]], ["at", "duration"]),
+            op("freeze", ["at": number, "duration": ["type": "number", "minimum": 0.5, "maximum": 10, "description": "Seconds to hold the frame at `at`; later footage moves back."]], ["at", "duration"]),
+            op("transition", ["at": number, "kind": ["type": "string", "enum": ["dissolve", "dip"]], "duration": ["type": "number", "minimum": 0.1, "maximum": 3, "default": 0.5, "description": "At the clip seam nearest `at` (within 0.5 s). dissolve (≥ 0.5 s): the outgoing frame fades into the next clip; dip: through the background."]], ["at", "kind"]),
             op("animate", ["id": string, "keys": ["type": "array", "description": "Replace the keyframes of a layer, graphic or text block (same key shape as graphic.keys); [] clears.", "items": ["type": "object"], "maxItems": 64]], ["id", "keys"]),
             op("layer", ["from": number, "to": number, "asset": ["type": "string", "description": "A media/ file listed by project.assets (reuse an existing layer's media)."],
                 "path": ["type": "string", "description": "Absolute path to an image or video in your home or temp folder; imported into the project when applied."],
@@ -355,9 +356,15 @@ enum MCPTools {
         var ops = try await reframed(resolution.ops, raw: loweredOps, model: model)
         // freeze: render the held frame from the viewed project (draft included) into media/ (T-933).
         for (i, op) in ops.enumerated() {
-            guard case let .freeze(at, duration, nil) = op else { continue }
-            guard case .seconds(let time) = at else { throw MCPFailure(code: "INVALID_OP", message: "freeze at must be numeric output seconds") }
+            var at: EditTime, render: Double
+            switch op {
+            case let .freeze(when, _, nil): at = when; render = 0
+            case let .transition(when, .dissolve, _, nil): at = when; render = -1.0 / 60   // the outgoing clip's last frame
+            default: continue
+            }
+            guard case .seconds(var time) = at else { throw MCPFailure(code: "INVALID_OP", message: "freeze/transition at must be numeric output seconds") }
             let viewed = try viewedProject(model, session: session)
+            if render != 0 { guard let seam = viewed.seam(near: time) else { throw MCPFailure(code: "INVALID_OP", message: "no clip seam within 0.5 s of \(time); seams are at timeline.get clip edges") }; time = max(0, seam.at + render) }
             let frame = EditorModel(packageURL: model.packageURL, project: viewed, events: model.events)
             guard time >= 0, time <= viewed.exportDuration, let png = try await EditorWindowController.renderFramesPNG(model: frame, at: [time], longEdge: nil).first else {
                 throw MCPFailure(code: "OUT_OF_RANGE", message: "freeze at must be inside 0–\(viewed.exportDuration)")
@@ -366,7 +373,11 @@ enum MCPTools {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try png.write(to: url, options: .atomic)
             rendered.append(url)
-            ops[i] = .freeze(at: at, duration: duration, file: file)
+            switch op {
+            case let .freeze(_, duration, _): ops[i] = .freeze(at: at, duration: duration, file: file)
+            case let .transition(_, kind, duration, _): ops[i] = .transition(at: at, kind: kind, duration: duration, file: file)
+            default: break
+            }
         }
         var context = try await editContext(ops, model: model)
         context.assets = resolution.assets

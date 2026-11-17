@@ -163,9 +163,11 @@ public enum EditOp: Codable, Equatable, Sendable {
     /// Hold the frame at `at` for `duration` s, pushing later footage back (T-933). The app renders the frame into `file`
     /// (a media/ PNG) before applying, so the stored op replays without rendering.
     case freeze(at: EditTime, duration: Double, file: String?)
+    /// Transition at the clip seam nearest `at` (T-934); for a dissolve the app renders the outgoing frame into `file`.
+    case transition(at: EditTime, kind: SeamTransition, duration: Double, file: String?)
 
     private enum CodingKeys: String, CodingKey {
-        case op, from, to, minDuration, keepTail, transcript, words, speed, scale, center, style, text, position, size, maxWords, rect, opacity, at, label, id, patch, snap, follow, ease, color, asset, path, recording, aspect, mode, keys, template, elements, space, anchor, duration, file
+        case op, from, to, minDuration, keepTail, transcript, words, speed, scale, center, style, text, position, size, maxWords, rect, opacity, at, label, id, patch, snap, follow, ease, color, asset, path, recording, aspect, mode, keys, template, elements, space, anchor, duration, file, kind
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -195,6 +197,7 @@ public enum EditOp: Codable, Equatable, Sendable {
         case "graphic": self = try .graphic(from: get(.from), to: get(.to), template: optional(.template), elements: optional(.elements), space: optional(.space), anchor: optional(.anchor), rect: optional(.rect), keys: optional(.keys))
         case "animate": self = try .animate(id: get(.id), keys: get(.keys))
         case "freeze": self = try .freeze(at: get(.at), duration: get(.duration), file: optional(.file))
+        case "transition": self = try .transition(at: get(.at), kind: get(.kind), duration: optional(.duration) ?? 0.5, file: optional(.file))
         default: throw DecodingError.dataCorruptedError(forKey: .op, in: c, debugDescription: "Unknown edit op; use an op from edit.apply's schema")
         }
     }
@@ -227,6 +230,7 @@ public enum EditOp: Codable, Equatable, Sendable {
             try optional(anchor, .anchor); try optional(rect, .rect); try optional(keys, .keys)
         case let .animate(id, keys): try put("animate", .op); try put(id, .id); try put(keys, .keys)
         case let .freeze(at, duration, file): try put("freeze", .op); try put(at, .at); try put(duration, .duration); try optional(file, .file)
+        case let .transition(at, kind, duration, file): try put("transition", .op); try put(at, .at); try put(kind, .kind); try put(duration, .duration); try optional(file, .file)
         case let .layer(from, to, source, rect):
             try put("layer", .op); try put(from, .from); try optional(to, .to); try optional(rect, .rect)
             switch source {
@@ -242,7 +246,7 @@ public enum EditOp: Codable, Equatable, Sendable {
         switch self {
         case let .cut(from, _, _), let .speed(from, _, _, _), let .zoom(from, _, _, _, _, _), let .text(from, _, _, _, _, _, _),
              let .highlight(from, _, _, _), let .layer(from, _, _, _), let .graphic(from, _, _, _, _, _, _, _): time = from
-        case let .marker(at, _), let .freeze(at, _, _): time = at
+        case let .marker(at, _), let .freeze(at, _, _), let .transition(at, _, _, _): time = at
         case let .cutPauses(_, _, from, _, _): time = from
         case let .set(_, fields): time = fields.from
         default: time = nil
@@ -572,7 +576,7 @@ public extension Project {
                     guard let first = mapped.first, let last = mapped.last else { throw EditError.invalidOp(index: index, reason: "range contains only gaps") }
                     resolved = [TimeRange(start: from == nil ? block.1 : first.start, end: to == nil ? block.2 : last.end)]
                 }
-            case let .freeze(time, _, _):
+            case let .freeze(time, _, _), let .transition(time, _, _, _):
                 let point = try coordinate(time)
                 at = point.output; resolved = [TimeRange(start: point.source, end: point.source)]
                 if time.isAnchor { sourceAt = point.source }
@@ -869,10 +873,16 @@ public extension Project {
                     guard let file, file.hasPrefix("media/"), let span, let at = TimeMap(result.clips).outputTime(atSource: span.start) else {
                         throw EditError.invalidOp(index: index, reason: "freeze needs a rendered frame; use edit.apply (the app renders it)")
                     }
-                    guard duration.isFinite, (0.1...10).contains(duration), result.insertStill(file: file, atOutput: at, duration: duration) else {
-                        throw EditError.invalidOp(index: index, reason: "freeze duration must be 0.1–10 s at a point inside the footage")
+                    guard duration.isFinite, (0.5...10).contains(duration), result.insertStill(file: file, atOutput: at, duration: duration) else {
+                        throw EditError.invalidOp(index: index, reason: "freeze duration must be 0.5–10 s at a point inside the footage")
                     }
                     summary = String(format: "Freeze %.1f s %@", duration, stamp(item.at))
+                case let .transition(_, kind, duration, file):
+                    guard let span, let at = TimeMap(result.clips).outputTime(atSource: span.start),
+                          result.addTransition(kind, near: at, duration: duration, file: file) else {
+                        throw EditError.invalidOp(index: index, reason: "transition needs a seam between two clips within 0.5 s of at, duration 0.1–3 s (dissolve ≥ 0.5 s) no longer than the next clip" + (kind == .dissolve && file == nil ? ", and a rendered frame (use edit.apply)" : ""))
+                    }
+                    summary = "\(kind == .dissolve ? "Dissolve" : "Dip") \(stamp(item.at))"
                 case let .animate(id, keys):
                     let value: [Key]? = keys.isEmpty ? nil : keys
                     if let i = result.layers.firstIndex(where: { $0.id == id }) {
