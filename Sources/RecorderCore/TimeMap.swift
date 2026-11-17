@@ -148,6 +148,60 @@ public extension Project {
         }
     }
 
+    /// Output ranges where an un-ducked, un-muted track plays (what a ducked track ducks under), merged.
+    func speechRanges() -> [TimeRange] {
+        let spans = audioClips.filter { audioTracks.indices.contains($0.track) && audioTracks[$0.track].duck != true && !audioTracks[$0.track].muted && $0.gain > 0 }
+            .flatMap { audioSegments($0).map(\.output) }.sorted { $0.start < $1.start }
+        return spans.reduce(into: [TimeRange]()) { merged, r in
+            if let last = merged.last, r.start <= last.end + 0.25 { merged[merged.count - 1].end = max(last.end, r.end) } else { merged.append(r) }
+        }
+    }
+
+    /// `audioVolumeRamps` with ducking applied (T-936): on a `duck` track the level falls to 25 % inside speech ranges with
+    /// 0.3 s ramps. The mix (FrameSource) uses this; other tracks get their plain ramps.
+    func duckedVolumeRamps(_ audio: AudioClip) -> [(range: TimeRange, start: Double, end: Double)] {
+        let ramps = audioVolumeRamps(audio)
+        guard audioTracks.indices.contains(audio.track), audioTracks[audio.track].duck == true else { return ramps }
+        let speech = speechRanges(), low = 0.25, edge = 0.3
+        guard !speech.isEmpty else { return ramps }
+        func duck(_ t: Double) -> Double {
+            var factor = 1.0
+            for s in speech {
+                if t >= s.start && t <= s.end { return low }
+                let d = t < s.start ? s.start - t : t - s.end
+                if d < edge { factor = min(factor, low + (1 - low) * d / edge) }
+            }
+            return factor
+        }
+        let cuts = speech.flatMap { [$0.start - edge, $0.start, $0.end, $0.end + edge] }
+        return ramps.flatMap { ramp -> [(range: TimeRange, start: Double, end: Double)] in
+            let times = ([ramp.range.start, ramp.range.end] + cuts.filter { $0 > ramp.range.start && $0 < ramp.range.end }).sorted()
+            func base(_ t: Double) -> Double { ramp.start + (ramp.end - ramp.start) * (t - ramp.range.start) / max(ramp.range.end - ramp.range.start, 1e-9) }
+            return zip(times, times.dropFirst()).map { a, b in (TimeRange(start: a, end: b), base(a) * duck(a), base(b) * duck(b)) }
+        }
+    }
+
+    /// Editable gain envelope (T-936): sets the clip's level at output `time` (0–1 of its gain; points are media-keyed, so they stay on
+    /// the sound through later edits). Existing fades are frozen into points first. False when `time` isn't in the clip.
+    @discardableResult
+    mutating func setGainPoint(audio id: String, atOutput time: Double, value: Double) -> Bool {
+        guard let i = audioClips.firstIndex(where: { $0.id == id }), value.isFinite, (0...1).contains(value),   // envelope points are 0–1 of the clip gain
+              let segment = audioSegments(audioClips[i]).first(where: { time >= $0.output.start - 1e-9 && time <= $0.output.end + 1e-9 }) else { return false }
+        let before = self
+        var audio = audioPreservingEnvelope(audioClips[i])
+        if audio.envelope == nil, let first = audioSegments(audio).first, let last = audioSegments(audio).last {
+            audio.envelope = [AudioGainPoint(time: first.media.start, value: 1), AudioGainPoint(time: last.media.end, value: 1)]
+        }
+        let media = segment.media.start + (time - segment.output.start) * (segment.media.end - segment.media.start) / max(segment.output.end - segment.output.start, 1e-9)
+        var points = (audio.envelope ?? []).filter { abs($0.time - media) > 1e-6 }
+        points.append(AudioGainPoint(time: media, value: value))
+        audio.fadeIn = nil; audio.fadeOut = nil   // the fades now live in the points (clearing a fade resets the envelope, so first)
+        audio.envelope = points.sorted { $0.time < $1.time }
+        audioClips[i] = audio
+        guard audio.envelopeIsValid, checkInvariants() == nil else { self = before; return false }
+        return true
+    }
+
     /// Freeze only faded clips; media-keyed points preserve partial ramps through subsequent edits.
     internal func audioPreservingEnvelope(_ audio: AudioClip) -> AudioClip {
         guard audio.envelope == nil, (audio.fadeIn ?? 0) > 0 || (audio.fadeOut ?? 0) > 0 else { return audio }

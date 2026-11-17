@@ -4,6 +4,7 @@ import RecorderCore
 struct AudioPanel: View {
     let model: EditorModel
     let audioID: UUID
+    @State private var pointLevel = 0.5
 
     var clip: AudioClip? { model.project.audioClips.first { $0.id == audioID.uuidString } }
     private var duration: Double {
@@ -49,6 +50,27 @@ struct AudioPanel: View {
                                   range: 0...max(0.1, duration), defaultValue: 0,
                                   format: { $0 == 0 ? "Off" : String(format: "%.2f s", $0) },
                                   onEditingChanged: gesture("Audio Fade"))
+                }
+                Toggle("Duck under speech", isOn: Binding(get: { model.project.audioTracks[clip.track].duck == true }, set: { on in
+                    model.edit(on ? "Duck Track" : "Stop Ducking") { $0.audioTracks[clip.track].duck = on ? true : nil }
+                })).foregroundStyle(Theme.textPrimaryColor)
+                Text("Lowers this track to 25 % wherever another track plays (music under voice).")
+                    .font(Font(Theme.captionFont)).foregroundStyle(Theme.textSecondaryColor)
+                HStack {   // T-936 editable envelope: a level point at the playhead
+                    LabeledSlider(title: "Level at playhead", value: $pointLevel, range: 0...1, defaultValue: 1,
+                                  format: { String(format: "%.0f %%", $0 * 100) }, onEditingChanged: { _ in })
+                    Button("Set") {
+                        var trial = model.project
+                        if trial.setGainPoint(audio: audioID.uuidString, atOutput: model.playhead, value: pointLevel) { model.edit("Volume Point") { $0 = trial } } else { NSSound.beep() }
+                    }.buttonStyle(TechButtonStyle(kind: .secondary, compact: true))
+                }
+                if let points = clip.envelope {
+                    HStack {
+                        Text("\(points.count) volume points").font(Font(Theme.captionFont)).foregroundStyle(Theme.textSecondaryColor)
+                        Spacer(minLength: 0)
+                        Button("Clear") { model.edit("Clear Volume Points") { p in if let i = p.audioClips.firstIndex(where: { $0.id == audioID.uuidString }) { p.audioClips[i].envelope = nil } } }
+                            .buttonStyle(TechButtonStyle(kind: .secondary, compact: true))
+                    }
                 }
                 Text(String(format: "Duration %.2f s", duration)).font(Font(Theme.captionFont)).foregroundStyle(Theme.textSecondaryColor)
                 Button("Remove audio", role: .destructive) {

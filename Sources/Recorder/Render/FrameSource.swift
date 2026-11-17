@@ -303,7 +303,7 @@ func makeAudioMix(project: Project, audioTracks: [AVMutableCompositionTrack]) ->
         var cursor = CMTime.negativeInfinity
         for audio in project.audioClips.filter({ $0.track == index }).sorted(by: { $0.start < $1.start }) {
             let previous = cursor
-            for ramp in project.audioVolumeRamps(audio) {
+            for ramp in project.duckedVolumeRamps(audio) {
                 let start = max(cursor, CMTime(seconds: ramp.range.start, preferredTimescale: 600))
                 let end = CMTime(seconds: ramp.range.end, preferredTimescale: 600)
                 guard start < end else { continue }

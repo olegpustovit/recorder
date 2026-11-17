@@ -335,17 +335,20 @@ public struct AudioTrack: Codable, Equatable, Sendable {
     public var name: String
     public var volume: Double
     public var muted: Bool
+    /// Ducks (to 25 %) wherever another, un-ducked track plays — music under speech (T-936). nil = off.
+    public var duck: Bool? = nil
 
     public init(id: String = makeProjectID().uuidString, name: String, volume: Double = 1, muted: Bool = false) {
         self.id = id; self.name = name; self.volume = volume; self.muted = muted
     }
-    enum CodingKeys: String, CodingKey { case id, name, volume, muted }
+    enum CodingKeys: String, CodingKey { case id, name, volume, muted, duck }
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.value(.id, default: makeProjectID().uuidString)
         name = try container.value(.name, default: "Audio 1")
         volume = try container.value(.volume, default: 1)
         muted = try container.value(.muted, default: false)
+        duck = try container.decodeIfPresent(Bool.self, forKey: .duck)
     }
 }
 

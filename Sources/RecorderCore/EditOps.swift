@@ -123,17 +123,18 @@ public struct SetFields: Codable, Equatable, Sendable {
     public var text: String?, color: BlockColor?
     public var position: NormPoint?, size: Double?, scale: Double?, center: NormPoint?, follow: ZoomFollow?, ease: ZoomEase?
     public var kind: Mask.Kind?
+    public var duck: Bool?                  // audio items: duck their track under speech (T-936)
     public init(from: EditTime? = nil, to: EditTime? = nil, text: String? = nil, position: NormPoint? = nil, size: Double? = nil, scale: Double? = nil,
                 center: NormPoint? = nil, follow: ZoomFollow? = nil, ease: ZoomEase? = nil, color: BlockColor? = nil,
-                mediaStart: Double? = nil, mediaRate: Double? = nil, kind: Mask.Kind? = nil) {
+                mediaStart: Double? = nil, mediaRate: Double? = nil, kind: Mask.Kind? = nil, duck: Bool? = nil) {
         self.from = from; self.to = to; self.mediaStart = mediaStart; self.mediaRate = mediaRate; self.text = text; self.color = color
-        self.position = position; self.size = size; self.scale = scale; self.center = center; self.follow = follow; self.ease = ease; self.kind = kind
+        self.position = position; self.size = size; self.scale = scale; self.center = center; self.follow = follow; self.ease = ease; self.kind = kind; self.duck = duck
     }
     public static let layerFields = ["from", "to", "mediaStart", "mediaRate", "color"]
     /// Names of the fields this patch sets (checked against `editableFields(kind)`).
     public var given: [String] {
         let all: [(String, Any?)] = [("from", from), ("to", to), ("mediaStart", mediaStart), ("mediaRate", mediaRate), ("text", text), ("color", color),
-                                     ("position", position), ("size", size), ("scale", scale), ("center", center), ("follow", follow), ("ease", ease), ("kind", kind)]
+                                     ("position", position), ("size", size), ("scale", scale), ("center", center), ("follow", follow), ("ease", ease), ("kind", kind), ("duck", duck)]
         return all.compactMap { $0.1 == nil ? nil : $0.0 }
     }
 }
@@ -547,6 +548,8 @@ public extension Project {
                 }
                 resolved = baseMap.sourceRanges(forMedia: media)
                 at = resolved.first.flatMap { baseMap.outputTime(atSource: $0.start) } ?? 0
+            case let .set(id, _) where kinds[id] == .audio:
+                at = items(self).first { $0.id == id }?.out.start ?? 0
             case let .set(id, _) where kinds[id] == .clip:
                 guard let i = Int(id.dropFirst()), clips.indices.contains(i) else { throw EditError.invalidOp(index: index, reason: "unknown clip \(id)") }
                 at = baseMap.outputTime(atSource: clips[i].sourceStart) ?? 0
@@ -731,6 +734,12 @@ public extension Project {
                     result.markers.append(Marker(time: span?.start ?? baseMap.sourceTime(atOutput: item.at), label: label))
                     result.markers.sort { $0.time < $1.time }
                     summary = "Marker \(stamp(item.at))"
+                case let .set(id, fields) where kinds[id] == .audio:
+                    guard let duck = fields.duck, let audio = result.audioClips.first(where: { $0.id == id }), result.audioTracks.indices.contains(audio.track) else {
+                        throw EditError.invalidOp(index: index, reason: "audio \(id) takes duck (true/false)")
+                    }
+                    result.audioTracks[audio.track].duck = duck ? true : nil
+                    summary = duck ? "Duck \(result.audioTracks[audio.track].name)" : "Stop ducking \(result.audioTracks[audio.track].name)"
                 case let .set(id, fields) where kinds[id] == .clip:
                     // Slip: base clip → the current clip showing the same footage (earlier ops may have split or moved it).
                     guard let i = Int(id.dropFirst()), let mediaStart = fields.mediaStart, clips.indices.contains(i),

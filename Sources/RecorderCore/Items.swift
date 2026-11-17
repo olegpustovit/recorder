@@ -33,7 +33,8 @@ public func editableFields(_ kind: Item.Kind) -> [String] {
     case .graphic: ["from", "to", "color"]
     case .marker: ["from", "text"]
     case .clip: ["mediaStart"]   // slip (T-932)
-    case .gap, .layout, .camera, .keys, .window, .audio: []
+    case .audio: ["duck"]        // the clip's track ducks under speech (T-936)
+    case .gap, .layout, .camera, .keys, .window: []
     }
 }
 
