@@ -214,4 +214,16 @@ import Testing
         #expect(try JSONDecoder().decode(EditOp.self, from: JSONEncoder().encode(op)) == op)
     }
 
+    /// T-904: the uncovered tail gap is linted with a cut suggestion, and that cut removes it, rippling the layer.
+    @Test func uncoveredGapIsLintedAndCuttable() throws {
+        let gap = try #require(uncoveredRanges(base).first)
+        #expect(abs((gap.end - gap.start) - 0.5642) < 0.001)
+        let items = lint(base, storyboard: GoldenIslandTests.board)
+        #expect(items.contains { $0.rule == "uncovered" && $0.suggest != nil })
+        let (start, _) = try #require(span(base, layer.id))
+        let cut = try base.applying([.cut(from: .seconds(gap.start), to: .seconds(gap.end))], context: EditContext()).project
+        #expect(uncoveredRanges(cut).isEmpty && cut.checkInvariants() == nil)
+        #expect(span(cut, layer.id).map { abs($0.0 - (start - (gap.end - gap.start))) < 1e-6 } == true)
+        #expect(abs(base.exportDuration - cut.exportDuration - (gap.end - gap.start)) < 1e-6)
+    }
 }

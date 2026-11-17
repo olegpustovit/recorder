@@ -370,7 +370,7 @@ public extension Project {
         if let error = checkInvariants() { throw EditError.invariant(error) }
         let baseMap = TimeMap(clips)
         let duration = baseMap.outputDuration
-        func numericRanges(_ from: Double, _ to: Double, index: Int, recordedOnly: Bool = false, snap: Bool = false) throws -> [TimeRange] {
+        func numericRanges(_ from: Double, _ to: Double, index: Int, recordedOnly: Bool = false, snap: Bool = false, gaps: Bool = false) throws -> [TimeRange] {
             guard from.isFinite, to.isFinite, to > from, snap || (from >= 0 && to <= duration) else {
                 throw EditError.outOfRange(index: index, reason: "expected 0 ≤ from < to ≤ \(duration)")
             }
@@ -379,7 +379,7 @@ public extension Project {
             return clips.compactMap { clip in
                 defer { offset += clip.outputDuration }
                 let lo = max(from, offset), hi = min(to, offset + clip.outputDuration)
-                guard hi > lo, !clip.isEmpty, !recordedOnly || clip.file == nil else { return nil }
+                guard hi > lo, gaps || !clip.isEmpty, !recordedOnly || clip.file == nil else { return nil }
                 return TimeRange(start: clip.sourceStart + (lo - offset) * clip.timeScale,
                                  end: clip.sourceStart + (hi - offset) * clip.timeScale)
             }
@@ -448,14 +448,17 @@ public extension Project {
                 }
             }
             func ranges(_ from: EditTime, _ to: EditTime, recordedOnly: Bool = false) throws -> [TimeRange] {
+                // A cut also removes empty timeline (gap clips): background-only spans must be cuttable (T-904).
+                var gaps = false
+                if case .cut(_, _, false) = op { gaps = true }
                 if case .seconds(let from) = from, case .seconds(let to) = to {
-                    return try numericRanges(from, to, index: index, recordedOnly: recordedOnly, snap: op.snapsClipBoundaries)
+                    return try numericRanges(from, to, index: index, recordedOnly: recordedOnly, snap: op.snapsClipBoundaries, gaps: gaps)
                 }
                 let start = try coordinate(from).source, end = try coordinate(to).source
                 guard end > start else { throw EditError.outOfRange(index: index, reason: "anchor range must have from < to") }
                 return try prefix().clips.compactMap { clip in
                     let lo = max(start, clip.sourceStart), hi = min(end, clip.sourceEnd)
-                    guard hi > lo, !clip.isEmpty, !recordedOnly || clip.file == nil else { return nil }
+                    guard hi > lo, gaps || !clip.isEmpty, !recordedOnly || clip.file == nil else { return nil }
                     return TimeRange(start: lo, end: hi)
                 }
             }
@@ -952,8 +955,22 @@ public extension Project {
             guard (try? agentSplit(range, index: 0, includeImported: includeImported)) != nil else { continue }
             let indices = Set(clips.indices.filter { !clips[$0].isEmpty && (includeImported || clips[$0].file == nil) && clips[$0].sourceStart >= range.start - 1e-9 && clips[$0].sourceEnd <= range.end + 1e-9 })
             deleteClips(indices, propagate: true)
+            removeGapTime(range)
             if checkInvariants() != nil { self = before }
         }
+    }
+
+    /// Shortens gap clips by their overlap with `range` (a gap has no footage or effects, so only its length changes) and
+    /// re-anchors connected items whose spine point disappeared, which ripples them earlier (T-904).
+    private mutating func removeGapTime(_ range: TimeRange) {
+        var changed = false
+        for i in clips.indices.reversed() where clips[i].isEmpty && clips.count > 1 {
+            let lo = max(range.start, clips[i].sourceStart), hi = min(range.end, clips[i].sourceEnd)
+            guard hi - lo > 1e-9 else { continue }
+            changed = true
+            if hi - lo >= clips[i].sourceEnd - clips[i].sourceStart - 1e-9 { clips.remove(at: i) } else { clips[i].sourceEnd -= hi - lo }
+        }
+        if changed { settleConnected() }
     }
 
     private mutating func agentSplit(_ range: TimeRange, index: Int, includeImported: Bool = true) throws {

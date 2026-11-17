@@ -164,7 +164,7 @@ Draft status/panel excludes these skipped operations from Accept N and preserves
 Zoom centers are normalized0–1 in the source frame, with the origin at the top-left corner.
 
 ```jsonc
-{"op":"cut","from":12.0,"to":14.5}                          // remove a range (video + linked audio, ripple)
+{"op":"cut","from":12.0,"to":14.5}                          // remove a range (video + linked audio, ripple); also removes empty timeline (gaps) and ripples layers after it
 {"op":"cutPauses","minDuration":0.6,"keepTail":0.12,"from":0,"to":96}   // from/to optional = whole project
 {"op":"cutWords","transcript":"t-3fa9c1d2","words":["w118","w119"]}
 {"op":"speed","from":30,"to":42,"speed":2}
@@ -222,6 +222,7 @@ the batch started from. Static = `static` or `cursorOnly` shots. `hookSec` = out
 | duration | 15–45 s | 20–120 s | 30–300 s |
 | tinyShot | < 0.25 s | < 0.3 s | < 0.4 s |
 | orphanEffect (zoom, non-caption text) | < 0.5 s visible, all profiles | | |
+| uncovered (only background visible: no clip, no full-canvas layer, ≥ 1 frame) | all profiles; `suggest` = `cut` of the part inside the clips | | |
 | edgeContent | shot focus box outside `project.crop`, all profiles | | |
 **Anchors (T-826).** Any `from`/`to`/`at` may be a number or an anchor object, resolved on the timeline after the
 earlier ops of the same batch: `{"marker":"<id or label>","offset":s}` (a label works when exactly one marker has it;

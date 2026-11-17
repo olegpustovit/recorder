@@ -162,12 +162,41 @@ private func visible(_ start: Double, _ end: Double, _ map: TimeMap) -> (sec: Do
     return (ranges.reduce(0) { $0 + $1.end - $1.start }, first.start)
 }
 
+/// Output spans (≥ 1 frame at 60 fps) where neither a video clip nor a full-canvas layer covers the canvas, so only the
+/// background shows (feedback run 6: the 0.56 s tail gap flashed before the appended layer). T-904.
+public func uncoveredRanges(_ project: Project) -> [TimeRange] {
+    let map = TimeMap(project.clips)
+    var covered: [TimeRange] = [], offset = 0.0
+    for clip in project.clips {
+        if !clip.isEmpty { covered.append(TimeRange(start: offset, end: offset + clip.outputDuration)) }
+        offset += clip.outputDuration
+    }
+    for layer in project.layers where layer.rect.w >= 0.999 && layer.rect.h >= 0.999 {
+        if let start = map.outputTime(atSource: layer.start) { covered.append(TimeRange(start: start, end: start + layer.end - layer.start)) }
+    }
+    var gaps: [TimeRange] = [], cursor = 0.0
+    for range in covered.sorted(by: { $0.start < $1.start }) {
+        if range.start - cursor >= 1.0 / 60 { gaps.append(TimeRange(start: cursor, end: range.start)) }
+        cursor = max(cursor, range.end)
+    }
+    if project.exportDuration - cursor >= 1.0 / 60 { gaps.append(TimeRange(start: cursor, end: project.exportDuration)) }
+    return gaps
+}
+
 public func lint(_ project: Project, storyboard sb: Storyboard, profile: LintProfile = .reel) -> [LintItem] {
     lint(project, metrics(project, sb), sb, profile)
 }
 
 private func lint(_ project: Project, _ m: Metrics, _ sb: Storyboard, _ p: LintProfile) -> [LintItem] {
-    var items: [LintItem] = []
+    let clipsEnd = TimeMap(project.clips).outputDuration
+    var items: [LintItem] = uncoveredRanges(project).map { gap in
+        // Only the part inside the clips is cuttable; a tail past them comes from audio or a short layer.
+        let end = min(gap.end, clipsEnd), cuttable = (end * 100).rounded(.down) - (gap.start * 100).rounded(.up) >= 1   // rounded inward to 0.01 s
+        return LintItem(rule: "uncovered", sev: "warn", at: r2(gap.start), shot: nil,
+                        msg: String(format: "background only %.2f–%.2f s: no clip or full-canvas layer covers it; ", gap.start, gap.end)
+                            + (cuttable ? "cut it" : "trim the audio or extend a layer"),
+                        suggest: cuttable ? opJSON("cut", ["from": .number((gap.start * 100).rounded(.up) / 100), "to": .number((end * 100).rounded(.down) / 100)]) : nil)
+    }
     let map = TimeMap(project.clips)
     func shotAt(_ t: Double) -> String? { m.segs.first { $0.range.start <= t && t < $0.range.end }?.shot.id }
     if let hook = m.hook, hook > p.hookMax {
