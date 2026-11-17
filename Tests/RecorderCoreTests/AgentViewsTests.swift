@@ -88,3 +88,18 @@ import Testing
         #expect(view.markers.isEmpty)
     }
 }
+
+/// T-905 tool polish (feedback run 6 #6, #7, #8).
+@Test func toolPolishSheetStaleRefocus() {
+    #expect(sheetTimes(count: 2, from: 0.5, to: 1.0) == [0.625, 0.875])
+    #expect(sheetTimes(count: 4, from: 0, to: 8) == [1, 3, 5, 7])
+    let draft = staleRevisionMessage(sent: "aaa", current: "bbb", isDraft: true, draftBase: "base1", live: "base1")
+    #expect(draft == "You passed aaa; the current draft revision is bbb; retry with ifRevision bbb")
+    let moved = staleRevisionMessage(sent: "aaa", current: "bbb", isDraft: true, draftBase: "base1", live: "live2")
+    #expect(moved.contains("built on base1") && moved.contains("now at live2") && !moved.contains("retry with"))
+    let board = Storyboard(duration: 4, fps: 10, shots: [Shot(id: "s01", from: 0, to: 4, kind: .static, boundary: .start, focus: NormRect(x: 0, y: 0, w: 0.4, h: 0.2))],
+                           summary: StoryboardSummary(shots: 1, aslSec: 4, staticSec: 4, longestStatic: nil))
+    let (aimed, unknown) = board.refocused(["s01": NormPoint(x: 0.95, y: 0.5), "s99": NormPoint(x: 0.5, y: 0.5)])
+    #expect(unknown == ["s99"])
+    #expect(aimed.shots[0].focus == NormRect(x: 0.6, y: 0.4, w: 0.4, h: 0.2) && aimed.shots[0].cursor == NormPoint(x: 0.95, y: 0.5))
+}

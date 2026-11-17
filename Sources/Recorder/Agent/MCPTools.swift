@@ -64,7 +64,8 @@ enum MCPTools {
                 "rect": rect], ["from"]),
             op("remove", ["id": string], ["id"]),
             op("style", ["patch": ["type": "object"]], ["patch"]),
-            op("reframe", ["aspect": ["type": "string", "enum": ["4:5", "1:1", "9:16", "16:9"]], "mode": ["type": "string", "enum": ["perShot", "static"], "default": "perShot", "description": "perShot: one stationary or pan crop per shot aimed at its focus and cursor; static: one crop over every focus. Needs analyze.shots."]], ["aspect"]),
+            op("reframe", ["aspect": ["type": "string", "enum": ["4:5", "1:1", "9:16", "16:9"]], "mode": ["type": "string", "enum": ["perShot", "static"], "default": "perShot", "description": "perShot: one stationary or pan crop per shot aimed at its focus and cursor; static: one crop over every focus. Needs analyze.shots."],
+                "focus": ["type": "object", "description": "Per-shot aim override: {\"s12\": {\"x\": 0.7, \"y\": 0.4}} (source frame 0–1, top-left origin).", "additionalProperties": point]], ["aspect"]),
             op("keepShots", ["shots": ["type": "array", "items": string, "description": "Shot ids from analyze.shots to keep; everything else is cut."],
                 "protect": ["type": "array", "items": string, "description": "Shots always kept: ids, section:N, or caption~regex (needs analyze.shots captions:true), e.g. caption~graph, so the subject survives an energy filter."],
                 "where": ["type": "object", "description": "Keep shots by kind and energy instead of ids.", "properties": ["kind": ["type": "array", "items": ["type": "string", "enum": ShotKind.allCases.map(\.rawValue)]], "minEnergy": number], "additionalProperties": false],
@@ -87,7 +88,7 @@ enum MCPTools {
             "timeline": ["duration": number, "clips": array, "blocks": array, "markers": array],
             "transcript": ["transcript": string, "words": array, "phrases": array, "truncated": boolean, "from": number],
             "analyze": ["pauses": array, "fillers": array, "idle": array, "typing": array, "clicks": array, "transcript": string, "words": ["type": "integer"]],
-            "edit": ["mode": string, "changes": array, "duration": object, "warnings": array, "dryRun": boolean, "undone": string, "lowered": array,
+            "edit": ["mode": string, "changes": array, "duration": object, "warnings": array, "dryRun": boolean, "undone": string, "lowered": array, "reframe": object,
                      "report": ["type": "object", "description": "With a storyboard: duration, aslSec (visual shots), subShotAslSec, staticSec {before,after}, hookSec, longestStatic {sec,at}, lint [{rule,sev,at,shot,msg,suggest}], reframeJumps, sections [{section, name, srcFrom, srcTo (source s), outFrom, outTo (output s), shots [first,last], keptSec}]."]],
             "draft": ["base": ["type": ["string", "null"]], "ops": ["type": ["array", "integer"]], "changes": ["type": ["array", "integer"]], "submitted": boolean, "stale": boolean, "selected": ["type": "integer"],
                       "excluded": array, "skipped": array, "verdict": string],
@@ -240,12 +241,22 @@ enum MCPTools {
         }
     }
     /// Fills each `reframe` op's crop keys from the storyboard so the stored op replays without it.
-    @MainActor private static func reframed(_ ops: [EditOp], model: EditorModel) async throws -> [EditOp] {
+    /// `raw` is the JSON op list: a reframe's optional `focus: {"s12": {x, y}}` re-aims those shots (feedback run 6 #7).
+    @MainActor private static func reframed(_ ops: [EditOp], raw: Any?, model: EditorModel) async throws -> [EditOp] {
         var storyboard: Storyboard?, out: [EditOp] = []
-        for op in ops {
+        let rawOps = raw as? [[String: Any]] ?? []
+        for (index, op) in ops.enumerated() {
             guard case let .reframe(aspect, mode, nil) = op else { out.append(op); continue }
             if storyboard == nil { storyboard = try loadStoryboard(model: model) }
-            let board = storyboard!
+            var points: [String: NormPoint] = [:]
+            for (id, value) in (rawOps.indices.contains(index) ? rawOps[index]["focus"] as? [String: Any] : nil) ?? [:] {
+                guard let point = value as? [String: Any], let x = point["x"] as? Double, let y = point["y"] as? Double, (0...1).contains(x), (0...1).contains(y) else {
+                    throw MCPFailure(code: "INVALID_OP", message: "reframe focus.\(id) must be {x, y} in 0–1 (source frame, top-left origin)")
+                }
+                points[id] = NormPoint(x: x, y: y)
+            }
+            let (board, unknown) = storyboard!.refocused(points)
+            if let id = unknown.first { throw MCPFailure(code: "INVALID_OP", message: "reframe focus: unknown shot \(id); use ids from analyze.shots") }
             let source = model.liveProject.source
             out.append(.reframe(aspect: aspect, mode: mode, keys: reframePlan(storyboard: board, aspect: aspect, mode: mode, sourceSize: CGSize(width: source.pixelWidth, height: source.pixelHeight))))
         }
@@ -316,7 +327,8 @@ enum MCPTools {
         let expected = active?.revision ?? liveRevision
         guard let sent = args["ifRevision"] as? String else { throw MCPFailure(code: "INVALID_OP", message: "Pass ifRevision from timeline.get or the previous edit.apply") }
         guard sent == expected, active == nil || active?.base == liveRevision else {
-            throw MCPFailure(code: "STALE_REVISION", message: "Editor is at \(liveRevision), draft is at \(expected); call timeline.get, then discard/review any stale draft and retry")
+            // Feedback run 6 #8: say what was sent and what is current, and only mention the base when it is the problem.
+            throw MCPFailure(code: "STALE_REVISION", message: staleRevisionMessage(sent: sent, current: expected, isDraft: active != nil, draftBase: active?.base, live: liveRevision))
         }
         var board: Storyboard?, reportNote: String?
         do { board = try loadStoryboard(model: model) }
@@ -330,7 +342,7 @@ enum MCPTools {
                                                      known: session.draft?.assets ?? [:])
         var keepImported = false
         defer { if !keepImported || dryRun { MCPAssets.removeFiles(resolution.created) } }
-        let ops = try await reframed(resolution.ops, model: model)
+        let ops = try await reframed(resolution.ops, raw: loweredOps, model: model)
         var context = try await editContext(ops, model: model)
         context.assets = resolution.assets
         context.refs = try opRefs(args["ops"])
@@ -392,6 +404,11 @@ enum MCPTools {
         // Pure Core work (lint dry-runs each suggestion) off the main thread so the editor stays responsive.
         if let board { let after = result.project; payload["report"] = try json(await Task.detached { editReport(before: before, after: after, storyboard: board, profile: profile) }.value) }
         if !lowered.isEmpty { payload["lowered"] = try json(lowered) }
+        if ops.contains(where: { if case .reframe = $0 { return true }; return false }) {
+            // Feedback run 6 #7: say whether the crop keys actually changed.
+            payload["reframe"] = ["keysBefore": before.cropKeys.count, "keysAfter": result.project.cropKeys.count,
+                                  "changed": before.cropKeys != result.project.cropKeys || before.output != result.project.output, "shots": board?.shots.count ?? 0]
+        }
         return payload
     }
     static func warnings(_ project: Project, changes: [EditChange]) -> [String] {
@@ -968,8 +985,10 @@ enum MCPTools {
                 guard !values.isEmpty, action != "compare" || values.count <= 6 else { throw MCPFailure(code: "OUT_OF_RANGE", message: "Pass 1–24 frame/sheet times or 1–6 compare times") }
                 times = try values.map { try number(["at": $0], "at", default: -1) }
             } else if action == "sheet" {
-                let count = try number(args, "count", default: 12)
-                times = (0..<Int(count)).map { (Double($0) + 0.5) * duration / count }
+                // Feedback run 6 #6: sample only from…to when given.
+                let count = try number(args, "count", default: 12), lo = try number(args, "from", default: 0), hi = try number(args, "to", default: duration)
+                guard lo >= 0, hi > lo, hi <= duration else { throw MCPFailure(code: "OUT_OF_RANGE", message: "render.sheet needs 0 ≤ from < to ≤ \(duration)") }
+                times = sheetTimes(count: Int(count), from: lo, to: hi)
             } else { throw MCPFailure(code: "INVALID_OP", message: "render.frames requires at: [output seconds]") }
             guard duration > 0, times.allSatisfy({ $0 >= 0 && $0 <= duration }) else { throw MCPFailure(code: "OUT_OF_RANGE", message: "Use frame times within 0–\(duration); call project.info") }
         }

@@ -144,3 +144,14 @@ public func transcriptID(_ words: [Word]) -> String {
     return String(format: "t-%08x", hash)
 }
 
+/// render.sheet sample times: `count` tile centres evenly over from…to (feedback run 6 #6: from/to were ignored). T-905.
+public func sheetTimes(count: Int, from: Double, to: Double) -> [Double] {
+    (0..<max(0, count)).map { from + (Double($0) + 0.5) * (to - from) / Double(count) }
+}
+
+/// STALE_REVISION text: what the agent sent, what is current, and the base only when the base is the problem (feedback run 6 #8).
+public func staleRevisionMessage(sent: String, current: String, isDraft: Bool, draftBase: String?, live: String) -> String {
+    "You passed \(sent); the current \(isDraft ? "draft" : "project") revision is \(current)"
+        + (draftBase.map { $0 != live } == true ? "; the draft was built on \(draftBase!) but the editor is now at \(live), so discard or submit it first"
+                                               : "; retry with ifRevision \(current)")
+}

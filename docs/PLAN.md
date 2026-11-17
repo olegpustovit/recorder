@@ -741,7 +741,7 @@ TimelineOps primitive → EditOp → human command → selftest (D4), and fills 
 
 | Scope | Tasks | Done |
 |---|---|---|
-| A. Reliability (feedback run 6) | T-901…T-905 | 4/5 |
+| A. Reliability (feedback run 6) | T-901…T-905 | 5/5 |
 | B. Kernel: item view, fuzz, `set` | T-910…T-912 | 0/3 |
 | C. Keyframes + motion graphics | T-920…T-925 | 0/6 |
 | D. Human editor gaps | T-930…T-937 | 0/8 |
@@ -761,7 +761,7 @@ TimelineOps primitive → EditOp → human command → selftest (D4), and fills 
 - [x] **T-904 No uncovered canvas** — `cut` over a range that is a gap (interior or before a connected layer) removes it
   and ripples connected items; lint rule `uncovered` (output span with no clip and no layer, ≥ 1 frame) with a dry-run
   `cut` suggestion. Verify: Core tests (Golden Island 91.13–91.69 tail gap shape); `make test`.
-- [ ] **T-905 Tool polish** — `render.sheet` honours `from`/`to`; `STALE_REVISION` names what you passed and the
+- [x] **T-905 Tool polish** — `render.sheet` honours `from`/`to`; `STALE_REVISION` names what you passed and the
   current draft/base revisions; `reframe` returns `{keysBefore,keysAfter,changed,shots}` and accepts
   `focus:{"s12":{x,y}}` overrides. Verify: `make test FILTER=Reframe`; `--selftest mcp-render <fixture>`; MCP.md updated.
 - [ ] **T-910 `Items.swift` unified item view** (D3) — `items(project)` covering all 13 kinds with anchor, out/spine/media
@@ -1794,3 +1794,4 @@ T-901 · 2026-11-17 · verified: `make test` 282/282 (new `layersAreShotsAndDura
 T-902 · 2026-11-17 · verified: `make test` 283/283; new `shotAnchorAfterSpeed` (Golden Island, Free mode, anchored shot inside a 3× range) fails without the fix (s70 marker 0.33 s off) and passes with it · `{shot}` anchors map base spine → media → prefix spine (`EditOps.coordinate`). Root cause: in Free mode `setSpeed` rewrites clip spine ranges, so base-spine shot seconds pointed at other footage. Markers/refs are stored in the project's own spine and are rewritten with it, so they keep the existing path.
 T-903 · 2026-11-17 · verified: `make test` 284/284 (new `GoldenIslandLayerTests.layerSetRateSlipTrim` on the feedback layout: 3× rate shortens the 2× recording layer to 2/3, slip to 30 s keeps position/length, trim to end−2 and extend to end+1 past the clips, slip past media fails naming the limit, text on a layer lists valid fields, JSON round-trip); `--selftest mcp-schema` OK; `mcp-edit --headless` OK · Delivered as the generic `set {id,…}` op (EDITING-CORE D4) rather than more `update` fields: layers accept from/to (numeric output s, also beyond the clips' end), mediaStart, mediaRate (length follows; linked layer audio follows), color; `set` on any other id lowers to `update`. Anchored from/to on layers is not supported yet (INVALID_OP says numeric).
 T-904 · 2026-11-17 · verified: `make test` 285/285 (new `uncoveredGapIsLintedAndCuttable` on Golden Island: the 0.56 s tail gap is found, linted with a cut, the cut removes it, ripples the appended layer by 0.56 s and shortens export by the same; the existing pipeline tests now also apply every `uncovered` suggestion); `mcp-edit --headless`, `mcp-shots` OK · Core `uncoveredRanges(project)` (no non-gap clip and no full-canvas layer, ≥ 1/60 s); lint rule `uncovered` suggests a cut of the part inside the clips, rounded inward to 0.01 s (a tail past the clips gets no op); unsnapped `cut` ranges include gap clips and `agentRemoveSourceRanges` shortens gap time (`removeGapTime`) then `settleConnected` re-anchors layers.
+T-905 · 2026-11-17 · verified: `make test` 286/286 (new `toolPolishSheetStaleRefocus`); `--selftest mcp-schema` OK; `mcp-edit --headless` OK · Core `sheetTimes`, `staleRevisionMessage`, `Storyboard.refocused` (pure, tested) wired into MCPTools: render.sheet honours from/to; STALE_REVISION says "You passed X; the current draft revision is Y" and names the base only when it moved; reframe accepts `focus:{shotId:{x,y}}` and edit.apply returns `reframe:{keysBefore,keysAfter,changed,shots}`. Assertions for the sheet range and stale text were also added to the windowed `mcp-roundtrip`/`mcp-edit <fixture>` selftests but NOT run (user: no test windows/focus changes).

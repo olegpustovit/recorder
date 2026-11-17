@@ -5153,7 +5153,8 @@ private final class MCPTestClient {
     let liveRender = await MCPTools.call("render", ["action": "frames", "at": [0.7], "longEdge": 160, "draft": false], session: session)
     guard let image = inline(draftRender), image != inline(liveRender),
           (draftRender["structuredContent"] as? [String: Any])?["revision"] as? String == third["revision"] as? String else { throw MCPTestFailure(description: "Draft/live render selection or revision") }
-    _ = try await tool("edit", ["action": "apply", "ifRevision": baseRevision, "ops": style], error: "STALE_REVISION")
+    let stale = try await tool("edit", ["action": "apply", "ifRevision": baseRevision, "ops": style], error: "STALE_REVISION")
+    guard (stale["message"] as? String)?.contains("You passed \(baseRevision); the current draft revision is") == true else { throw MCPTestFailure(description: "STALE_REVISION message: \(stale)") }
     guard MCPServer.shared.takeOverWatching(model) else { throw MCPTestFailure(description: "Could not take over the watching preview") }
     model.edit("Human") { $0.frame.shadow = 0.8 }
     _ = try await tool("edit", ["action": "apply", "ifRevision": draft.revision, "ops": style], error: "STALE_REVISION")
@@ -5333,6 +5334,9 @@ private final class MCPTestClient {
         let sheetContent = (sheetReply["result"] as? [String: Any])?["content"] as? [[String: Any]] ?? []
         guard sheetContent.filter({ $0["type"] as? String == "image" && $0["mimeType"] as? String == "image/jpeg" }).count == 1,
               sheetContent.filter({ $0["type"] as? String == "resource_link" }).count == 1 else { throw MCPTestFailure(description: "Agent sheet inline/link response") }
+        // T-905: from/to restrict the sheet's sample times.
+        let ranged = try client.request("tools/call", ["name": "render", "arguments": ["action": "sheet", "count": 2, "from": 0.5, "to": 1.0]])
+        guard (((ranged["result"] as? [String: Any])?["structuredContent"] as? [String: Any])?["at"] as? [Double]) == [0.625, 0.875] else { throw MCPTestFailure(description: "render.sheet ignored from/to") }
         let clipReply = try client.request("tools/call", ["name": "render", "arguments": ["action": "clip", "from": 0.371, "to": 2.371]])
         let clipResult = clipReply["result"] as? [String: Any], clipContent = clipResult?["content"] as? [[String: Any]] ?? []
         let clipInfo = clipResult?["structuredContent"] as? [String: Any] ?? [:]

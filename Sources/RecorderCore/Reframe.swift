@@ -103,3 +103,19 @@ public func cropJumps(_ keys: [CropKey], storyboard: Storyboard) -> Int {
         abs(k.t - n.t) < 1e-6 && k.rect != n.rect && !storyboard.shots.contains { abs($0.from - n.t) < 1e-6 && $0.boundary == .cut }
     }.count
 }
+
+public extension Storyboard {
+    /// reframe `focus` override (feedback run 6 #7): re-aim the named shots at a source-frame point, keeping each focus box's
+    /// size, clamped inside the frame. Unknown ids are returned so the caller can reject them.
+    func refocused(_ points: [String: NormPoint]) -> (board: Storyboard, unknown: [String]) {
+        var board = self
+        for (id, p) in points {
+            for i in board.shots.indices where board.shots[i].id == id {
+                let f = board.shots[i].focus
+                board.shots[i].focus = NormRect(x: min(max(0, p.x - f.w / 2), 1 - f.w), y: min(max(0, p.y - f.h / 2), 1 - f.h), w: f.w, h: f.h)
+                board.shots[i].cursor = p
+            }
+        }
+        return (board, points.keys.filter { id in !shots.contains { $0.id == id } }.sorted())
+    }
+}
