@@ -518,6 +518,25 @@ import Testing
         #expect(checked == 5)
     }
 
+    /// T-912: `set` patches any item through the one field table; bad fields name the valid ones; mask kind is settable.
+    @Test func genericSetUsesTheFieldTable() throws {
+        var base = project()
+        base.zooms = [Zoom(id: "z", start: 2, end: 4, scale: 2)]
+        base.texts = [TextBlock(id: "t", start: 5, end: 7, text: "Hi")]
+        base.masks = [Mask(id: "m", start: 8, end: 10)]
+        base.layouts = [Layout(id: "lay", start: 12, end: 14)]
+        let r = try base.applying([.set(id: "z", fields: SetFields(scale: 3)), .set(id: "t", fields: SetFields(text: "Hello", position: NormPoint(x: 0.2, y: 0.8))),
+                                   .set(id: "m", fields: SetFields(from: 8.5, kind: .blur))], context: EditContext()).project
+        #expect(r.zooms[0].scale == 3 && r.texts[0].text == "Hello" && r.texts[0].position == NormPoint(x: 0.2, y: 0.8))
+        #expect(r.masks[0].kind == .blur && r.masks[0].start == 8.5)
+        do { _ = try base.applying([.set(id: "z", fields: SetFields(text: "x"))], context: EditContext()); Issue.record("text on zoom accepted") }
+        catch { #expect("\(error)".contains("zoom does not take text; valid: from, to, scale")) }
+        do { _ = try base.applying([.set(id: "lay", fields: SetFields(from: 12.5))], context: EditContext()); Issue.record("layout set accepted") }
+        catch { #expect("\(error)".contains("no settable fields")) }
+        let json = #"{"op":"set","id":"m","kind":"blur","scale":2}"#
+        #expect(try JSONDecoder().decode(EditOp.self, from: Data(json.utf8)) == .set(id: "m", fields: SetFields(scale: 2, kind: .blur)))
+    }
+
     @Test func updateAndRemoveCoverEveryLane() throws {
         var base = project()
         let added = base.addLayer(kind: .image, file: "media/a.png", atOutput: 2, duration: 4, rect: NormRect(), hasAudio: false)

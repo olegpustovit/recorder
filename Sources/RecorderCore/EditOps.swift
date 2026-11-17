@@ -121,10 +121,24 @@ public struct SetFields: Codable, Equatable, Sendable {
     public var from: EditTime?, to: EditTime?
     public var mediaStart: Double?, mediaRate: Double?
     public var text: String?, color: BlockColor?
-    public init(from: EditTime? = nil, to: EditTime? = nil, mediaStart: Double? = nil, mediaRate: Double? = nil, text: String? = nil, color: BlockColor? = nil) {
+    public var position: NormPoint?, size: Double?, scale: Double?, center: NormPoint?, follow: ZoomFollow?, ease: ZoomEase?
+    public var kind: Mask.Kind?
+    public init(from: EditTime? = nil, to: EditTime? = nil, mediaStart: Double? = nil, mediaRate: Double? = nil, text: String? = nil, color: BlockColor? = nil,
+                position: NormPoint? = nil, size: Double? = nil, scale: Double? = nil, center: NormPoint? = nil, follow: ZoomFollow? = nil, ease: ZoomEase? = nil, kind: Mask.Kind? = nil) {
         self.from = from; self.to = to; self.mediaStart = mediaStart; self.mediaRate = mediaRate; self.text = text; self.color = color
+        self.position = position; self.size = size; self.scale = scale; self.center = center; self.follow = follow; self.ease = ease; self.kind = kind
     }
     public static let layerFields = ["from", "to", "mediaStart", "mediaRate", "color"]
+    /// Names of the fields this patch sets (checked against `editableFields(kind)`).
+    public var given: [String] {
+        let all: [(String, Any?)] = [("from", from), ("to", to), ("mediaStart", mediaStart), ("mediaRate", mediaRate), ("text", text), ("color", color),
+                                     ("position", position), ("size", size), ("scale", scale), ("center", center), ("follow", follow), ("ease", ease), ("kind", kind)]
+        return all.compactMap { $0.1 == nil ? nil : $0.0 }
+    }
+    /// The `update` this patch means for a non-layer item (`kind` is applied separately).
+    func update(_ id: String) -> EditOp {
+        .update(id: id, from: from, to: to, text: text, position: position, size: size, scale: scale, center: center, follow: follow, ease: ease, color: color)
+    }
 }
 
 public enum EditOp: Codable, Equatable, Sendable {
@@ -387,12 +401,20 @@ public extension Project {
         var context = context
         var prepared: [PreparedEdit] = []
         var refTimes: [String: Double] = [:]
-        // `set` on anything but a layer is today's `update` (T-912 makes the field table generic).
-        let ops = ops.map { op -> EditOp in
-            guard case let .set(id, f) = op, !layers.contains(where: { $0.id == id }), f.mediaStart == nil, f.mediaRate == nil else { return op }
-            return .update(id: id, from: f.from, to: f.to, text: f.text, position: nil, size: nil, scale: nil, center: nil, color: f.color)
-        }
+        // `set` validates its fields against the item's kind (one table, `editableFields`), then non-layer items run the
+        // `update` path; ids created earlier in the batch skip the table check and get update's own validation (T-912).
+        let kinds = Dictionary(items(self).map { ($0.id, $0.kind) } + markers.map { ($0.id, .marker) }, uniquingKeysWith: { a, _ in a })
         for (index, op) in ops.enumerated() {
+            guard case let .set(id, fields) = op, let kind = kinds[id] else { continue }
+            let valid = editableFields(kind)
+            if let bad = fields.given.first(where: { !valid.contains($0) }) {
+                throw EditError.invalidOp(index: index, reason: valid.isEmpty ? "\(kind.rawValue) \(id) has no settable fields; remove it with edit.remove"
+                                                                               : "\(kind.rawValue) does not take \(bad); valid: \(valid.joined(separator: ", "))")
+            }
+        }
+        for (index, raw) in ops.enumerated() {
+            let op: EditOp
+            if case let .set(id, fields) = raw, !layers.contains(where: { $0.id == id }) { op = fields.update(id) } else { op = raw }
             var resolved: [TimeRange] = [], at = 0.0, note: String?, sourceAt: Double?
             var current: Project?
             func prefix() throws -> Project {
@@ -566,7 +588,7 @@ public extension Project {
             }
             let merged = mergedEditRanges(resolved)
             if let name = context.refs.first(where: { $0.value == index })?.key, let start = merged.first?.start { refTimes[name] = start }
-            prepared.append((op, merged, at, note, sourceAt))
+            prepared.append((raw, merged, at, note, sourceAt))
         }
         return try applyingPrepared(prepared, context: context)
     }
@@ -594,7 +616,10 @@ public extension Project {
                 let span = item.ranges.first.map { TimeRange(start: $0.start, end: item.ranges.last!.end) }
                 var summary: String
                 var note = item.note, skipped = false
-                switch item.op {
+                var maskKind: Mask.Kind?
+                let op: EditOp
+                if case let .set(id, fields) = item.op, !result.layers.contains(where: { $0.id == id }) { op = fields.update(id); maskKind = fields.kind } else { op = item.op }
+                switch op {
                 case .cut, .cutPauses, .cutWords:
                     cuts.append((index, item.ranges))
                     let kind: String
@@ -864,6 +889,12 @@ public extension Project {
                     } catch let error as EditError { throw error }
                     catch { throw EditError.invalidOp(index: index, reason: "invalid style patch: \(error.localizedDescription)") }
                     summary = "Update styling"
+                }
+                if let maskKind {   // `set {kind}` on a mask: mask / highlight / blur
+                    guard case let .set(id, _) = item.op, let i = result.masks.firstIndex(where: { $0.id == id }) else {
+                        throw EditError.invalidOp(index: index, reason: "kind applies to mask blocks only")
+                    }
+                    result.masks[i].kind = maskKind
                 }
                 if let error = result.checkInvariants() { throw EditError.invariant("op \(index): \(error)") }
                 return EditChange(op: index, summary: summary, at: item.at, delta: TimeMap(result.clips).outputDuration - before, note: note, skipped: skipped, sourceAt: item.sourceAt)

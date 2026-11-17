@@ -28,7 +28,7 @@ public func editableFields(_ kind: Item.Kind) -> [String] {
     switch kind {
     case .zoom: ["from", "to", "scale", "center", "follow", "ease", "color"]
     case .text: ["from", "to", "text", "position", "size", "color"]
-    case .mask: ["from", "to", "color"]
+    case .mask: ["from", "to", "color", "kind"]
     case .layer: SetFields.layerFields
     case .marker: ["from", "text"]
     case .clip, .gap, .layout, .camera, .keys, .window, .audio: []
