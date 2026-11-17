@@ -61,7 +61,9 @@ enum ExportSheet {
         self.settings = ExportSettings.loadDefault(from: defaults)
     }
 
-    var outputDuration: Double { editorModel.project.exportDuration }
+    /// The In/Out range (MP4 only; GIF always exports the whole timeline).
+    var range: TimeRange? { settings.format == .mp4 ? editorModel.exportRange : nil }
+    var outputDuration: Double { range.map { $0.end - $0.start } ?? editorModel.project.exportDuration }
     var canExport: Bool { outputDuration > 0 }
     var durationText: String { Self.mmss(outputDuration) }
 
@@ -106,7 +108,7 @@ enum ExportSheet {
         exportStart = Date()
         phase = .exporting(fraction: 0, frame: 0, total: 0)
 
-        let exporter = Exporter(model: editorModel, settings: settings, destination: destination)
+        let exporter = Exporter(model: editorModel, settings: settings, destination: destination, outputRange: range)
         self.exporter = exporter
         // Exporter's own doc comment: "T-506 hops to the main actor itself if it touches UI state" —
         // `progress` is called on whatever thread the frame just finished on.
@@ -175,7 +177,7 @@ enum ExportSheet {
         ((try? FileManager.default.attributesOfItem(atPath: url.path)[.size]) as? NSNumber)?.int64Value ?? 0
     }
 
-    private static func mmss(_ seconds: Double) -> String {
+    static func mmss(_ seconds: Double) -> String {
         let s = max(0, Int(seconds.rounded()))
         return String(format: "%02d:%02d", s / 60, s % 60)
     }
@@ -395,6 +397,13 @@ struct ExportSheetView: View {
         switch model.phase {
         case .idle:
             VStack(alignment: .leading, spacing: 12) {
+                if let range = model.range {   // T-937 In/Out
+                    HStack {
+                        Text("Range  \(ExportSheetModel.mmss(range.start))–\(ExportSheetModel.mmss(range.end))")
+                        Spacer()
+                        Button("Whole video") { model.editorModel.exportRange = nil }.buttonStyle(TechButtonStyle(kind: .secondary, compact: true))
+                    }
+                }
                 HStack {
                     Text("Estimated size  \(model.estimatedSizeText)")
                     Spacer()

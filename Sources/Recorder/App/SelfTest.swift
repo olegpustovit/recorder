@@ -432,6 +432,7 @@ enum SelfTest {
         "freeze": { args in try await checkFreeze(args) },
         "transitions": { args in try await checkTransitions(args) },
         "speed-ramp": { args in try await checkSpeedRamp(args) },
+        "export-in-out": { args in try await checkExportRange(args) },
         "export-gif": { args in try await ExporterSelfTest.runExportGIFSelfTest(args) },
         "export-perf": { args in try await PerfSelfTest.runExportPerf(args) },
         "export-native": { _ in try await ExportSheetSelfTest.checkNativeHandoff() },
@@ -7741,4 +7742,25 @@ final class MainStallMonitor: @unchecked Sendable {
     model.undo()
     guard model.project.clips.count == before else { throw MCPTestFailure(description: "undo") }
     print("speed-ramp: \(before) → \(speeds.count) clips, speeds \(speeds.map { String(format: "%.2f", $0) }.joined(separator: " ")), undo")
+}
+
+/// T-937 (headless, temp copy): I/O set the range through the model, ⌥X-equivalent clears it, and an MP4 export of the
+/// range is that long.
+@MainActor private func checkExportRange(_ args: [String]) async throws {
+    guard let path = args.first else { throw MCPTestFailure(description: "usage: export-in-out <package>") }
+    let fm = FileManager.default, copy = fm.temporaryDirectory.appendingPathComponent("range-\(UUID().uuidString).recorder")
+    try fm.copyItem(at: URL(fileURLWithPath: path), to: copy)
+    defer { try? fm.removeItem(at: copy) }
+    let model = try loadEditorModel(package: copy)
+    model.playhead = 2; model.setRangeEdge(in: true)
+    model.playhead = 4.5; model.setRangeEdge(in: false)
+    guard model.exportRange == TimeRange(start: 2, end: 4.5) else { throw MCPTestFailure(description: "range \(String(describing: model.exportRange))") }
+    let movie = copy.appendingPathComponent("range.mp4")
+    let exporter = Exporter(model: model, settings: ExportSettings(shortEdge: 720, fps: 30, quality: .web, codec: .h264), destination: movie, outputRange: model.exportRange)
+    try await exporter.run()
+    let seconds = try await AVURLAsset(url: movie).load(.duration).seconds
+    guard abs(seconds - 2.5) < 0.1 else { throw MCPTestFailure(description: "exported \(seconds) s") }
+    model.playhead = 0; model.setRangeEdge(in: true); model.playhead = model.project.exportDuration; model.setRangeEdge(in: false)
+    guard model.exportRange == nil else { throw MCPTestFailure(description: "full range should clear") }
+    print(String(format: "export-in-out: In 2.0 / Out 4.5 → %.2f s MP4; whole range clears", seconds))
 }

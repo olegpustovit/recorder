@@ -1172,6 +1172,11 @@ final class TimelineView: NSView {
         }
         // Markers (T-930): flag + label on the ruler, from the one item view so they match timeline.get.
         guard let model else { return }
+        if let range = model.exportRange {   // export In/Out (T-937): a white band on the ruler
+            let a = max(gutterWidth, x(forOutput: range.start)), b = min(bounds.width, x(forOutput: range.end))
+            if b > a { Theme.accent.withAlphaComponent(0.18).setFill(); CGRect(x: a, y: 0, width: b - a, height: Self.rulerHeight).fill()
+                Theme.accent.setFill(); CGRect(x: a, y: Self.rulerHeight - 2, width: b - a, height: 2).fill() }
+        }
         for marker in items(model.project) where marker.kind == .marker {
             let px = x(forOutput: marker.out.start)
             guard px >= gutterWidth - 4, px <= bounds.width else { continue }
@@ -2716,6 +2721,10 @@ final class TimelineView: NSView {
             let frames = (chars == "," || chars == "<" ? -1.0 : 1.0) * (shift ? 10 : 1)
             var trial = model.project
             if trial.slipClip(i, byMedia: frames / 30) { model.edit("Slip Clip") { $0 = trial } } else { NSSound.beep() }
+        } else if !cmd, !shift, event.modifierFlags.contains(.option), chars?.lowercased() == "x", let model { // `⌥X` = clear In/Out (T-937)
+            model.exportRange = nil; needsDisplay = true
+        } else if !cmd, !shift, !event.modifierFlags.contains(.option), chars?.lowercased() == "i" || chars?.lowercased() == "o", let model { // `I`/`O` = export In/Out
+            model.setRangeEdge(in: chars?.lowercased() == "i"); needsDisplay = true
         } else if !cmd, !shift, chars?.lowercased() == "m", let model { // `M` = toggle a marker at the playhead (T-930)
             model.toggleMarkerAtPlayhead()
         } else if event.modifierFlags.contains(.control), let arrow = event.specialKey, arrow == .leftArrow || arrow == .rightArrow, let model { // `⌃←/⌃→` = previous/next marker

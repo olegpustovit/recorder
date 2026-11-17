@@ -139,6 +139,16 @@ import RecorderCore
         } catch { return "\(error)" }
     }
 
+    /// I / O / ⌥X (T-937): the export range in output seconds; nil = the whole timeline. Per session, not saved.
+    var exportRange: TimeRange?
+    func setRangeEdge(in isIn: Bool) {
+        let end = project.exportDuration
+        var range = exportRange ?? TimeRange(start: 0, end: end)
+        if isIn { range.start = min(playhead, range.end - 0.1) } else { range.end = max(playhead, range.start + 0.1) }
+        range.start = max(0, range.start); range.end = min(end, range.end)
+        exportRange = range.start <= 1e-6 && range.end >= end - 1e-6 ? nil : range
+    }
+
     /// `M` (T-930): adds "Marker N" at the playhead, or removes the marker already there (within 0.1 s); one undo step.
     func toggleMarkerAtPlayhead() {
         let markers = items(project).filter { $0.kind == .marker }

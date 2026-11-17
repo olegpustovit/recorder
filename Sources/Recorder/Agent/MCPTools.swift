@@ -160,7 +160,7 @@ enum MCPTools {
             tool("draft", ["status", "submit", "discard"], "Read your draft's exclusions, skipped reasons and verdict; submit for review or discard it. A pending submitted draft can receive more edit.apply calls, returning to watching until submitted again. Reframe ops show keys as a count (plus jumps: crop steps not at a cut) unless response_format is detailed; submit returns op/change counts unless detailed.", ["note": string, "response_format": ["type": "string", "enum": ["concise", "detailed"]]]),
             tool("render", ["frames", "sheet", "clip", "storyboard", "strip", "compare", "lint", "cancel"], "Render frames, a contact sheet, a 540p proxy, per-shot storyboard tiles (needs analyze.shots), a filmstrip (strip: from, to, fps 4–8, ≤48 tiles) base|draft rows (compare: at ≤6) into the agent cache (key chips hidden), or lint the draft against a profile (lint: reel, tutorial, demo; needs analyze.shots).", ["at": ["type": "array", "items": number, "maxItems": 24], "shots": ["type": "array", "items": string, "maxItems": 48, "description": "render.storyboard only: shot ids; default all shots the draft keeps."], "page": ["type": "integer", "minimum": 1, "description": "render.storyboard only: 48 tiles per page."], "fps": ["type": "integer", "minimum": 4, "maximum": 8, "description": "render.strip only."], "from": number, "to": number, "count": ["type": "integer", "minimum": 1, "maximum": 24], "longEdge": ["type": "integer", "minimum": 2, "maximum": 640], "draft": boolean, "profile": ["type": "string", "enum": ["reel", "tutorial", "demo"]],
                 "grid": ["type": "boolean", "description": "render.frames only: overlay a 0.1-step grid labelled 0–1, origin top-left, matching zoom center and text position coordinates (exact at 1× zoom with no layout padding)."]], read: true),
-            tool("export", ["final"], "Export an MP4 after the user's native approval, optionally with SRT subtitles.", ["destination": string, "shortEdge": ["type": "integer", "enum": [720, 1080, 2160]], "fps": ["type": "integer", "enum": [24, 30, 60]], "srt": boolean]),
+            tool("export", ["final"], "Export an MP4 after the user's native approval, optionally with SRT subtitles, or only from…to (output seconds).", ["destination": string, "shortEdge": ["type": "integer", "enum": [720, 1080, 2160]], "fps": ["type": "integer", "enum": [24, 30, 60]], "srt": boolean, "from": number, "to": number]),
             tool("ui", ["show"], "Move the editor playhead and select blocks by id.", ["at": ["type": "number"], "select": ["type": "array", "items": string]])
         ]
     }()
@@ -882,6 +882,14 @@ enum MCPTools {
         let edge = try number(args, "shortEdge", default: Double(settings.shortEdge)), fps = try number(args, "fps", default: Double(settings.fps))
         settings.shortEdge = Int(edge); settings.fps = Int(fps)
         let includeSRT = args["srt"] as? Bool ?? false
+        // T-937: optional from/to exports just that output range (MP4 only; SRT cues are whole-timeline, so not combined).
+        var range: TimeRange?
+        if args["from"] != nil || args["to"] != nil {
+            let from = try number(args, "from", default: 0), to = try number(args, "to", default: project.exportDuration)
+            guard from >= 0, to > from + 0.1, to <= project.exportDuration else { throw MCPFailure(code: "OUT_OF_RANGE", message: "export range needs 0 ≤ from < to ≤ \(project.exportDuration)") }
+            guard !includeSRT else { throw MCPFailure(code: "INVALID_OP", message: "srt covers the whole timeline; export a range without srt") }
+            range = TimeRange(start: from, end: to)
+        }
         let fm = FileManager.default
         func exists(_ url: URL) -> Bool { (try? fm.attributesOfItem(atPath: url.path)) != nil }
         func used(_ url: URL) -> Bool { exists(url) || (includeSRT && exists(url.deletingPathExtension().appendingPathExtension("srt"))) }
@@ -927,7 +935,7 @@ enum MCPTools {
             try fm.createDirectory(at: staging, withIntermediateDirectories: false)
             defer { try? fm.removeItem(at: staging) }
             let movie = staging.appendingPathComponent(destination.lastPathComponent)
-            let exporter = Exporter(model: frozen, settings: settings, destination: movie)
+            let exporter = Exporter(model: frozen, settings: settings, destination: movie, outputRange: range)
             exporter.progress = { value, _, _ in Task { @MainActor in progress(value) } }
             progress(0)
             try await withTaskCancellationHandler { try await exporter.run() } onCancel: { exporter.cancel() }
