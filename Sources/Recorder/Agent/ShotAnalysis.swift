@@ -292,6 +292,36 @@ enum ShotAnalysis {
     }
 
     /// The spec's §4 loop on real data, Core only: storyboard → keepShots → pace → fitDuration 30 s → reframe 4:5 → report + lint.
+    /// `shots-fixture <package> <out.json>`: the inputs Core turns into a shot table (signals, mouse events, clips), for
+    /// Core regression tests on real footage. Reads only the signal cache (never decodes). Key events are dropped entirely
+    /// (no characters, codes or timing leave the package); moves are thinned to 10 Hz; texts and keystroke lanes removed.
+    static func selfTestFixture(_ args: [String]) async throws {
+        struct Fail: Error { let description: String }
+        guard args.count == 2 else { throw Fail(description: "usage: shots-fixture <package> <out.json>") }
+        let package = URL(fileURLWithPath: args[0])
+        // A copied package has a new screen.mov mtime, so take the cache as is (only its algorithm version must match).
+        guard let cache = try? JSONDecoder().decode(Cache.self, from: Data(contentsOf: package.appendingPathComponent(cacheName))),
+              cache.key.hasPrefix("v\(algorithmVersion)-") else { throw Fail(description: "no v\(algorithmVersion) shots-cache.json; run analyze.shots first") }
+        var project = try Project.load(from: package.appendingPathComponent("project.json"))
+        project.texts = []; project.keystrokeClips = []
+        let log = (try? JSONDecoder().decode(EventLog.self, from: Data(contentsOf: package.appendingPathComponent("events.json")))) ?? EventLog(events: [])
+        func r(_ v: Double) -> Double { (v * 1e4).rounded() / 1e4 }
+        var lastMove = -1.0
+        let events = log.events.compactMap { e -> InputEvent? in
+            switch e.k {
+            case .key, .typing, .cursor: return nil
+            case .move, .drag: guard e.t - lastMove >= 0.1 else { return nil }; lastMove = e.t
+            default: break
+            }
+            return InputEvent(t: r(e.t), k: e.k, x: e.x.map(r), y: e.y.map(r), b: e.b)
+        }
+        let signals = cache.signals.map { FrameSignal(diff: r($0.diff), ssim: r($0.ssim), bbox: $0.bbox.map { NormRect(x: r($0.x), y: r($0.y), w: r($0.w), h: r($0.h)) }) }
+        struct Fixture: Encodable { let project: Project; let fps: Double; let signals: [FrameSignal]; let events: [InputEvent] }
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        try encoder.encode(Fixture(project: project, fps: fps, signals: signals, events: events)).write(to: URL(fileURLWithPath: args[1]))
+        print("shots-fixture \(signals.count) frames, \(events.count) events → \(args[1])")
+    }
+
     private static func reelPipeline(package: URL, signals: [FrameSignal]) throws {
         struct Fail: Error { let description: String }
         let base = try Project.load(from: package.appendingPathComponent("project.json"))

@@ -185,8 +185,12 @@ public func lowerIntents(_ ops: [JSONValue], project: Project, clicks: [InputEve
             for i in 0..<nOut { step(midEnd + rout / Double(nOut) * Double(i), midEnd + rout / Double(nOut) * Double(i + 1), speed + (s1 - speed) * (Double(i) + 0.5) / Double(nOut)) }
         default: out.append(raw); origin.append(index); continue
         }
-        // A piece that rounds to nothing (from == to) would fail the whole batch as OUT_OF_RANGE.
-        result = result.filter { op in guard let a = op["from"]?.num, let b = op["to"]?.num else { return true }; return b - a >= 0.01 - 1e-9 }
+        // A piece that rounds to nothing (from == to) would fail the whole batch as OUT_OF_RANGE, and a cut/speed range under
+        // the 0.1 s clip minimum is only skipped by snapping: emit neither.
+        result = result.filter { op in
+            guard let a = op["from"]?.num, let b = op["to"]?.num else { return true }
+            return b - a >= ([.string("cut"), .string("speed")].contains(op["op"]) ? 0.1 : 0.01) - 1e-9
+        }
         out += result; origin += result.map { _ in index }
         lowered.append(LoweredIntent(op: index, intent: name, ops: result, dropped: dropped, note: note, shots: picks))
     }

@@ -70,9 +70,18 @@ public func reframePlan(storyboard: Storyboard, aspect: Output.Aspect, mode: Ref
         max(0, min(f.x + f.w, r.x + r.w) - max(f.x, r.x)) * max(0, min(f.y + f.h, r.y + r.h) - max(f.y, r.y))
     }
     func guarded(_ r: NormRect, _ f: NormRect) -> NormRect { shown(f, r) + 1e-9 < shown(f, centre) ? centre : r }
+    // A shot with no target on an axis (a view swap that then holds still) aims where the next shots act, within 3 s.
+    // shortcut: borrows across scene changes inside that window; upgrade when shots carry a section/scene id.
+    func informative(_ f: NormRect) -> Bool { f.w > 0 || f.h > 0 }
+    let own = storyboard.shots.map(focus)
+    let aims = own.indices.map { i -> NormRect in
+        guard !informative(own[i]) else { return own[i] }
+        let s = storyboard.shots
+        return own.indices.first { $0 > i && s[$0].from - s[i].to <= 3 && informative(own[$0]) }.map { own[$0] } ?? own[i]
+    }
     var keys: [CropKey] = []
-    for shot in storyboard.shots {
-        var (a, b) = rects(focus(shot))
+    for (i, shot) in storyboard.shots.enumerated() {
+        var (a, b) = rects(aims[i])
         (a, b) = (guarded(a, shot.focus), guarded(b, shot.focus))
         if let prev = keys.last?.rect {
             // Hysteresis: a window within 3 % of the current one that shows as much of the focus keeps the current one (no twitch).

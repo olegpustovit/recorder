@@ -178,10 +178,12 @@ private func lint(_ project: Project, _ m: Metrics, _ sb: Storyboard, _ p: LintP
                 msg: String(format: "%@ lasts %.2fs (flicker, want >= %.2fs)", s.shot.id, s.duration, p.tinyShot) + (fix == nil ? "; too short to cut, trim the neighbouring clip by hand" : ""),
                 suggest: fix))
         }
-        // Reframed projects crop per moment (T-831); sample the window at the shot's middle.
-        let f = s.shot.focus, c = project.cropSample(atSource: (s.shot.from + s.shot.to) / 2), tol = 0.005
+        // Reframed projects crop per moment (T-831): sample after the 0.3 s ease, the middle and the end, so a late move shows.
         // Only a focus box that would fit the crop but pokes out of it is a framing problem; a wider one can't be fixed by moving.
-        if c != NormRect(), f.w <= c.w, f.h <= c.h, f.x < c.x - tol || f.y < c.y - tol || f.x + f.w > c.x + c.w + tol || f.y + f.h > c.y + c.h + tol {
+        let f = s.shot.focus, tol = 0.005, d = s.shot.duration
+        if [min(0.35, d / 2), d / 2, max(d - 0.05, d / 2)].map({ project.cropSample(atSource: s.shot.from + $0) }).contains(where: { c in
+            c != NormRect() && f.w <= c.w && f.h <= c.h && (f.x < c.x - tol || f.y < c.y - tol || f.x + f.w > c.x + c.w + tol || f.y + f.h > c.y + c.h + tol)
+        }) {
             // Keep the shape the user chose: reframe only within an explicit aspect; a manual crop (auto aspect) gets no op.
             let aspect = project.output.aspect
             items.append(LintItem(rule: "edgeContent", sev: "warn", at: r2(s.range.start), shot: s.shot.id,

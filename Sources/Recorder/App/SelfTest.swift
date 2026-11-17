@@ -36,6 +36,7 @@ enum SelfTest {
         "report-ref": { args in try await checkReportReference(args) },
         "agent-visuals": { args in try await dumpAgentVisuals(args) },
         "shots-perf": { args in try await ShotAnalysis.selfTestPerf(args) },
+        "shots-fixture": { args in try await ShotAnalysis.selfTestFixture(args) },
         "mcp-review": { args in try await checkMCPReview(args) },
         "mcp-live": { args in try await checkMCPLive(args) },
         "zoom-ease-parity": { args in try await checkZoomEaseParity(args) },
@@ -5138,6 +5139,9 @@ private final class MCPTestClient {
     let dryIteration = try await tool("edit", ["action": "apply", "ifRevision": draft.revision, "ops": style, "dryRun": true])
     _ = try await tool("edit", ["action": "apply", "ifRevision": draft.revision, "ops": []])
     _ = try await tool("edit", ["action": "apply", "ifRevision": draft.revision, "ops": [["op": "zoom", "from": 0, "to": 1, "scale": 0]]], error: "INVALID_OP")
+    // R3-3: intent ops are schema-checked too; a field the tool list doesn't declare is an error, not silently ignored.
+    _ = try await tool("edit", ["action": "apply", "ifRevision": draft.revision, "ops": [["op": "keepShots", "where": ["kind": ["payoff"], "minPerSection": 4]]]], error: "INVALID_OP")
+    _ = try await tool("edit", ["action": "apply", "ifRevision": draft.revision, "ops": [["op": "pace", "maxHold": 1]]], error: "INVALID_OP")
     guard session.draft?.submitted == true, session.draft?.calls.count == 3, !model.isWatchingDraft,
           dryIteration["revision"] as? String == draft.revision, model.project == replayed else {
         throw MCPTestFailure(description: "Dry, empty or failed iteration changed a submitted review")

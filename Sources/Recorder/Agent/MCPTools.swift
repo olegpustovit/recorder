@@ -81,7 +81,7 @@ enum MCPTools {
             "transcript": ["transcript": string, "words": array, "phrases": array, "truncated": boolean, "from": number],
             "analyze": ["pauses": array, "fillers": array, "idle": array, "typing": array, "clicks": array, "transcript": string, "words": ["type": "integer"]],
             "edit": ["mode": string, "changes": array, "duration": object, "warnings": array, "dryRun": boolean, "undone": string],
-            "draft": ["base": ["type": ["string", "null"]], "ops": array, "changes": array, "submitted": boolean, "stale": boolean, "selected": ["type": "integer"],
+            "draft": ["base": ["type": ["string", "null"]], "ops": ["type": ["array", "integer"]], "changes": ["type": ["array", "integer"]], "submitted": boolean, "stale": boolean, "selected": ["type": "integer"],
                       "excluded": array, "skipped": array, "verdict": string],
             "render": ["files": array, "at": array, "seconds": number, "bytes": ["type": "integer"], "cancelled": boolean],
             "export": ["path": string, "srtPath": string, "seconds": number, "bytes": ["type": "integer"]],
@@ -123,7 +123,7 @@ enum MCPTools {
                 "response_format": ["type": "string", "enum": ["concise", "detailed"], "description": "analyze.shots only: concise (default) omits reasons only; focus is always kept."],
                 "thresholds": ["type": "object", "description": "analyze.shots only: optional overrides of ssim, minStable, cutSsim, motionDiff, payoffDiff, cursorSpeed, energyScale. energyScale and minStable must be > 0; ssim and cutSsim within 0…1.", "additionalProperties": ["type": "number", "minimum": 0]]]),   // not read-only: transcribe writes the transcript
             tool("edit", ["apply", "undo"], "Apply atomic edits using the latest ifRevision; edits land in a draft by default. Numeric times use that revision's output timeline; anchors ({marker:id|label, offset}, {ref:name, offset}, {shot, edge}) resolve after earlier ops in the batch. Declare ref:\"name\" on an op to anchor later ops on its start. At most one of keepShots/pace/fitDuration per batch (call edit.apply once per intent). undo inside a draft removes your last edit.apply call. Errors carry fix and current.", ["ifRevision": string, "ops": ["type": "array", "items": ["oneOf": operationSchemas]], "dryRun": boolean, "lint": ["type": "string", "enum": ["reel", "tutorial", "demo"], "description": "Profile for report.lint (default reel)."]]),
-            tool("draft", ["status", "submit", "discard"], "Read your draft's exclusions, skipped reasons and verdict; submit for review or discard it. A pending submitted draft can receive more edit.apply calls, returning to watching until submitted again. Reframe ops show keys as a count (plus jumps: crop steps not at a cut) unless response_format is detailed.", ["note": string, "response_format": ["type": "string", "enum": ["concise", "detailed"]]]),
+            tool("draft", ["status", "submit", "discard"], "Read your draft's exclusions, skipped reasons and verdict; submit for review or discard it. A pending submitted draft can receive more edit.apply calls, returning to watching until submitted again. Reframe ops show keys as a count (plus jumps: crop steps not at a cut) unless response_format is detailed; submit returns op/change counts unless detailed.", ["note": string, "response_format": ["type": "string", "enum": ["concise", "detailed"]]]),
             tool("render", ["frames", "sheet", "clip", "storyboard", "strip", "compare", "lint", "cancel"], "Render frames, a contact sheet, a 540p proxy, per-shot storyboard tiles (needs analyze.shots), a filmstrip (strip: from, to, fps 4–8, ≤48 tiles) base|draft rows (compare: at ≤6) into the agent cache (key chips hidden), or lint the draft against a profile (lint: reel, tutorial, demo; needs analyze.shots).", ["at": ["type": "array", "items": number, "maxItems": 24], "shots": ["type": "array", "items": string, "maxItems": 48, "description": "render.storyboard only: shot ids; default all shots the draft keeps."], "page": ["type": "integer", "minimum": 1, "description": "render.storyboard only: 48 tiles per page."], "fps": ["type": "integer", "minimum": 4, "maximum": 8, "description": "render.strip only."], "from": number, "to": number, "count": ["type": "integer", "minimum": 1, "maximum": 24], "longEdge": ["type": "integer", "minimum": 2, "maximum": 640], "draft": boolean, "profile": ["type": "string", "enum": ["reel", "tutorial", "demo"]],
                 "grid": ["type": "boolean", "description": "render.frames only: overlay a 0.1-step grid labelled 0–1, origin top-left, matching zoom center and text position coordinates (exact at 1× zoom with no layout padding)."]], read: true),
             tool("export", ["final"], "Export an MP4 after the user's native approval, optionally with SRT subtitles.", ["destination": string, "shortEdge": ["type": "integer", "enum": [720, 1080, 2160]], "fps": ["type": "integer", "enum": [24, 30, 60]], "srt": boolean]),
@@ -170,18 +170,33 @@ enum MCPTools {
         }
         return refs
     }
+    /// Every op the agent sends, intent or primitive, is checked against its tools/list schema before anything runs:
+    /// an unknown or misspelt field is an error, never silently ignored.
+    static func validateOp(_ value: [String: Any], index: Int) throws {
+        guard let name = value["op"] as? String, let schema = operationSchemas.first(where: {
+            (($0["properties"] as? [String: Any])?["op"] as? [String: Any])?["enum"] as? [String] == [name]
+        }), let properties = schema["properties"] as? [String: Any] else {
+            throw MCPFailure(code: "INVALID_OP", message: "op \(index) has an unknown op name; revise it using tools/list")
+        }
+        if let unknown = value.keys.sorted().first(where: { properties[$0] == nil }) {
+            throw MCPFailure(code: "INVALID_OP", message: "op \(index) \(name): unknown field \(unknown); valid: \(properties.keys.filter { $0 != "op" }.sorted().joined(separator: ", "))")
+        }
+        for (key, field) in value {   // nested objects (where, trim, beat, speedFill, ramp) name their valid fields too
+            guard let fields = field as? [String: Any], let sub = (properties[key] as? [String: Any])?["properties"] as? [String: Any],
+                  let unknown = fields.keys.sorted().first(where: { sub[$0] == nil }) else { continue }
+            throw MCPFailure(code: "INVALID_OP", message: "op \(index) \(name): unknown field \(key).\(unknown); valid: \(sub.keys.sorted().joined(separator: ", "))")
+        }
+        if let missing = (schema["required"] as? [String] ?? []).first(where: { value[$0] == nil }) {
+            throw MCPFailure(code: "INVALID_OP", message: "op \(index) \(name): missing \(missing); revise it using tools/list")
+        }
+        if let problem = schemaViolation(value, schema, path: "op \(index)") {
+            throw MCPFailure(code: "INVALID_OP", message: "\(problem.message); revise the op using tools/list")
+        }
+    }
     static func decodeOps(_ value: Any?) throws -> [EditOp] {
         guard let values = value as? [[String: Any]] else { throw MCPFailure(code: "INVALID_OP", message: "edit.apply needs ops: [EditOp]; use tools/list for the op schemas") }
         return try values.enumerated().map { index, value in
-            guard let name = value["op"] as? String, let schema = operationSchemas.first(where: {
-                (($0["properties"] as? [String: Any])?["op"] as? [String: Any])?["enum"] as? [String] == [name]
-            }), let properties = schema["properties"] as? [String: Any],
-                Set(value.keys).isSubset(of: Set(properties.keys)), (schema["required"] as? [String] ?? []).allSatisfy({ value[$0] != nil }) else {
-                throw MCPFailure(code: "INVALID_OP", message: "op \(index) has missing or unknown fields; revise it using tools/list")
-            }
-            if let problem = schemaViolation(value, schema, path: "op \(index)") {
-                throw MCPFailure(code: "INVALID_OP", message: "\(problem.message); revise the op using tools/list")
-            }
+            try validateOp(value, index: index)
             for key in ["position", "center", "rect"] where value[key] != nil {
                 let keys = key == "rect" ? Set(["x", "y", "w", "h"]) : Set(["x", "y"])
                 guard let fields = value[key] as? [String: Any], Set(fields.keys) == keys else {
@@ -243,6 +258,7 @@ enum MCPTools {
     /// keepShots, pace, fitDuration, autoZoom and ramped speed become cut/speed/zoom ops against the viewed timeline.
     private static func lowerIntentOps(_ value: Any?, project: Project, clicks: [InputEvent], storyboard: Storyboard?) throws -> (Any?, [Int], [LoweredIntent]) {
         guard let values = value as? [[String: Any]], values.contains(where: { ["keepShots", "pace", "fitDuration", "autoZoom"].contains($0["op"] as? String) || $0["ramp"] != nil }) else { return (value, (value as? [Any] ?? []).indices.map { $0 }, []) }
+        for (index, op) in values.enumerated() { try validateOp(op, index: index) }   // intents bypassed decodeOps' check (R3-3)
         guard let raw = try? JSONDecoder().decode([JSONValue].self, from: JSONSerialization.data(withJSONObject: values)) else {
             throw MCPFailure(code: "INVALID_OP", message: "edit.apply ops must be JSON objects; use tools/list for the op schemas")
         }
@@ -406,13 +422,13 @@ enum MCPTools {
             session.draftRestoreError = "agent-draft.json could not be restored (\(error)); kept as agent-draft.failed.json, edit.apply starts a new draft"
         }
     }
-    /// The `draft` block of project.open: id, status (drafting, submitted or stale) and the flattened changes.
+    /// The `draft` block of project.open: id, status (drafting, submitted or stale) and how many changes (draft.status lists them).
     static func draftSummary(_ draft: AgentDraft, live: Project) throws -> [String: Any] {
         var changes = draft.changes.flatMap { $0 }
         for index in changes.indices { changes[index].op = index }
         let stale = draft.base != (try revision(live))
         return ["id": draft.id, "status": stale ? "stale" : draft.submitted ? "submitted" : "drafting", "base": draft.base, "revision": draft.revision,
-                "changes": try json(changes)]
+                "changes": changes.count, "list": "draft.status"]   // the full list costs ~10 KB per open
     }
     @MainActor private static func draft(_ action: String, _ args: [String: Any], model: EditorModel, session: MCPSession) async throws -> [String: Any] {
         if action == "submit" { try requireEditable(model, draftSession: session) }
@@ -450,6 +466,8 @@ enum MCPTools {
                 draft.skipped[row.id].map { ["op": index, "reason": $0] }
             }
         }
+        // submit only confirms the hand-off: counts instead of every op and change (~10 KB); draft.status or detailed has the lists.
+        if action == "submit", args["response_format"] as? String != "detailed" { payload["ops"] = flatOps.count; payload["changes"] = changes.count }
         if let verdict = draft?.verdict ?? session.lastDraftVerdict { payload["verdict"] = verdict }
         if let draft, draft.verdict == nil { payload["revision"] = draft.revision }
         return payload

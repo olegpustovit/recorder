@@ -156,9 +156,11 @@ public func storyboard(signals: [FrameSignal], fps: Double = 10, events: [InputE
         else if path / (to - from) >= t.cursorSpeed { kind = .cursorOnly; reasons.append("screen quiet, cursor moving") }
         else { kind = .`static`; reasons.append("screen quiet, cursor still") }
 
-        // focus = changed pixels ∪ where the cursor dwelt over the shot's last second
+        // focus = changed pixels ∪ where the cursor dwelt over the shot's last second. Changes after the shot settles win:
+        // the transition into a view swap repaints the whole screen and would make every such shot's focus the full frame.
         let dwell = moves.filter { $0.t >= max(from, to - 1) && $0.t < to }
-        var focus = frames.compactMap(\.bbox).reduce(nil as NormRect?) { $0?.union($1) ?? $1 }
+        let settled = signals[min(lead, b)..<b].compactMap(\.bbox).filter { $0.w * $0.h >= 0.001 }   // ignore caret/clock blinks
+        var focus = (settled.isEmpty ? frames.compactMap(\.bbox) : settled).reduce(nil as NormRect?) { $0?.union($1) ?? $1 }
         if let lo = dwell.map({ $0.x! }).min(), let hi = dwell.map({ $0.x! }).max(),
            let lo2 = dwell.map({ $0.y! }).min(), let hi2 = dwell.map({ $0.y! }).max() {
             let pad = 0.05, x0 = max(0, lo - pad), y0 = max(0, lo2 - pad)
