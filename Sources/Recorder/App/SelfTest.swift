@@ -431,6 +431,7 @@ enum SelfTest {
         "transcript-edit": { args in try await checkTranscriptEdit(args) },
         "freeze": { args in try await checkFreeze(args) },
         "transitions": { args in try await checkTransitions(args) },
+        "speed-ramp": { args in try await checkSpeedRamp(args) },
         "export-gif": { args in try await ExporterSelfTest.runExportGIFSelfTest(args) },
         "export-perf": { args in try await PerfSelfTest.runExportPerf(args) },
         "export-native": { _ in try await ExportSheetSelfTest.checkNativeHandoff() },
@@ -7719,4 +7720,25 @@ final class MainStallMonitor: @unchecked Sendable {
     guard model.undoStepNames.last == "Add Dip", model.project.clips[0].fadeOut == 0.3 else { throw MCPTestFailure(description: "no seam should be a no-op") }
     guard MCPTools.operationSchemas.contains(where: { (($0["properties"] as? [String: Any])?["op"] as? [String: Any])?["enum"] as? [String] == ["transition"] }) else { throw MCPTestFailure(description: "schema") }
     print("transitions: dissolve still at the seam (fade 0.5 s, file in media/), undo, dip fades 0.3/0.3, no seam → no-op")
+}
+
+/// T-935 (headless, temp copy): the clip inspector's Ramp lowers like the agent's `speed {ramp}`: neighbouring footage
+/// gets intermediate speeds, one undo step, invariants hold.
+@MainActor private func checkSpeedRamp(_ args: [String]) async throws {
+    guard let path = args.first else { throw MCPTestFailure(description: "usage: speed-ramp <package>") }
+    let fm = FileManager.default, copy = fm.temporaryDirectory.appendingPathComponent("ramp-\(UUID().uuidString).recorder")
+    try fm.copyItem(at: URL(fileURLWithPath: path), to: copy)
+    defer { try? fm.removeItem(at: copy) }
+    let model = try loadEditorModel(package: copy)
+    model.edit("Split") { _ = $0.split(atOutput: 4); _ = $0.split(atOutput: 8) }
+    let base = model.project.clips[1].speed
+    model.edit("Speed") { $0.setSpeed(1, base * 4) }
+    let before = model.project.clips.count
+    if let error = model.rampSpeed(clip: 1, seconds: 0.6) { throw MCPTestFailure(description: "ramp: \(error)") }
+    let speeds = model.project.clips.map(\.speed)
+    guard model.project.clips.count > before, speeds.contains(where: { $0 > base * 1.01 && $0 < base * 3.99 }),
+          model.undoStepNames.last == "Speed Ramp", model.project.checkInvariants() == nil else { throw MCPTestFailure(description: "ramp result: \(speeds)") }
+    model.undo()
+    guard model.project.clips.count == before else { throw MCPTestFailure(description: "undo") }
+    print("speed-ramp: \(before) → \(speeds.count) clips, speeds \(speeds.map { String(format: "%.2f", $0) }.joined(separator: " ")), undo")
 }

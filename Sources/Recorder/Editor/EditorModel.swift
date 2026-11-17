@@ -116,6 +116,29 @@ import RecorderCore
         edit(kind == .dissolve ? "Add Dissolve" : "Add Dip") { $0 = trial }
     }
 
+    /// Clip inspector "Ramp" (T-935): eases into and out of clip `i`'s speed with the same stepped ramp the agent's
+    /// `speed {ramp}` lowers to (neighbouring footage steps toward the clip's speed), one undo step.
+    @discardableResult
+    func rampSpeed(clip i: Int, seconds: Double) -> String? {
+        guard project.clips.indices.contains(i), !project.clips[i].isEmpty else { return "no clip" }
+        // A ramp eases a speed *change*: rebuild it from the neighbour's speed to the clip's current speed.
+        var trial = project
+        let target = trial.clips[i].speed
+        let neighbour = i > 0 && !trial.clips[i - 1].isEmpty ? trial.clips[i - 1].speed : i + 1 < trial.clips.count ? trial.clips[i + 1].speed : 1
+        guard abs(neighbour - target) > 1e-9 else { return "the clip already plays at its neighbour's speed" }
+        trial.setSpeed(i, neighbour)
+        let start = trial.clips[..<i].reduce(0) { $0 + $1.outputDuration }, end = start + trial.clips[i].outputDuration
+        let raw: JSONValue = .object(["op": .string("speed"), "from": .number(start), "to": .number(end), "speed": .number(target),
+                                      "ramp": .object(["in": .number(seconds), "out": .number(seconds)])])
+        do {
+            let lowered = try lowerIntents([raw], project: trial) { throw EditError.invalidOp(index: 0, reason: "no storyboard needed") }
+            let ops = try JSONDecoder().decode([EditOp].self, from: JSONEncoder().encode(lowered.ops))
+            let result = try trial.applying(ops, context: EditContext())
+            edit("Speed Ramp") { $0 = result.project }
+            return nil
+        } catch { return "\(error)" }
+    }
+
     /// `M` (T-930): adds "Marker N" at the playhead, or removes the marker already there (within 0.1 s); one undo step.
     func toggleMarkerAtPlayhead() {
         let markers = items(project).filter { $0.kind == .marker }
