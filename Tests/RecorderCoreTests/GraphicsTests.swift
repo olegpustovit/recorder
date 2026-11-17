@@ -70,3 +70,37 @@ import Testing
     catch { #expect("\(error)".contains("params: text, x, y")) }
     #expect(throws: GraphicTemplates.Failure.self) { try GraphicTemplates.make("stepBadge", params: ["x": .number(2)], length: 2) }
 }
+
+/// T-925: `graphic` and `animate` ops — JSON in, one change each, replayable, strict errors.
+@Test func graphicAndAnimateOps() throws {
+    var base = Project(source: Source(duration: 20), clips: [Clip(sourceStart: 0, sourceEnd: 20)])
+    base.texts = [TextBlock(id: "t", start: 8, end: 10, text: "Hi")]
+    let json = #"""
+    [{"op":"graphic","from":1,"to":4,"template":{"name":"callout","params":{"text":"Add a node","x":0.62,"y":0.38}},"keys":[{"t":0,"opacity":0},{"t":0.3,"opacity":1}]},
+     {"op":"graphic","from":5,"to":7,"elements":[{"kind":"rect","frame":{"x":0,"y":0,"w":1,"h":1},"fill":"#080808E6","radius":8},{"kind":"text","frame":{"x":0,"y":0,"w":1,"h":1},"fill":"#F4F3EE","text":"Hello"}],"rect":{"x":0.3,"y":0.4,"w":0.4,"h":0.2}},
+     {"op":"animate","id":"t","keys":[{"t":0,"y":0.1,"opacity":0},{"t":0.4,"y":0,"opacity":1,"ease":"spring"}]}]
+    """#
+    let ops = try JSONDecoder().decode([EditOp].self, from: Data(json.utf8))
+    #expect(try JSONDecoder().decode([EditOp].self, from: JSONEncoder().encode(ops)) == ops)
+    let context = EditContext(operationSeeds: ["a", "b", "c"])
+    let r = try base.applying(ops, context: context)
+    let graphics = r.project.layers.filter { $0.kind == .graphic }
+    #expect(graphics.count == 2 && r.changes.count == 3 && r.project.checkInvariants() == nil, "\(graphics.map { ($0.rect, $0.keys as Any, $0.start) }) \(r.changes.count)")
+    #expect(graphics[0].graphic?.template?.name == "callout" && graphics[0].graphic?.space == .screen && graphics[0].keys?.count == 2)
+    #expect(graphics[1].rect == NormRect(x: 0.3, y: 0.4, w: 0.4, h: 0.2) && graphics[1].graphic?.template == nil)
+    #expect(r.project.texts[0].keys?.last?.ease == .spring)
+    #expect(agentTimeline(r.project).blocks.filter { $0.lane == "graphic" }.count == 2)
+    #expect(try base.applying(ops, context: context).project == r.project)                      // replay is deterministic
+    let cleared = try r.project.applying([.animate(id: "t", keys: [])], context: EditContext()).project
+    #expect(cleared.texts[0].keys == nil)
+    func fails(_ json: String, _ text: String) {
+        do { _ = try base.applying(JSONDecoder().decode([EditOp].self, from: Data(json.utf8)), context: EditContext()); Issue.record("accepted \(json)") }
+        catch { #expect("\(error)".contains(text), "\(error)") }
+    }
+    fails(#"[{"op":"graphic","from":1,"to":3}]"#, "exactly one of template or elements")
+    fails(#"[{"op":"graphic","from":1,"to":3,"template":{"name":"nope","params":{}}}]"#, "unknown template nope")
+    fails(#"[{"op":"graphic","from":1,"to":3,"template":{"name":"stepBadge","params":{"x":4}}}]"#, "stepBadge.x")
+    fails(#"[{"op":"graphic","from":1,"to":3,"elements":[{"kind":"arrow","frame":{"x":0,"y":0,"w":1,"h":1}}]}]"#, "needs points")
+    fails(#"[{"op":"graphic","from":1,"to":3,"template":{"name":"titleCard","params":{}},"keys":[{"t":9,"opacity":1}]}]"#, "outside the item")
+    fails(#"[{"op":"animate","id":"nope","keys":[]}]"#, "unknown item nope")
+}

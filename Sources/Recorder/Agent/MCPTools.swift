@@ -58,6 +58,15 @@ enum MCPTools {
                 "mediaRate": ["type": "number", "minimum": 0.25, "maximum": 16, "description": "Layers: playback rate; the output length follows (2 = twice as fast, half as long)."],
                 "text": string, "color": color, "position": point, "size": textSize, "scale": number, "center": center, "follow": follow, "ease": ease,
                 "kind": ["type": "string", "enum": ["mask", "highlight", "blur"], "description": "Masks only."]], ["id"]),
+            op("graphic", ["from": number, "to": number,
+                "template": ["type": "object", "description": "A template from project.templates: {name, params}. Short and always valid; prefer it.",
+                             "properties": ["name": ["type": "string", "enum": GraphicTemplates.catalog.map(\.name)], "params": ["type": "object"]], "required": ["name"], "additionalProperties": false],
+                "elements": ["type": "array", "description": "Escape hatch instead of template: [{kind rect|ellipse|line|arrow|text, frame {x,y,w,h} 0–1 inside rect, points [{x,y},{x,y}] for line/arrow, fill/stroke #RRGGBB[AA], width, radius, text, size (pt at 1080p), weight light|regular|medium|bold, align, reveal (s), count [from,to], keys}]",
+                             "items": ["type": "object"], "maxItems": 32],
+                "space": ["type": "string", "enum": ["canvas", "screen"], "description": "screen: positions are source-frame 0–1 and follow zoom/crop."],
+                "anchor": point, "rect": rect,
+                "keys": ["type": "array", "description": "Whole-graphic keyframes [{t (s since start), x, y (offsets 0–1), scale, rotation (deg), opacity, ease linear|hold|easeIn|easeOut|easeInOut|spring}]", "items": ["type": "object"], "maxItems": 64]], ["from", "to"]),
+            op("animate", ["id": string, "keys": ["type": "array", "description": "Replace the keyframes of a layer, graphic or text block (same key shape as graphic.keys); [] clears.", "items": ["type": "object"], "maxItems": 64]], ["id", "keys"]),
             op("layer", ["from": number, "to": number, "asset": ["type": "string", "description": "A media/ file listed by project.assets (reuse an existing layer's media)."],
                 "path": ["type": "string", "description": "Absolute path to an image or video in your home or temp folder; imported into the project when applied."],
                 "recording": ["type": "string", "description": "A library recording id from project.assets; its screen video becomes a video layer."],
@@ -84,7 +93,7 @@ enum MCPTools {
         let string: [String: Any] = ["type": "string"], boolean: [String: Any] = ["type": "boolean"]
         return [
             "project": ["projects": array, "title": string, "duration": number, "size": object, "clips": ["type": "integer"], "lanes": object, "hasMic": boolean,
-                        "hasCamera": boolean, "transcribed": boolean, "access": string, "layers": array, "library": array, "paths": string, "draft": object],
+                        "hasCamera": boolean, "transcribed": boolean, "access": string, "layers": array, "library": array, "paths": string, "draft": object, "templates": array],
             "timeline": ["duration": number, "clips": array, "blocks": array, "markers": array],
             "transcript": ["transcript": string, "words": array, "phrases": array, "truncated": boolean, "from": number],
             "analyze": ["pauses": array, "fillers": array, "idle": array, "typing": array, "clicks": array, "transcript": string, "words": ["type": "integer"]],
@@ -116,7 +125,7 @@ enum MCPTools {
     }()
     /// `tool.action` pairs with a handler in `call`; the `mcp-schema` self-test diffs this against `tools/list`.
     static let handled: Set<String> = [
-        "project.list", "project.open", "project.info", "project.assets", "timeline.get", "transcript.get",
+        "project.list", "project.open", "project.info", "project.assets", "project.templates", "timeline.get", "transcript.get",
         "analyze.transcribe", "analyze.pauses", "analyze.fillers", "analyze.activity", "analyze.shots", "edit.apply", "edit.undo",
         "draft.status", "draft.submit", "draft.discard", "render.frames", "render.sheet", "render.clip", "render.storyboard", "render.strip", "render.compare", "render.lint", "render.cancel", "export.final", "ui.show"]
     static let list: [[String: Any]] = {
@@ -137,7 +146,7 @@ enum MCPTools {
                     "outputSchema": ["type": "object", "properties": output]]
         }
         return [
-            tool("project", ["list", "open", "info", "assets"], "List recordings, open one by id or package path, read its summary and revision, or list the media a layer op can use (assets).", ["id": string, "path": string], read: true),
+            tool("project", ["list", "open", "info", "assets", "templates"], "List recordings, open one by id or package path, read its summary and revision, list the media a layer op can use (assets), or the motion-graphic templates a graphic op can use (templates).", ["id": string, "path": string], read: true),
             tool("timeline", ["get"], "Read clips, effect blocks and markers in output seconds.", range, read: true),
             tool("transcript", ["get"], "Read up to 2000 spoken words with stable wN ids, or timestamped phrases. Key presses are never returned.", range.merging(["format": ["type": "string", "enum": ["words", "phrases"]]], uniquingKeysWith: { _, b in b }), read: true),
             tool("analyze", ["transcribe", "pauses", "fillers", "activity", "shots"], "Transcribe on-device, find mic pauses/fillers, read activity ranges without key characters, or get the shot storyboard (shots: ids stay tied to source moments across edits; times are output seconds).", ["minDuration": number, "threshold": ["type": "number", "minimum": 0, "maximum": 1],
@@ -579,6 +588,7 @@ enum MCPTools {
                 switch (name, action) {
                 case ("project", "info"): payload = info(model, project: viewed)
                 case ("project", "assets"): payload = MCPAssets.list(project: viewed, library: await libraryRecordings())
+                case ("project", "templates"): payload = ["templates": try json(GraphicTemplates.catalog)]
                 case ("timeline", "get"):
                     let bounds = try bounds(args, duration: viewed.exportDuration)
                     payload = try object(agentTimeline(viewed, from: bounds.0, to: bounds.1))
@@ -775,6 +785,7 @@ enum MCPTools {
         case ("project", "open"): return "Opening recording"
         case ("project", "info"): return "Reading project"
         case ("project", "assets"): return "Reading assets"
+        case ("project", "templates"): return "Reading templates"
         case ("timeline", "get"): return "Reading timeline"
         case ("transcript", "get"): return "Reading transcript"
         case ("analyze", "pauses"): return "Finding pauses"

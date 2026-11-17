@@ -743,7 +743,7 @@ TimelineOps primitive → EditOp → human command → selftest (D4), and fills 
 |---|---|---|
 | A. Reliability (feedback run 6) | T-901…T-905 | 5/5 |
 | B. Kernel: item view, fuzz, `set` | T-910…T-912 | 3/3 |
-| C. Keyframes + motion graphics | T-920…T-925 | 4/6 |
+| C. Keyframes + motion graphics | T-920…T-925 | 5/6 |
 | D. Human editor gaps | T-930…T-937 | 0/8 |
 | E. Docs + eval | T-940 | 0/1 |
 
@@ -786,7 +786,7 @@ TimelineOps primitive → EditOp → human command → selftest (D4), and fills 
   templates, inspector params/elements/colours (Theme tokens), on-canvas move/resize (SelectionRectView), keyframe
   diamonds on the selected block, ⌥K add key at playhead, drag diamond. Verify: `--selftest graphics-ui`, inspector PNGs;
   HUMAN: compare with the prototype.
-- [ ] **T-925 MCP `graphic`, `animate`, `project.templates`** — ops lower to T-921/T-920 primitives; schema + parity;
+- [x] **T-925 MCP `graphic`, `animate`, `project.templates`** — ops lower to T-921/T-920 primitives; schema + parity;
   timeline.get emits graphics. Verify: `--selftest mcp-edit <fixture>` (title card + screen callout through a zoom,
   frames rendered); MCP.md §5.
 - [ ] **T-930 Markers UI** — `M` adds at playhead, ruler flags, double-click rename, ⌃←/⌃→ jump, delete. Verify:
@@ -1803,3 +1803,4 @@ Clean core · 2026-11-17 · verified: `make test` 292/292; `mcp-schema`, `mcp-ed
 T-921 · 2026-11-17 · verified: `make test` 295/295 (new `GraphicsTests`: connected placement/cut ripple/set move/remove, table rejects mediaStart, validation, count/type-out text, colour parse); `mcp-edit --headless` OK · Graphic = `LayerBlock.kind .graphic` + `graphic` payload (D6 revised: reuse layer machinery, no new array); `hasMedia` replaces 18 `kind != .image` checks; `Item.Kind.graphic`; graphics never count as coverage or shots; `Project.addGraphic`.
 T-922 · 2026-11-17 · verified: `make test FILTER=Graphics` 4/4 (new `templatesBuildValidGraphics`: every template from its example and from defaults is valid and places; unknown template/param/out-of-range errors) · `GraphicTemplates.make(name, params, length)` + `catalog` (titleCard, callout, stepBadge, spotlight, progressBar, counter); screen-space templates use a full-frame box so element coordinates are source-frame coordinates.
 T-923 · 2026-11-17 · verified: `make test` 296/296; new headless `--selftest graphics-png <Bright Forest> <out>` (title card, screen callout under a 2× manual zoom, counter, progress bar, keyed text; each changes pixels vs the plain project) OK and its PNGs inspected (callout ring lands on the zoomed target at constant size, counter mid-count, title/keyed text legible on a light recording); `--selftest parity <out>/graphics.recorder`: every graphic sample time maxDelta 0; overall 3 at t=1.286 (inside the added zoom's spring) — the untouched source project already fails parity at maxDelta 4 (pre-existing, 2× clip, not graphics) · Compositor draws graphic layers with CoreGraphics into an output-sized transparent texture (top-left origin) composited by the image-layer path; `space: screen` maps through the cursor/mask crop+zoom mapping; `Graphic.anchor` = follow a point at constant size (callout, badge), nil = scale with zoom (spotlight); Core `layerStates` applies layer keys (x/y/scale/opacity; rotation drawn for graphics only — `shortcut`) and returns `elapsed`; `drawText` applies text keys. Templates restyled for contrast on light and dark recordings (dark plates, outlined strokes). Image elements dropped (use an image layer). Graphics redraw every frame (`shortcut:` cache later).
+T-925 (done before T-924: headless-verifiable and unblocks Claude) · 2026-11-17 · verified: `make test` 297/297 (new `graphicAndAnimateOps`: JSON round-trip, template + raw elements + rect, keys, animate text/clear, deterministic replay, six strict-error cases); `mcp-schema`, `mcp-edit --headless`, `make mcp-smoke` OK · EditOp `graphic {from,to, template{name,params} | elements, space, anchor, rect, keys}` lowers to `addGraphic` (first free graphic lane) and `animate {id, keys}` (layer/graphic/text); `project.templates` returns the catalog; schema/docs. Bug found by the test and fixed: `lazy.compactMap(...).first` ran the side-effecting placement twice (duplicated graphics).

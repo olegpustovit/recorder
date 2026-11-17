@@ -290,6 +290,8 @@ extension EnvironmentValues {
         case .style: "Styling"
         case .layer: "Add layer"
         case .reframe: "Reframe"
+        case .graphic: "Add graphic"
+        case .animate: "Animate"
         }
     }
 }

@@ -156,9 +156,13 @@ public enum EditOp: Codable, Equatable, Sendable {
     case layer(from: EditTime, to: EditTime?, source: LayerSource, rect: NormRect?)
     /// T-831. `keys` is `reframePlan`'s result; the app fills it from the storyboard before the op is stored (like `layer` media), so replay is self-contained.
     case reframe(aspect: Output.Aspect, mode: ReframeMode = .perShot, keys: [CropKey]? = nil)
+    /// Motion graphic (T-925): a template (short, valid) or raw elements (escape hatch); a graphic layer on the output clock.
+    case graphic(from: EditTime, to: EditTime, template: GraphicTemplate?, elements: [GraphicElement]?, space: Graphic.Space?, anchor: NormPoint?, rect: NormRect?, keys: [Key]?)
+    /// Replace an item's keyframes (layer, graphic or text); [] clears them.
+    case animate(id: String, keys: [Key])
 
     private enum CodingKeys: String, CodingKey {
-        case op, from, to, minDuration, keepTail, transcript, words, speed, scale, center, style, text, position, size, maxWords, rect, opacity, at, label, id, patch, snap, follow, ease, color, asset, path, recording, aspect, mode, keys
+        case op, from, to, minDuration, keepTail, transcript, words, speed, scale, center, style, text, position, size, maxWords, rect, opacity, at, label, id, patch, snap, follow, ease, color, asset, path, recording, aspect, mode, keys, template, elements, space, anchor
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -185,6 +189,8 @@ public enum EditOp: Codable, Equatable, Sendable {
             }
             self = try .layer(from: get(.from), to: optional(.to), source: given[0], rect: optional(.rect))
         case "reframe": self = try .reframe(aspect: get(.aspect), mode: optional(.mode) ?? .perShot, keys: optional(.keys))
+        case "graphic": self = try .graphic(from: get(.from), to: get(.to), template: optional(.template), elements: optional(.elements), space: optional(.space), anchor: optional(.anchor), rect: optional(.rect), keys: optional(.keys))
+        case "animate": self = try .animate(id: get(.id), keys: get(.keys))
         default: throw DecodingError.dataCorruptedError(forKey: .op, in: c, debugDescription: "Unknown edit op; use an op from edit.apply's schema")
         }
     }
@@ -212,6 +218,10 @@ public enum EditOp: Codable, Equatable, Sendable {
         case let .set(id, fields): try put("set", .op); try put(id, .id); try fields.encode(to: encoder)
         case let .style(patch): try put("style", .op); try put(patch, .patch)
         case let .reframe(aspect, mode, keys): try put("reframe", .op); try put(aspect, .aspect); try put(mode, .mode); try optional(keys, .keys)
+        case let .graphic(from, to, template, elements, space, anchor, rect, keys):
+            try range("graphic", from, to); try optional(template, .template); try optional(elements, .elements); try optional(space, .space)
+            try optional(anchor, .anchor); try optional(rect, .rect); try optional(keys, .keys)
+        case let .animate(id, keys): try put("animate", .op); try put(id, .id); try put(keys, .keys)
         case let .layer(from, to, source, rect):
             try put("layer", .op); try put(from, .from); try optional(to, .to); try optional(rect, .rect)
             switch source {
@@ -226,7 +236,7 @@ public enum EditOp: Codable, Equatable, Sendable {
         let time: EditTime?
         switch self {
         case let .cut(from, _, _), let .speed(from, _, _, _), let .zoom(from, _, _, _, _, _), let .text(from, _, _, _, _, _, _),
-             let .highlight(from, _, _, _), let .layer(from, _, _, _): time = from
+             let .highlight(from, _, _, _), let .layer(from, _, _, _), let .graphic(from, _, _, _, _, _, _, _): time = from
         case let .marker(at, _): time = at
         case let .cutPauses(_, _, from, _, _): time = from
         case let .set(_, fields): time = fields.from
@@ -480,6 +490,15 @@ public extension Project {
                 return editBlocks(try prefix()).first { $0.0 == id }
             }
             switch op {
+            case let .graphic(from, to, _, _, _, _, _, _):
+                // Connected item: keep both ends as base spine points; apply maps them to the current output clock.
+                let a = try coordinate(from), b = try coordinate(to)
+                guard b.output > a.output else { throw EditError.outOfRange(index: index, reason: "graphic needs from < to") }
+                at = a.output; resolved = [TimeRange(start: a.source, end: b.source)]
+                if from.isAnchor || to.isAnchor { sourceAt = a.source }
+            case let .animate(id, _):
+                guard let block = try block(id) else { throw EditError.invalidOp(index: index, reason: "unknown item \(id)") }
+                at = baseMap.outputTime(atSource: block.1) ?? 0
             case let .cut(from, to, _), let .speed(from, to, _, _), let .zoom(from, to, _, _, _, _), let .text(from, to, _, _, _, _, _), let .highlight(from, to, _, _):
                 resolved = try ranges(from, to); at = try coordinate(from).output
                 if from.isAnchor || to.isAnchor { sourceAt = try coordinate(from).source }
@@ -797,6 +816,42 @@ public extension Project {
                     }
                     if let color = fields.color, let j = result.layers.firstIndex(where: { $0.id == id }) { result.layers[j].color = color }
                     summary = "Set layer \(stamp(item.at))"
+                case let .graphic(_, _, template, elements, space, anchor, rect, keys):
+                    let map = TimeMap(result.clips)
+                    guard let span, let start = map.outputTime(atSource: span.start), let end = map.outputTime(atSource: span.end), end - start >= 0.5 else {
+                        throw EditError.invalidOp(index: index, reason: "graphic needs at least 0.5 s of kept timeline")
+                    }
+                    var graphic: Graphic, box: NormRect
+                    switch (template, elements) {
+                    case let (template?, nil):
+                        do { (graphic, box) = try GraphicTemplates.make(template.name, params: template.params, length: end - start) }
+                        catch { throw EditError.invalidOp(index: index, reason: "\(error)") }
+                    case let (nil, elements?):
+                        graphic = Graphic(space: space ?? .canvas, elements: elements, anchor: anchor); box = NormRect()
+                    default: throw EditError.invalidOp(index: index, reason: "graphic needs exactly one of template or elements (see project.templates)")
+                    }
+                    if let space { graphic.space = space }
+                    if let anchor { graphic.anchor = anchor }
+                    if let rect { box = rect }
+                    if let problem = graphicError(graphic, length: end - start) { throw EditError.invalidOp(index: index, reason: "graphic \(problem)") }
+                    if let keys, let problem = keysError(keys, length: end - start) { throw EditError.invalidOp(index: index, reason: "keys: \(problem)") }
+                    var placed: UUID?
+                    for track in 0..<8 where placed == nil { placed = result.addGraphic(graphic, atOutput: start, duration: end - start, rect: box, track: track) }
+                    guard let id = placed else {
+                        throw EditError.invalidOp(index: index, reason: "graphic does not fit: the box must lie inside the canvas and a free graphic lane is needed")
+                    }
+                    if let keys, !keys.isEmpty, let i = result.layers.firstIndex(where: { $0.id == id.uuidString }) { result.layers[i].keys = keys }
+                    summary = "Add \(template?.name ?? "graphic") \(stamp(item.at))"
+                case let .animate(id, keys):
+                    let value: [Key]? = keys.isEmpty ? nil : keys
+                    if let i = result.layers.firstIndex(where: { $0.id == id }) {
+                        if let keys = value, let problem = keysError(keys, length: result.layers[i].end - result.layers[i].start) { throw EditError.invalidOp(index: index, reason: "keys: \(problem)") }
+                        result.layers[i].keys = value
+                    } else if let i = result.texts.firstIndex(where: { $0.id == id }) {
+                        if let keys = value, let problem = keysError(keys, length: result.texts[i].end - result.texts[i].start) { throw EditError.invalidOp(index: index, reason: "keys: \(problem)") }
+                        result.texts[i].keys = value
+                    } else { throw EditError.invalidOp(index: index, reason: "animate works on layers, graphics and text; \(id) is none of them") }
+                    summary = "Animate \(stamp(item.at))"
                 case let .remove(id):
                     if result.markers.contains(where: { $0.id == id }) {
                         result.markers.removeAll { $0.id == id }
