@@ -434,6 +434,9 @@ enum SelfTest {
         "speed-ramp": { args in try await checkSpeedRamp(args) },
         "export-in-out": { args in try await checkExportRange(args) },
         "timeline-v2-png": { args in try await checkTimelineV2PNG(args) },
+        // Live eval host (T-940): this build's real MCP server on a private socket for `seconds`, so an eval client can
+        // speak JSON-RPC to it while another Recorder owns the default socket.
+        "mcp-serve": { args in try await serveMCP(args) },
         "timeline-gestures": { args in guard let path = args.first else { throw MCPTestFailure(description: "usage: timeline-gestures <package>") }; try await TimelineView.runV2GestureSelfTest(package: URL(fileURLWithPath: path)) },
         "export-gif": { args in try await ExporterSelfTest.runExportGIFSelfTest(args) },
         "export-perf": { args in try await PerfSelfTest.runExportPerf(args) },
@@ -5215,7 +5218,7 @@ private final class MCPTestClient {
     model.beginGesture()
     _ = try await tool("edit", ["action": "apply", "ifRevision": baseRevision, "ops": style], error: "REVIEW_IN_PROGRESS")
     model.cancelGesture()
-    guard model.project.checkInvariants() == nil, MCPTools.operationSchemas.count == 18 else { throw MCPTestFailure(description: "Edit invariants/schemas") }
+    guard model.project.checkInvariants() == nil, MCPTools.operationSchemas.count == 22 else { throw MCPTestFailure(description: "Edit invariants/schemas: \(MCPTools.operationSchemas.count) op schemas") }   // v2: -update, +set graphic animate freeze transition
     let activity = AgentActivity.shared.rows.filter { $0.sessionID == session.id }
     guard activity.allSatisfy({ row in [row.intent, row.result, row.tool].allSatisfy { !$0.contains("PRIVATE_ACTIVITY_") } }),
           activity.contains(where: { $0.isError && $0.result == "STALE_REVISION" }),
@@ -7694,6 +7697,10 @@ final class MainStallMonitor: @unchecked Sendable {
     let bias = deltas.reduce(0, +) / Double(deltas.count), meanDelta = deltas.map { abs($0 - bias) }.reduce(0, +) / Double(deltas.count)
     print(String(format: "freeze: colour bias %.2f/255, residual %.2f/255", bias, meanDelta))
     guard meanDelta < 4 else { throw MCPTestFailure(description: "held frame differs from the frozen image: residual \(meanDelta)") }
+    if args.count > 1 {   // keep a frozen copy for `--selftest parity <out>/freeze.recorder` (T-933 parity)
+        let kept = URL(fileURLWithPath: args[1]).appendingPathComponent("freeze.recorder")
+        try? fm.removeItem(at: kept); try model.project.save(to: copy.appendingPathComponent("project.json")); try fm.copyItem(at: copy, to: kept)
+    }
     model.undo()
     guard abs(model.project.exportDuration - before) < 1e-6 else { throw MCPTestFailure(description: "undo") }
     guard MCPTools.operationSchemas.contains(where: { (($0["properties"] as? [String: Any])?["op"] as? [String: Any])?["enum"] as? [String] == ["freeze"] }) else { throw MCPTestFailure(description: "schema") }
@@ -7792,4 +7799,13 @@ final class MainStallMonitor: @unchecked Sendable {
     try fm.createDirectory(at: URL(fileURLWithPath: args[1]), withIntermediateDirectories: true)
     try png.write(to: URL(fileURLWithPath: args[1]).appendingPathComponent("timeline-v2.png"))
     print("timeline-v2-png: \(rep.pixelsWide)×\(rep.pixelsHigh)")
+}
+
+@MainActor private func serveMCP(_ args: [String]) async throws {
+    guard args.count >= 2, let seconds = Double(args[1]) else { throw MCPTestFailure(description: "usage: mcp-serve <socket> <seconds>") }
+    NSApplication.shared.setActivationPolicy(.accessory); NSApplication.shared.finishLaunching()
+    try MCPServer.shared.start(socketPath: args[0])
+    defer { MCPServer.shared.stop(); for controller in EditorWindowController.allOpen { controller.close() } }
+    print("mcp-serve: listening on \(args[0]) for \(Int(seconds)) s"); fflush(stdout)
+    try await Task.sleep(for: .seconds(seconds))
 }

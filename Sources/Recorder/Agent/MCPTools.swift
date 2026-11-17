@@ -370,7 +370,7 @@ enum MCPTools {
             guard time >= 0, time <= viewed.exportDuration, let png = try await EditorWindowController.renderFramesPNG(model: frame, at: [time], longEdge: nil).first else {
                 throw MCPFailure(code: "OUT_OF_RANGE", message: "freeze at must be inside 0–\(viewed.exportDuration)")
             }
-            let file = "media/freeze-\(UUID().uuidString).png", url = model.packageURL.appendingPathComponent(file)
+            let file = "media/\(render == 0 ? "freeze" : "transition")-\(UUID().uuidString).png", url = model.packageURL.appendingPathComponent(file)
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try png.write(to: url, options: .atomic)
             rendered.append(url)
