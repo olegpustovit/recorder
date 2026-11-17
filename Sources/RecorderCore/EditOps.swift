@@ -401,7 +401,16 @@ public extension Project {
                         guard hits.count <= 1 else { throw EditError.invalidOp(index: index, reason: "marker label \(key) matches \(hits.count) markers; use an id from timeline.get") }
                         found = hits.first?.time
                     case let .ref(key, delta): id = key; offset = delta; found = refTimes[key]
-                    case let .shot(key, end): id = key; found = context.shotTime?(key, end)
+                    case let .shot(key, end):
+                        // Shot times are base-spine seconds; an earlier op may have moved the spine to the output clock,
+                        // so go through media time (never changes) into the prefix's spine (T-902, EDITING-CORE D2).
+                        id = key
+                        let recorded = { (c: Clip) in !c.isEmpty && c.file == nil }
+                        found = context.shotTime?(key, end).flatMap { base in
+                            clips.first { recorded($0) && base >= $0.sourceStart - 1e-9 && base <= $0.sourceEnd + 1e-9 }.map { $0.mediaTime(atSource: base) }
+                        }.flatMap { media in
+                            project.clips.first { recorded($0) && media >= $0.mediaIn - 1e-9 && media <= $0.mediaEnd + 1e-9 }.map { $0.sourceTime(atMedia: media) }
+                        }
                     case .seconds: break
                     }
                     guard offset.isFinite, let found else {

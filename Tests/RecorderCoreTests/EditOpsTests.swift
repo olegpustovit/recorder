@@ -492,6 +492,32 @@ import Testing
         #expect(shots.project.zooms[0].start == 4 && shots.project.zooms[0].end == 6)
     }
 
+    /// T-902 (feedback run 6 #5): on the real layout, a `speed` earlier in the batch moves the spine clock; every later
+    /// shot anchor must still land on its own footage (base spine → media → prefix spine), never "removed footage".
+    @Test func shotAnchorAfterSpeed() throws {
+        var base = GoldenIslandTests.fixture.project, board = GoldenIslandTests.board
+        base.linkVideoEdits = false   // Free mode: setSpeed rewrites clip spine ranges, which is what broke the anchors
+        var context = EditContext()
+        let edges = Dictionary(board.shots.map { ($0.id, ($0.from, $0.to)) }, uniquingKeysWith: { a, _ in a })
+        context.shotTime = { id, end in edges[id].map { end ? $0.1 : $0.0 } }
+        // Independent expectation: the shot table re-derived from media time for the sped-up project.
+        let media = storyboard(signals: GoldenIslandTests.fixture.signals, fps: GoldenIslandTests.fixture.fps, events: GoldenIslandTests.fixture.events)
+        let map = TimeMap(base.clips)
+        var checked = 0
+        for shot in board.shots where shot.duration > 1 && shot.from > 20 {
+            guard let a = map.outputTime(atSource: shot.from), let b = map.outputTime(atSource: shot.to), b - a > 1 else { continue }
+            let speed = EditOp.speed(from: .seconds(a - 0.5), to: .seconds(b + 0.5), speed: 3)   // the anchored shot sits inside the sped range
+            let sped = try base.applying([speed], context: context).project
+            let want = try #require(media.inSource(clips: sped.clips).shots.first { $0.id == shot.id }?.from)
+            let result = try base.applying([speed, .marker(at: .shot(shot.id), label: "t902")], context: context)
+            let marker = try #require(result.project.markers.first { $0.label == "t902" })
+            #expect(abs(marker.time - want) < 0.02, "\(shot.id): \(marker.time) vs \(want)")
+            checked += 1
+            if checked == 5 { break }
+        }
+        #expect(checked == 5)
+    }
+
     @Test func updateAndRemoveCoverEveryLane() throws {
         var base = project()
         let added = base.addLayer(kind: .image, file: "media/a.png", atOutput: 2, duration: 4, rect: NormRect(), hasAudio: false)
