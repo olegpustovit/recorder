@@ -281,7 +281,8 @@ enum ShotAnalysis {
                      report.duration.before, report.duration.after, report.aslSec.before, report.aslSec.after,
                      report.staticSec.before, report.staticSec.after, report.hookSec.map { String(format: "%.2fs", $0) } ?? "-",
                      report.longestStatic.map { String(format: "%.2fs@%.1f", $0.sec, $0.at) } ?? "-", p.cropKeys.count, rules))
-        guard abs(report.duration.after - 30) <= 2 else { throw Fail(description: "fitDuration missed 30±2 s: \(report.duration.after)") }
+        // fitDuration only shortens, so the 30 s target is checked only on projects that start longer than it.
+        guard report.duration.before <= 32 || abs(report.duration.after - 30) <= 2 else { throw Fail(description: "fitDuration missed 30±2 s: \(report.duration.after)") }
         guard p.checkInvariants() == nil else { throw Fail(description: "invariants: \(p.checkInvariants()!)") }
     }
 
