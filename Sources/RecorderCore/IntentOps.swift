@@ -14,6 +14,7 @@ public struct LoweredIntent: Codable, Equatable, Sendable {
 
 public struct ShotPick: Codable, Equatable, Sendable {
     public var id: String, kind: ShotKind, energy: Double, kept: Bool
+    public var section: Int? = nil
 }
 
 private extension JSONValue {
@@ -22,9 +23,10 @@ private extension JSONValue {
     var strings: [String]? { if case .array(let a) = self { let s = a.compactMap { v -> String? in if case .string(let x) = v { return x }; return nil }; return s.count == a.count ? s : nil }; return nil }
 }
 
-/// An intent `protect` entry: a shot id, or `caption~REGEX` matched case-insensitively against the shot's OCR caption.
+/// An intent `protect` entry: a shot id, `section:N`, or `caption~REGEX` matched case-insensitively against the shot's OCR caption.
 func protects(_ list: [String], _ shot: Shot) -> Bool {
     list.contains { entry in
+        if entry.hasPrefix("section:") { return shot.section.map { "section:\($0)" == entry } ?? false }
         guard entry.hasPrefix("caption~") else { return entry == shot.id }
         return shot.caption?.range(of: String(entry.dropFirst(8)), options: [.regularExpression, .caseInsensitive]) != nil
     }
@@ -93,7 +95,7 @@ public func lowerIntents(_ ops: [JSONValue], project: Project, clicks: [InputEve
                 chosen += board.shots.filter { protects(entries, $0) && !chosen.contains($0) }
             }
             let keptIDs = Set(chosen.map(\.id)); var seen = Set<String>()
-            picks = board.shots.filter { seen.insert($0.id).inserted }.map { ShotPick(id: $0.id, kind: $0.kind, energy: $0.energy, kept: keptIDs.contains($0.id)) }
+            picks = board.shots.filter { seen.insert($0.id).inserted }.map { ShotPick(id: $0.id, kind: $0.kind, energy: $0.energy, kept: keptIDs.contains($0.id), section: $0.section) }
             let lead = try number("lead", 0, in: raw["trim"]), tail = try number("tail", 0, in: raw["trim"])
             guard lead >= 0, tail >= 0 else { throw bad("trim.lead and trim.tail must be >= 0") }
             var keep: [TimeRange] = []
@@ -137,24 +139,35 @@ public func lowerIntents(_ ops: [JSONValue], project: Project, clicks: [InputEve
             let protected = raw["protect"]?.strings ?? []
             // Interest: kind rank first, energy as tie-break. Lowest goes first.
             let rank: [ShotKind: Double] = [.static: 0, .cursorOnly: 1, .typing: 2, .motion: 3, .payoff: 4]
-            let order = try sb().segments(map).filter { !protects(protected, $0.shot) }
+            let minPerSection = try number("minPerSection", 0)
+            let balance: String
+            switch raw["balance"] { case nil: balance = "energy"; case .string(let v)? where ["even", "energy"].contains(v): balance = v; default: throw bad("balance must be even or energy") }
+            guard minPerSection >= 0 else { throw bad("minPerSection must be >= 0") }
+            let all = try sb().segments(map)
+            var kept = sectionSeconds(all)   // output seconds per section; minPerSection never lets one fall below it
+            var order = all.filter { !protects(protected, $0.shot) }
                 .sorted { (rank[$0.shot.kind]! + $0.shot.energy, -$0.duration) < (rank[$1.shot.kind]! + $1.shot.energy, -$1.duration) }
             // Target the exported length: layers/audio past the video (e.g. an outro) count, and shift earlier with each cut.
             var length = project.exportDuration, ids: [String] = []
-            for s in order {
+            while length - target > tolerance {
                 let excess = length - target
-                if excess <= tolerance { break }
+                func amount(_ s: ShotSegment) -> Double { s.duration <= excess + tolerance ? s.duration : excess }
+                let eligible = order.indices.filter { kept[order[$0].shot.section ?? 1, default: 0] - amount(order[$0]) >= minPerSection - 1e-6 }
+                // energy: least interesting first; even: take from the section that still keeps the most (interest breaks ties).
+                guard let pick = balance == "even" ? eligible.max(by: { kept[order[$0].shot.section ?? 1]! < kept[order[$1].shot.section ?? 1]! || (kept[order[$0].shot.section ?? 1]! == kept[order[$1].shot.section ?? 1]! && $0 > $1) }) : eligible.first else { break }
+                let s = order.remove(at: pick)
+                kept[s.shot.section ?? 1, default: 0] -= amount(s)
                 if s.duration <= excess + tolerance {
                     result.append(cutJSON(s.range.start, s.range.end)); length -= s.duration
                     if !ids.contains(s.shot.id) { ids.append(s.shot.id) }
                 } else {   // last one: compress to absorb the remaining excess, or trim its tail when that would need > 6x
                     let ratio = up(s.duration / (s.duration - excess))
                     if ratio <= 6 { speedUp(s, s.range.start, s.range.end, ratio) } else { result.append(cutJSON(s.range.end - excess, s.range.end)) }
-                    length = target; break
+                    length = target
                 }
             }
             dropped = ids
-            if length - target > tolerance { note = String(format: "could not reach %.1fs: %.1fs left after protected/remaining shots", target, length) }
+            if length - target > tolerance { note = String(format: "could not reach %.1fs: %.1fs left after protected shots and minPerSection", target, length) }
         case "autoZoom":
             let lead = try number("lead", 0.4), tail = try number("tail", 1.5), scale = try number("scale", 2)
             let from = try number("from", 0), to = try number("to", total)

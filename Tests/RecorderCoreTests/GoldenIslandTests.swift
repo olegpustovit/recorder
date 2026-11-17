@@ -81,4 +81,16 @@ import Testing
             #expect(cropJumps(keys, storyboard: board) == 0)
         }
     }
+
+    /// R3-2: sections come from how the project rearranges the recording (8 scenes here), and minPerSection + even
+    /// balance keep every scene in a 30 s cut (plain fitDuration dropped the graph and the contour ending entirely).
+    @Test func fitDurationKeepsEveryScene() throws {
+        #expect(Set(board.shots.compactMap(\.section)).count == 8)
+        let plain = try apply(base, #"[{"op":"fitDuration","target":30}]"#)
+        #expect(editReport(before: base, after: plain, storyboard: board).sections?.contains { $0.keptSec == 0 } == true)
+        let even = try apply(base, #"[{"op":"fitDuration","target":30,"minPerSection":2,"balance":"even"}]"#)
+        let sections = try #require(editReport(before: base, after: even, storyboard: board).sections)
+        #expect(sections.count == 8 && sections.allSatisfy { $0.keptSec >= 2 - 0.01 }, "\(sections.map(\.keptSec))")
+        #expect(abs(even.exportDuration - 30) <= 2)
+    }
 }

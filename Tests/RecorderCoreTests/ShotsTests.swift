@@ -131,4 +131,18 @@ import Testing
         let split = [Clip(sourceStart: 0, sourceEnd: 5), Clip(sourceStart: 5, sourceEnd: 10)]
         #expect(sb.mapped(through: TimeMap(split)).shots.map(\.part) == [nil])
     }
+
+    // R3-2: sections without any project metadata (historical recordings): cut-delimited runs of >= 10 s; short ones merge.
+    @Test func sectionsFallBackToCutsAndMergeShortOnes() {
+        let shots = [Shot(id: "s01", from: 0, to: 12, kind: .motion, boundary: .start),
+                     Shot(id: "s02", from: 12, to: 14, kind: .motion, boundary: .cut),     // starts section 2
+                     Shot(id: "s03", from: 14, to: 20, kind: .motion, boundary: .cut),     // < 10 s since s02: same section
+                     Shot(id: "s04", from: 20, to: 24, kind: .motion, boundary: .scroll),
+                     Shot(id: "s05", from: 24, to: 25, kind: .motion, boundary: .cut)]     // only 1 s left: merged back
+        let sb = Storyboard(duration: 25, fps: 10, shots: shots, summary: StoryboardSummary(shots: 5, aslSec: 0, staticSec: 0, longestStatic: nil))
+        #expect(sb.inSource(clips: [Clip(sourceStart: 0, sourceEnd: 25)]).shots.map(\.section) == [1, 2, 2, 2, 2])
+        // A trimmed project (cut pauses) is not rearranged: its clip joins are not sections.
+        #expect(sb.inSource(clips: [Clip(sourceStart: 0, sourceEnd: 11), Clip(sourceStart: 13, sourceEnd: 25)]).shots.compactMap(\.section).max() == 2)
+        #expect(protects(["section:2"], sb.inSource(clips: [Clip(sourceStart: 0, sourceEnd: 25)]).shots[2]))
+    }
 }

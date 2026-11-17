@@ -43,6 +43,20 @@ public struct EditReport: Codable, Equatable, Sendable {
     public var staticSec: Pair
     public var lint: [LintItem]
     public var reframeJumps: Int?      // crop steps not at a cut (reframed projects only)
+    public var sections: [SectionStat]?   // per scene: how much survived the edit, so balance shows without rendering
+}
+
+public struct SectionStat: Codable, Equatable, Sendable {
+    public var section: Int
+    public var name: String?           // first caption in the section, when analyze.shots ran with captions
+    public var from: Double, to: Double   // source seconds
+    public var shots: [String]         // first and last shot id
+    public var keptSec: Double         // output seconds kept
+}
+
+/// Output seconds each section keeps on `map` (segments are already sliver-free).
+func sectionSeconds(_ segs: [ShotSegment]) -> [Int: Double] {
+    segs.reduce(into: [:]) { $0[$1.shot.section ?? 1, default: 0] += $1.duration }
 }
 
 /// One kept piece of recorded footage on the output timeline; `speed` is the clip's absolute speed (what a `speed` op sets).
@@ -229,11 +243,22 @@ private func applicableCut(_ project: Project, _ a: Double, _ b: Double) -> JSON
     return nil
 }
 
+private func sectionStats(_ sb: Storyboard, kept: [Int: Double]) -> [SectionStat]? {
+    let groups = Dictionary(grouping: sb.shots.filter { $0.section != nil }, by: { $0.section! })
+    guard groups.count > 1 else { return nil }
+    return groups.keys.sorted().map { k in
+        let shots = groups[k]!.sorted { $0.from < $1.from }
+        return SectionStat(section: k, name: shots.compactMap(\.caption).first, from: r2(shots.first!.from), to: r2(shots.last!.to),
+                           shots: [shots.first!.id, shots.last!.id], keptSec: r2(kept[k] ?? 0))
+    }
+}
+
 /// `before` is the project the edit started from, `after` the draft.
 public func editReport(before: Project, after: Project, storyboard sb: Storyboard, profile: LintProfile = .reel) -> EditReport {
     let b = metrics(before, sb), a = metrics(after, sb)
     return EditReport(duration: .init(before: r2(b.duration), after: r2(a.duration)), aslSec: .init(before: r2(b.asl), after: r2(a.asl)),
                       subShotAslSec: .init(before: r2(b.subAsl), after: r2(a.subAsl)),
                       hookSec: a.hook.map(r2), longestStatic: a.longest, staticSec: .init(before: r2(b.staticSec), after: r2(a.staticSec)),
-                      lint: lint(after, a, sb, profile), reframeJumps: after.cropKeys.isEmpty ? nil : cropJumps(after.cropKeys, storyboard: sb))
+                      lint: lint(after, a, sb, profile), reframeJumps: after.cropKeys.isEmpty ? nil : cropJumps(after.cropKeys, storyboard: sb),
+                      sections: sectionStats(sb, kept: sectionSeconds(a.segs)))
 }

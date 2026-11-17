@@ -62,12 +62,14 @@ enum MCPTools {
             op("style", ["patch": ["type": "object"]], ["patch"]),
             op("reframe", ["aspect": ["type": "string", "enum": ["4:5", "1:1", "9:16", "16:9"]], "mode": ["type": "string", "enum": ["perShot", "static"], "default": "perShot", "description": "perShot: one stationary or pan crop per shot aimed at its focus and cursor; static: one crop over every focus. Needs analyze.shots."]], ["aspect"]),
             op("keepShots", ["shots": ["type": "array", "items": string, "description": "Shot ids from analyze.shots to keep; everything else is cut."],
-                "protect": ["type": "array", "items": string, "description": "Shots always kept: ids or caption~regex (needs analyze.shots captions:true), e.g. caption~graph, so the subject survives an energy filter."],
+                "protect": ["type": "array", "items": string, "description": "Shots always kept: ids, section:N, or caption~regex (needs analyze.shots captions:true), e.g. caption~graph, so the subject survives an energy filter."],
                 "where": ["type": "object", "description": "Keep shots by kind and energy instead of ids.", "properties": ["kind": ["type": "array", "items": ["type": "string", "enum": ShotKind.allCases.map(\.rawValue)]], "minEnergy": number], "additionalProperties": false],
                 "trim": ["type": "object", "description": "Source seconds trimmed from the start/end of each kept shot.", "properties": ["lead": number, "tail": number], "additionalProperties": false]], []),
             op("pace", ["beat": ["type": "object", "description": "Seconds a shot is held: default 0.9, payoff 1.3, motion 0.8.", "properties": ["default": number, "payoff": number, "motion": number], "additionalProperties": false],
                 "maxStatic": number, "speedFill": ["type": "object", "description": "Speed range used to squeeze holds and slow shots (default 1.5-6).", "properties": ["min": number, "max": number], "additionalProperties": false]], []),
-            op("fitDuration", ["target": number, "tolerance": number, "protect": ["type": "array", "items": string, "description": "Shots never cut: ids or caption~regex."]], ["target"]),
+            op("fitDuration", ["target": number, "tolerance": number, "protect": ["type": "array", "items": string, "description": "Shots never cut: ids, section:N or caption~regex."],
+                "minPerSection": ["type": "number", "minimum": 0, "description": "Output seconds every section (shot.section from analyze.shots) keeps at least; report.sections shows kept time per section."],
+                "balance": ["type": "string", "enum": ["energy", "even"], "default": "energy", "description": "energy: drop the least interesting shots first; even: take from the section that keeps the most."]], ["target"]),
             op("autoZoom", ["lead": number, "tail": number, "scale": number, "from": number, "to": number], [])
         ]
     }()

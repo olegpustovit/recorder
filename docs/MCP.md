@@ -196,6 +196,7 @@ whole batch is one `applying` call and one undo step. Every intent reads the bat
 {"op":"keepShots","where":{"kind":["payoff","motion"],"minEnergy":0.1},"protect":["caption~graph","s49"]}   // protect: always kept (ids or caption~regex, case-insensitive)
 {"op":"pace","beat":{"default":0.9,"payoff":1.3,"motion":0.8},"maxStatic":1.2,"speedFill":{"min":1.5,"max":6}}
 {"op":"fitDuration","target":30,"tolerance":2,"protect":["s02"]}          // lowered.dropped = shots removed whole
+{"op":"fitDuration","target":30,"minPerSection":2,"balance":"even"}        // every section keeps ≥ 2 s; even takes from the section that keeps most
 {"op":"autoZoom","lead":0.4,"tail":1.5,"scale":2,"from":0,"to":60}        // AutoZoom.swift click clustering → zoom ops (from/to optional output window)
 {"op":"speed","from":10,"to":14,"speed":3,"ramp":{"in":0.2,"out":0.3}}     // stepped speeds (4 per side max), no native easing
 ```
@@ -210,7 +211,7 @@ Intent ops are validated against the tools/list schema like primitives: an unkno
 `report`: `{duration, aslSec, subShotAslSec, staticSec: {before,after}, hookSec, longestStatic:{sec,at}, lint:[…], reframeJumps?}`, computed draft vs the timeline
 the batch started from. Static = `static` or `cursorOnly` shots. `hookSec` = output time of the first payoff's first kept click
 (its start when none). Lint item: `{rule, sev, at, shot?, msg, suggest?}`; `suggest` is an op for the next `edit.apply`
-(output seconds of the edited timeline). `edgeContent` suggests the T-831 `reframe` op. `aslSec` is the visual average shot: the timeline split at edit cuts (clip joins that don't continue the same footage) and `boundary:"cut"` shots; `subShotAslSec` averages analyzer shots. `tinyShot` fires only for a piece with a cut on at least one edge, and its `suggest` is a cut that a dry run confirmed applies (else none). Pieces under one analysis frame are ignored. `reframeJumps` counts crop steps not at a cut. A shot split into separate pieces by cuts carries `part:"k/n"`.
+(output seconds of the edited timeline). `edgeContent` suggests the T-831 `reframe` op. `aslSec` is the visual average shot: the timeline split at edit cuts (clip joins that don't continue the same footage) and `boundary:"cut"` shots; `subShotAslSec` averages analyzer shots. `tinyShot` fires only for a piece with a cut on at least one edge, and its `suggest` is a cut that a dry run confirmed applies (else none). Pieces under one analysis frame are ignored. `reframeJumps` counts crop steps not at a cut. `sections:[{section,name?,from,to,shots:[first,last],keptSec}]` (source from/to, output keptSec) shows scene balance. Every shot carries `section` (1-based): a new section where the project rearranges the recording (a clip whose media position doesn't follow from the previous clip, unlike trims or cut pauses); a recording that was only trimmed splits at `boundary:\"cut\"` shots into runs of ≥ 10 s; sections under 3 s join a neighbour. `protect` also takes `section:N`. A shot split into separate pieces by cuts carries `part:"k/n"`.
 
 | Rule | reel | demo | tutorial |
 |---|---|---|---|

@@ -20,6 +20,7 @@ public struct Shot: Codable, Equatable, Sendable {
     public var caption: String?
     public var tag: String?          // "result": a hold meant to be long (exempt from maxStatic)
     public var part: String?         // "2/3" when edits split the shot into separate pieces (same id, cut between them)
+    public var section: Int?         // 1-based scene of the project (see `inSource`); stable across edits
     public init(id: String, from: Double, to: Double, kind: ShotKind, boundary: ShotBoundary, energy: Double = 0,
                 staticFrac: Double = 0, clicks: [Double] = [], cursor: NormPoint? = nil, focus: NormRect = NormRect(),
                 reasons: [String] = [], caption: String? = nil, tag: String? = nil) {
@@ -213,7 +214,31 @@ public extension Storyboard {
         }
         var board = summarize(out.sorted { $0.from < $1.from }, duration: duration, fps: fps)
         board.summary.shots = Set(out.map(\.id)).count
+        board.assignSections(clips: clips)
         return board
+    }
+
+    /// Sections (scenes) for balance: a new one where the project rearranges the recording (a clip whose media position
+    /// doesn't follow from the previous one, unlike a plain trim or cut pause); a recording that was only trimmed is split
+    /// at `boundary:"cut"` shots into runs of ≥ 10 s. Sections under 3 s join their neighbour.
+    /// shortcut: no app/window or caption signal, so two scenes inside one untouched clip only split at cuts; add one when shots carry it.
+    mutating func assignSections(clips: [Clip]) {
+        let recorded = clips.filter { !$0.isEmpty && $0.file == nil }
+        var starts: [Double] = []   // source seconds where a section begins
+        for (a, b) in zip(recorded, recorded.dropFirst()) where abs((b.mediaIn - a.mediaEnd) - (b.sourceStart - a.sourceEnd)) > 0.05 {
+            starts.append(b.sourceStart)
+        }
+        if starts.isEmpty {
+            var from = shots.first?.from ?? 0
+            for s in shots where s.boundary == .cut && s.from - from >= 10 { starts.append(s.from); from = s.from }
+        }
+        let end = shots.last?.to ?? 0
+        var bounds = [shots.first?.from ?? 0] + starts.sorted() + [end]
+        var i = 1
+        while i < bounds.count - 1 {   // drop a start whose section (or the one before it) is shorter than 3 s
+            if bounds[i + 1] - bounds[i] < 3 || bounds[i] - bounds[i - 1] < 3 { bounds.remove(at: i) } else { i += 1 }
+        }
+        for k in shots.indices { shots[k].section = (bounds.dropLast().lastIndex { $0 <= shots[k].from + 1e-6 } ?? 0) + 1 }
     }
 
     /// Source-time storyboard (see `inSource`) → output time through the project's clips.
