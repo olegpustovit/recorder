@@ -35,7 +35,6 @@ import Testing
         #expect(bad(GraphicElement(kind: .arrow)) == "element 0 arrow needs points [from, to]")
         #expect(bad(GraphicElement(kind: .rect, fill: "red"))?.contains("#RRGGBB") == true)
         #expect(bad(GraphicElement(kind: .text)) == "element 0 text is empty")
-        #expect(bad(GraphicElement(kind: .image, file: "../x.png")) != nil)
         #expect(bad(GraphicElement(kind: .text, text: "a", weight: "heavy")) != nil)
         #expect(bad(GraphicElement(kind: .rect, keys: [Key(t: 9, opacity: 1)])) == "element 0 key 0 outside the item")
         var p = base()

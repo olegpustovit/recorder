@@ -23,7 +23,9 @@ func fadeOpacity(elapsed: Double, duration: Double, fadeIn: Double?, fadeOut: Do
 }
 
 public extension Project {
-    func layerStates(atOutput time: Double) -> [(block: LayerBlock, opacity: Double, progress: Double, rect: NormRect)] {
+    /// `elapsed` = output seconds since the layer's start; `rotation` in degrees (graphics only draw it). Keys (T-920) replace
+    /// the `motion` entrance; fades still multiply opacity.
+    func layerStates(atOutput time: Double) -> [(block: LayerBlock, opacity: Double, progress: Double, rect: NormRect, elapsed: Double, rotation: Double)] {
         guard time.isFinite, time >= 0 else { return [] }
         let map = TimeMap(clips)
         return layers.sorted { $0.track < $1.track }.compactMap { block in
@@ -32,12 +34,19 @@ public extension Project {
                   time >= start, time < start + duration else { return nil }
             let progress = fadeOpacity(elapsed: time - start, duration: duration, fadeIn: block.fadeIn, fadeOut: block.fadeOut)
             var rect = block.rect
+            if let keys = block.keys, !keys.isEmpty {
+                let t = evaluate(keys, at: time - start)
+                rect.x += t.x; rect.y += t.y   // x/y offset the box; scale about its centre
+                rect.x += rect.w * (1 - t.scale) / 2; rect.y += rect.h * (1 - t.scale) / 2
+                rect.w *= t.scale; rect.h *= t.scale
+                return (block, progress * t.opacity, progress, rect, time - start, t.rotation)
+            }
             if block.motion == .scale {
                 let scale = 0.94 + 0.06 * progress
                 rect.x += rect.w * (1 - scale) / 2; rect.y += rect.h * (1 - scale) / 2
                 rect.w *= scale; rect.h *= scale
             } else if block.motion == .slide { rect.y += 0.04 * (1 - progress) }
-            return (block, progress, progress, rect)
+            return (block, progress, progress, rect, time - start, 0)
         }
     }
 }

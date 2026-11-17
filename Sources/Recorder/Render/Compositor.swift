@@ -128,6 +128,7 @@ final class Compositor {
             guard layer.opacity > 0 else { return nil }
             var layer = layer
             if layer.texture == nil, layer.block.kind == .image { layer.texture = layerImage(layer.block.file, outputSize: s.outputSize) }
+            if layer.block.kind == .graphic { layer.texture = graphicTexture(layer, state: s); layer.rect = NormRect() }   // drawn canvas-sized
             layer.texture = colorManaged(layer.texture, commandBuffer: commandBuffer)
             return layer.texture == nil ? nil : layer
         }
@@ -269,8 +270,99 @@ final class Compositor {
         let uv = cameraContentUV(texture: texture, destination: rect.size, mirror: false)
         var style = project
         style.frame.enabled = true
-        if layer.block.rect == NormRect() { style.frame.cornerRadius = 0; style.frame.shadow = 0 }
-        drawScreen(texture, project: style, rectPx: rect, frameRect: rect, contentUV: uv, prevContentUV: uv, alpha: layer.opacity, outputSize: outputSize, encoder: encoder, preserveAlpha: layer.block.kind == .image)
+        if layer.block.rect == NormRect() || layer.block.kind == .graphic { style.frame.cornerRadius = 0; style.frame.shadow = 0 }
+        drawScreen(texture, project: style, rectPx: rect, frameRect: rect, contentUV: uv, prevContentUV: uv, alpha: layer.opacity, outputSize: outputSize, encoder: encoder, preserveAlpha: !layer.block.hasMedia)
+    }
+
+    // MARK: - Graphics (T-923, EDITING-CORE D6)
+
+    /// Source-frame point (0–1) → output pixels through the same crop/zoom mapping the cursor and masks use, so a
+    /// `space: screen` graphic stays on the recorded pixels it points at.
+    private func screenMapping(_ state: FrameState) -> (CGPoint) -> CGPoint {
+        let base = screenRect(output: state.outputSize, cropAspect: cropAspect(state.project), padding: state.project.renderedFrame.padding)
+        let frame = zoomedScreenRect(base: base, view: state.view), uv = cropUV(state.project.crop, view: .identity)
+        let u0 = Double(uv.x), v0 = Double(uv.y), u1 = Double(uv.z), v1 = Double(uv.w)
+        return { p in CGPoint(x: frame.minX + (p.x - u0) / max(u1 - u0, 1e-9) * frame.width, y: frame.minY + (p.y - v0) / max(v1 - v0, 1e-9) * frame.height) }
+    }
+
+    /// Draws a graphic's elements into an output-sized transparent texture (top-left origin). Pure function of the frame
+    /// state, so preview and export draw the same pixels.
+    // shortcut: redrawn every frame (no cache); cache static graphics by (id, rect) if preview profiling shows it.
+    private func graphicTexture(_ layer: FrameState.Layer, state: FrameState) -> FrameState.Texture? {
+        guard let graphic = layer.block.graphic else { return nil }
+        let size = CGSize(width: state.outputSize.width.rounded(), height: state.outputSize.height.rounded())
+        let r = layer.rect, length = layer.block.end - layer.block.start, unit = min(size.width, size.height) / 1080
+        var map: (CGPoint) -> CGPoint = { CGPoint(x: $0.x * size.width, y: $0.y * size.height) }
+        if graphic.space == .screen {
+            let zoomed = screenMapping(state)
+            if let anchor = graphic.anchor {   // follow the point at constant size: unzoomed layout, shifted onto the zoomed point
+                var still = state; still.view = .identity
+                let flat = screenMapping(still), p = CGPoint(x: anchor.x, y: anchor.y)
+                let shift = CGPoint(x: zoomed(p).x - flat(p).x, y: zoomed(p).y - flat(p).y)
+                map = { CGPoint(x: flat($0).x + shift.x, y: flat($0).y + shift.y) }
+            } else { map = zoomed }
+        }
+        let a = map(CGPoint(x: r.x, y: r.y)), b = map(CGPoint(x: r.x + r.w, y: r.y + r.h))
+        let box = CGRect(x: a.x, y: a.y, width: b.x - a.x, height: b.y - a.y)
+        guard box.width > 0, box.height > 0, let texture = bitmapTexture(size: size, draw: {
+            guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+            ctx.translateBy(x: 0, y: size.height); ctx.scaleBy(x: 1, y: -1)
+            NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
+            if layer.rotation != 0 {
+                ctx.translateBy(x: box.midX, y: box.midY); ctx.rotate(by: layer.rotation * .pi / 180); ctx.translateBy(x: -box.midX, y: -box.midY)
+            }
+            for element in graphic.elements { drawElement(element, in: box, unit: unit, elapsed: layer.elapsed, length: length, ctx: ctx) }
+        }) else { return nil }
+        return FrameState.Texture(luma: texture)
+    }
+
+    private func drawElement(_ e: GraphicElement, in box: CGRect, unit: CGFloat, elapsed: Double, length: Double, ctx: CGContext) {
+        func color(_ hex: String?) -> NSColor? {
+            hex.flatMap(graphicColor).map { NSColor(colorSpace: NSColorSpace(cgColorSpace: VideoColor.space)!, components: [$0.r, $0.g, $0.b, $0.a].map { CGFloat($0) }, count: 4) }
+        }
+        let t = e.keys.map { evaluate($0, at: elapsed) } ?? Transform()
+        guard t.opacity > 0 else { return }
+        var frame = CGRect(x: box.minX + (e.frame.x + t.x) * box.width, y: box.minY + (e.frame.y + t.y) * box.height, width: e.frame.w * box.width, height: e.frame.h * box.height)
+        frame = frame.insetBy(dx: frame.width * (1 - t.scale) / 2, dy: frame.height * (1 - t.scale) / 2)
+        ctx.saveGState(); defer { ctx.restoreGState() }
+        ctx.setAlpha(t.opacity)
+        if t.rotation != 0 { ctx.translateBy(x: frame.midX, y: frame.midY); ctx.rotate(by: t.rotation * .pi / 180); ctx.translateBy(x: -frame.midX, y: -frame.midY) }
+        let reveal = graphicReveal(e, at: elapsed)
+        if reveal < 1 { ctx.clip(to: CGRect(x: frame.minX, y: frame.minY - 1e4, width: frame.width * reveal, height: frame.height + 2e4)) }
+        let lineWidth = CGFloat(e.width ?? 3) * unit, radius = CGFloat(e.radius ?? 0) * unit
+        switch e.kind {
+        case .rect, .ellipse:
+            let path = e.kind == .ellipse ? CGPath(ellipseIn: frame, transform: nil)
+                                          : CGPath(roundedRect: frame, cornerWidth: min(radius, frame.width / 2), cornerHeight: min(radius, frame.height / 2), transform: nil)
+            if let fill = color(e.fill) { ctx.addPath(path); ctx.setFillColor(fill.cgColor); ctx.fillPath() }
+            if let stroke = color(e.stroke) { ctx.addPath(path); ctx.setStrokeColor(stroke.cgColor); ctx.setLineWidth(lineWidth); ctx.strokePath() }
+        case .line, .arrow:
+            guard let p = e.points, p.count == 2, let stroke = color(e.stroke ?? e.fill) else { return }
+            let from = CGPoint(x: box.minX + (p[0].x + t.x) * box.width, y: box.minY + (p[0].y + t.y) * box.height)
+            var to = CGPoint(x: box.minX + (p[1].x + t.x) * box.width, y: box.minY + (p[1].y + t.y) * box.height)
+            to = CGPoint(x: from.x + (to.x - from.x) * reveal, y: from.y + (to.y - from.y) * reveal)   // arrows draw out from the start
+            ctx.resetClip()
+            ctx.setStrokeColor(stroke.cgColor); ctx.setLineWidth(lineWidth); ctx.setLineCap(.round)
+            ctx.move(to: from); ctx.addLine(to: to); ctx.strokePath()
+            if e.kind == .arrow, hypot(to.x - from.x, to.y - from.y) > lineWidth {
+                let angle = atan2(to.y - from.y, to.x - from.x), head = lineWidth * 4
+                ctx.setFillColor(stroke.cgColor)
+                ctx.move(to: to)
+                ctx.addLine(to: CGPoint(x: to.x - head * cos(angle - .pi / 7), y: to.y - head * sin(angle - .pi / 7)))
+                ctx.addLine(to: CGPoint(x: to.x - head * cos(angle + .pi / 7), y: to.y - head * sin(angle + .pi / 7)))
+                ctx.closePath(); ctx.fillPath()
+            }
+        case .text:
+            let px = CGFloat(e.size ?? 48) * unit
+            let weight: NSFont.Weight = ["bold": .bold, "medium": .medium, "regular": .regular][e.weight ?? ""] ?? .light
+            let font = e.weight == nil || e.weight == "light" ? Theme.headingFont(px) : NSFont.systemFont(ofSize: px, weight: weight)
+            let para = NSMutableParagraphStyle()
+            para.alignment = e.align == "left" ? .left : e.align == "right" ? .right : .center
+            let text = NSAttributedString(string: graphicText(e, at: elapsed, length: length),
+                                          attributes: [.font: font, .foregroundColor: color(e.fill) ?? Theme.mediaText, .paragraphStyle: para])
+            ctx.resetClip()
+            text.draw(with: frame, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
+        }
     }
 
     /// Core Image honors the buffer's primaries, transfer function, YCbCr matrix
@@ -745,9 +837,10 @@ final class Compositor {
         guard !block.text.isEmpty, block.size.isFinite, block.size > 0 else { return }
         let shortEdge = min(outputSize.width, outputSize.height)
         let motion = block.style == .lowerThird || block.style == .chapter
-        let px = motion ? min(CGFloat(block.size) * shortEdge / 1080, shortEdge) : CGFloat(block.size) * shortEdge / 1080
+        let keyed = block.keys.map { evaluate($0, at: sourceTime - block.start) } ?? Transform()   // T-920 keys
+        let px = (motion ? min(CGFloat(block.size) * shortEdge / 1080, shortEdge) : CGFloat(block.size) * shortEdge / 1080) * CGFloat(keyed.scale)
         let fade = min(0.3, (block.end - block.start) / 2)
-        let alpha = motion && fade > 0 ? min(1, max(0, min(sourceTime - block.start, block.end - sourceTime) / fade)) : 1
+        let alpha = (motion && fade > 0 && block.keys == nil ? min(1, max(0, min(sourceTime - block.start, block.end - sourceTime) / fade)) : 1) * keyed.opacity
         guard alpha > 0 else { return }
         if block.style == .chapter {
             var scrim = Uniforms()
@@ -832,12 +925,13 @@ final class Compositor {
         let safeBottom = block.style == .caption && outputSize.height > outputSize.width ? outputSize.height * 0.82 : outputSize.height
         let cx = min(max(CGFloat(block.position.x) * outputSize.width, w / 2), outputSize.width - w / 2)
         let cy = min(max(CGFloat(block.position.y) * outputSize.height, h / 2), safeBottom - h / 2)
-        let origin: CGPoint
+        var origin: CGPoint
         if block.style == .lowerThird {
             origin = CGPoint(x: min(max(0, CGFloat(block.position.x) * outputSize.width), max(0, outputSize.width - w)).rounded(),
                              y: min(max(0, CGFloat(block.position.y) * outputSize.height), max(0, outputSize.height - h)).rounded())
         } else if block.style == .chapter { origin = CGPoint(x: ((outputSize.width - w) / 2).rounded(), y: ((outputSize.height - h) / 2).rounded()) }
         else { origin = CGPoint(x: (cx - w / 2).rounded(), y: (cy - h / 2).rounded()) }
+        origin.x += CGFloat(keyed.x) * outputSize.width; origin.y += CGFloat(keyed.y) * outputSize.height
         var u = Uniforms()
         u.rectNDC = ndcRect(CGRect(origin: origin, size: CGSize(width: w, height: h)), in: outputSize)
         u.uvRect = SIMD4(0, 0, 1, 1)

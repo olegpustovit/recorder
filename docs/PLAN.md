@@ -743,7 +743,7 @@ TimelineOps primitive → EditOp → human command → selftest (D4), and fills 
 |---|---|---|
 | A. Reliability (feedback run 6) | T-901…T-905 | 5/5 |
 | B. Kernel: item view, fuzz, `set` | T-910…T-912 | 3/3 |
-| C. Keyframes + motion graphics | T-920…T-925 | 3/6 |
+| C. Keyframes + motion graphics | T-920…T-925 | 4/6 |
 | D. Human editor gaps | T-930…T-937 | 0/8 |
 | E. Docs + eval | T-940 | 0/1 |
 
@@ -779,7 +779,7 @@ TimelineOps primitive → EditOp → human command → selftest (D4), and fills 
   delete/duplicate via the generic timed-block ops), invariants, v7 rule. Verify: `make test FILTER=Graphics`.
 - [x] **T-922 Templates** — `titleCard`, `callout`, `stepBadge`, `spotlight`, `progressBar`, `counter` as pure
   `(params) -> [GraphicElement]` with param schemas (for `project.templates`). Verify: `make test FILTER=Graphics`.
-- [ ] **T-923 Render graphics + keyframes** — Compositor draws graphics (CG → cached texture), `space: screen` mapped
+- [x] **T-923 Render graphics + keyframes** — Compositor draws graphics (CG → cached texture), `space: screen` mapped
   through `ZoomTargetMapping`; layer/text keys applied. Verify: `--selftest parity` with graphics/keys fixtures maxDelta 0;
   `--selftest graphics-png <out>` inspected.
 - [ ] **T-924 Human: Graphics lane, template gallery, GraphicPanel, keyframes** — lane in TimelineView, `G` menu of
@@ -1802,3 +1802,4 @@ T-920 · 2026-11-17 · verified: `make test` 292/292 (new `KeyframesTests`: per-
 Clean core · 2026-11-17 · verified: `make test` 292/292; `mcp-schema`, `mcp-edit --headless` OK · Per the user (no backward compatibility): removed `EditOp.update` and its JSON name; `set` is the only patch op (Core prepare/apply branches now match `.set` for non-layer items, the dead layer branch of the old update path is deleted, mask `kind` lives in the mask branch); tests and selftests converted mechanically; MCP schema/docs list only `set`. Persisted drafts containing "update" ops will not replay (reported as unrecoverable and kept as agent-draft.failed.json).
 T-921 · 2026-11-17 · verified: `make test` 295/295 (new `GraphicsTests`: connected placement/cut ripple/set move/remove, table rejects mediaStart, validation, count/type-out text, colour parse); `mcp-edit --headless` OK · Graphic = `LayerBlock.kind .graphic` + `graphic` payload (D6 revised: reuse layer machinery, no new array); `hasMedia` replaces 18 `kind != .image` checks; `Item.Kind.graphic`; graphics never count as coverage or shots; `Project.addGraphic`.
 T-922 · 2026-11-17 · verified: `make test FILTER=Graphics` 4/4 (new `templatesBuildValidGraphics`: every template from its example and from defaults is valid and places; unknown template/param/out-of-range errors) · `GraphicTemplates.make(name, params, length)` + `catalog` (titleCard, callout, stepBadge, spotlight, progressBar, counter); screen-space templates use a full-frame box so element coordinates are source-frame coordinates.
+T-923 · 2026-11-17 · verified: `make test` 296/296; new headless `--selftest graphics-png <Bright Forest> <out>` (title card, screen callout under a 2× manual zoom, counter, progress bar, keyed text; each changes pixels vs the plain project) OK and its PNGs inspected (callout ring lands on the zoomed target at constant size, counter mid-count, title/keyed text legible on a light recording); `--selftest parity <out>/graphics.recorder`: every graphic sample time maxDelta 0; overall 3 at t=1.286 (inside the added zoom's spring) — the untouched source project already fails parity at maxDelta 4 (pre-existing, 2× clip, not graphics) · Compositor draws graphic layers with CoreGraphics into an output-sized transparent texture (top-left origin) composited by the image-layer path; `space: screen` maps through the cursor/mask crop+zoom mapping; `Graphic.anchor` = follow a point at constant size (callout, badge), nil = scale with zoom (spotlight); Core `layerStates` applies layer keys (x/y/scale/opacity; rotation drawn for graphics only — `shortcut`) and returns `elapsed`; `drawText` applies text keys. Templates restyled for contrast on light and dark recordings (dark plates, outlined strokes). Image elements dropped (use an image layer). Graphics redraw every frame (`shortcut:` cache later).

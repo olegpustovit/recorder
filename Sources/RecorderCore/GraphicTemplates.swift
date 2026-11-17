@@ -8,6 +8,11 @@ public struct GraphicTemplateInfo: Codable, Equatable, Sendable {
 
 public enum GraphicTemplates {
     static let paper = "#F4F3EE", ink = "#141414", plate = "#080808E6"
+    /// A light stroke over a wider dark one, so lines read on light and dark recordings alike.
+    static func outlined(_ e: GraphicElement) -> [GraphicElement] {
+        var under = e; under.stroke = "#080808CC"; under.width = (e.width ?? 3) + 4
+        return [under, e]
+    }
 
     public static let catalog: [GraphicTemplateInfo] = [
         .init(name: "titleCard", summary: "Centred title on a dark plate (canvas).", params: ["text": "title", "subtitle": "optional second line"],
@@ -67,33 +72,34 @@ public enum GraphicTemplates {
             let left = x > 0.5   // label on the side with more room
             let lx = left ? max(0.02, x - 0.36) : min(0.7, x + 0.08), ly = max(0.02, y - 0.16)
             rect = full
-            graphic = Graphic(space: .screen, elements: [
-                GraphicElement(kind: .ellipse, frame: NormRect(x: x - 0.035, y: y - 0.06, w: 0.07, h: 0.12), stroke: paper, width: 4),
-                GraphicElement(kind: .arrow, points: [NormPoint(x: left ? lx + 0.28 : lx, y: ly + 0.07), NormPoint(x: left ? x - 0.03 : x + 0.03, y: y - 0.04)], stroke: paper, width: 4),
-                GraphicElement(kind: .rect, frame: NormRect(x: lx, y: ly, w: 0.28, h: 0.07), fill: paper, radius: 6),
-                GraphicElement(kind: .text, frame: NormRect(x: lx + 0.015, y: ly + 0.008, w: 0.25, h: 0.055), fill: ink, text: label, size: 30, weight: "medium", align: "left"),
-            ])
+            graphic = Graphic(space: .screen, elements:
+                outlined(GraphicElement(kind: .ellipse, frame: NormRect(x: x - 0.035, y: y - 0.06, w: 0.07, h: 0.12), stroke: paper, width: 4))
+                + outlined(GraphicElement(kind: .arrow, points: [NormPoint(x: left ? lx + 0.28 : lx, y: ly + 0.07), NormPoint(x: left ? x - 0.03 : x + 0.03, y: y - 0.04)], stroke: paper, width: 4))
+                + [GraphicElement(kind: .rect, frame: NormRect(x: lx, y: ly, w: 0.28, h: 0.07), fill: plate, radius: 6),
+                   GraphicElement(kind: .text, frame: NormRect(x: lx + 0.015, y: ly + 0.008, w: 0.25, h: 0.055), fill: paper, text: label, size: 30, weight: "medium", align: "left")],
+                anchor: NormPoint(x: x, y: y))
         case "stepBadge":
             let x = try number("x", 0.5), y = try number("y", 0.5)
             rect = full
             graphic = Graphic(space: .screen, elements: [
-                GraphicElement(kind: .ellipse, frame: NormRect(x: x - 0.025, y: y - 0.044, w: 0.05, h: 0.088), fill: paper),
+                GraphicElement(kind: .ellipse, frame: NormRect(x: x - 0.025, y: y - 0.044, w: 0.05, h: 0.088), fill: paper, stroke: "#080808CC", width: 3),
                 GraphicElement(kind: .text, frame: NormRect(x: x - 0.025, y: y - 0.03, w: 0.05, h: 0.06), fill: ink, text: try text("text", "1"), size: 36, weight: "medium", align: "center"),
-            ])
+            ], anchor: NormPoint(x: x, y: y))
         case "spotlight":
             let x = try number("x", 0.35), y = try number("y", 0.35), w = try number("w", 0.3), h = try number("h", 0.3)
             guard x + w <= 1, y + h <= 1, w > 0, h > 0 else { throw Failure.param("spotlight region must lie inside 0–1") }
             rect = full
-            graphic = Graphic(space: .screen, elements: [GraphicElement(kind: .rect, frame: NormRect(x: x, y: y, w: w, h: h), stroke: paper, width: 4, radius: 8)])
+            graphic = Graphic(space: .screen, elements: outlined(GraphicElement(kind: .rect, frame: NormRect(x: x, y: y, w: w, h: h), stroke: paper, width: 4, radius: 8)))
         case "progressBar":
             rect = NormRect(x: 0.1, y: 0.93, w: 0.8, h: 0.012)
-            graphic = Graphic(space: .canvas, elements: [GraphicElement(kind: .rect, fill: "#F4F3EE40", radius: 3),
-                                                        GraphicElement(kind: .rect, fill: paper, radius: 3, reveal: max(0.1, length))])
+            graphic = Graphic(space: .canvas, elements: [GraphicElement(kind: .rect, fill: "#08080899", radius: 3),
+                                                        GraphicElement(kind: .rect, fill: paper, stroke: "#080808CC", width: 1, radius: 3, reveal: max(0.1, length))])
         case "counter":
             let x = try number("x", 0.5), y = try number("y", 0.5), from = try number("from", 0, -1e9...1e9), to = try number("to", 100, -1e9...1e9)
             rect = NormRect(x: min(max(0, x - 0.25), 0.5), y: min(max(0, y - 0.07), 0.86), w: 0.5, h: 0.14)
-            graphic = Graphic(space: .canvas, elements: [GraphicElement(kind: .text, fill: paper, text: try text("text", "#"), size: 72, weight: "light", align: "center",
-                                                                        reveal: min(1.5, max(0.1, length)), count: [from, to])])
+            graphic = Graphic(space: .canvas, elements: [GraphicElement(kind: .rect, fill: plate, radius: 10),
+                                                        GraphicElement(kind: .text, frame: NormRect(x: 0.04, y: 0.12, w: 0.92, h: 0.8), fill: paper, text: try text("text", "#"), size: 72, weight: "light", align: "center",
+                                                                       reveal: min(1.5, max(0.1, length)), count: [from, to])])
         default: throw Failure.unknown(name)
         }
         graphic.template = GraphicTemplate(name: name, params: params)

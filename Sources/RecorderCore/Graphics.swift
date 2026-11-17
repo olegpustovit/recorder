@@ -11,8 +11,11 @@ public struct Graphic: Codable, Equatable, Sendable {
     /// Set when made from a template; editing params regenerates `elements`. nil = hand-made or detached.
     public var template: GraphicTemplate?
     public var elements: [GraphicElement]
-    public init(space: Space = .canvas, template: GraphicTemplate? = nil, elements: [GraphicElement]) {
-        self.space = space; self.template = template; self.elements = elements
+    /// Screen space only: the source-frame point the graphic points at. Set = the graphic follows that point through zoom
+    /// at constant size (callouts, badges); nil = the whole box scales with the zoom (spotlight around a region).
+    public var anchor: NormPoint?
+    public init(space: Space = .canvas, template: GraphicTemplate? = nil, elements: [GraphicElement], anchor: NormPoint? = nil) {
+        self.space = space; self.template = template; self.elements = elements; self.anchor = anchor
     }
 }
 
@@ -23,7 +26,7 @@ public struct GraphicTemplate: Codable, Equatable, Sendable {
 }
 
 public struct GraphicElement: Codable, Equatable, Sendable {
-    public enum Kind: String, Codable, Sendable, CaseIterable { case rect, ellipse, line, arrow, text, image }
+    public enum Kind: String, Codable, Sendable, CaseIterable { case rect, ellipse, line, arrow, text }   // images: use an image layer
     public var kind: Kind
     public var frame: NormRect              // inside the graphic's box, 0–1, top-left origin
     public var points: [NormPoint]?         // line/arrow: [from, to] inside the box
@@ -35,7 +38,6 @@ public struct GraphicElement: Codable, Equatable, Sendable {
     public var size: Double?                // text size, points at 1080 px
     public var weight: String?              // light | regular | medium | bold
     public var align: String?               // left | center | right
-    public var file: String?                // image: package-relative media/ file
     /// Seconds from the graphic's start over which the element is revealed: bars grow left→right, text types out.
     public var reveal: Double?
     /// Text only: count from [0] to [1] over `reveal` (or the whole graphic); "#" in `text` is replaced by the number.
@@ -43,9 +45,9 @@ public struct GraphicElement: Codable, Equatable, Sendable {
     public var keys: [Key]?                 // per-element transform, seconds since the graphic's start
     public init(kind: Kind, frame: NormRect = NormRect(), points: [NormPoint]? = nil, fill: String? = nil, stroke: String? = nil,
                 width: Double? = nil, radius: Double? = nil, text: String? = nil, size: Double? = nil, weight: String? = nil,
-                align: String? = nil, file: String? = nil, reveal: Double? = nil, count: [Double]? = nil, keys: [Key]? = nil) {
+                align: String? = nil, reveal: Double? = nil, count: [Double]? = nil, keys: [Key]? = nil) {
         self.kind = kind; self.frame = frame; self.points = points; self.fill = fill; self.stroke = stroke; self.width = width
-        self.radius = radius; self.text = text; self.size = size; self.weight = weight; self.align = align; self.file = file
+        self.radius = radius; self.text = text; self.size = size; self.weight = weight; self.align = align
         self.reveal = reveal; self.count = count; self.keys = keys
     }
 }
@@ -91,7 +93,6 @@ public func graphicError(_ g: Graphic, length: Double) -> String? {
         }
         for color in [e.fill, e.stroke].compactMap({ $0 }) where graphicColor(color) == nil { return "element \(i) colour \(color) is not #RRGGBB[AA]" }
         if e.kind == .text, (e.text ?? "").isEmpty && e.count == nil { return "element \(i) text is empty" }
-        if e.kind == .image, !(e.file ?? "").hasPrefix("media/") || (e.file ?? "").split(separator: "/").contains("..") { return "element \(i) image needs a media/ file" }
         if let size = e.size, !(4...400).contains(size) { return "element \(i) size must be 4–400" }
         if let width = e.width, !(0...100).contains(width) { return "element \(i) width must be 0–100" }
         if let radius = e.radius, !(0...1000).contains(radius) { return "element \(i) radius must be 0–1000" }

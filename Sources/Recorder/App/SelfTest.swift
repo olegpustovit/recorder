@@ -425,6 +425,7 @@ enum SelfTest {
         "preview-frame": { args in try await Compositor.runPreviewFrameSelfTest(args) },
         "export": { args in try await ExporterSelfTest.runExportSelfTest(args) },
         "parity": { args in try await ExporterSelfTest.runParitySelfTest(args) },
+        "graphics-png": { args in try await checkGraphicsPNG(args) },
         "export-gif": { args in try await ExporterSelfTest.runExportGIFSelfTest(args) },
         "export-perf": { args in try await PerfSelfTest.runExportPerf(args) },
         "export-native": { _ in try await ExportSheetSelfTest.checkNativeHandoff() },
@@ -7504,3 +7505,48 @@ final class MainStallMonitor: @unchecked Sendable {
     func stop() { lock.withLock { running = false } }
 }
 
+/// T-923 (headless, no windows): copies <package> to <out>/graphics.recorder, adds a title card, a screen-space callout under a
+/// manual zoom, a counter, a progress bar and a keyed text, renders PNGs through the shared Copy Frame path and checks that
+/// each graphic changes the pixels where it is drawn. `--selftest parity <out>/graphics.recorder` then checks preview == export.
+@MainActor private func checkGraphicsPNG(_ args: [String]) async throws {
+    guard args.count >= 2 else { throw MCPTestFailure(description: "usage: graphics-png <package> <out-dir>") }
+    let out = URL(fileURLWithPath: args[1]), fm = FileManager.default
+    try fm.createDirectory(at: out, withIntermediateDirectories: true)
+    let package = out.appendingPathComponent("graphics.recorder")
+    try? fm.removeItem(at: package)
+    try fm.copyItem(at: URL(fileURLWithPath: args[0]), to: package)
+    let url = package.appendingPathComponent("project.json")
+    var p = try Project.load(from: url)
+    let plain = p
+    let map = TimeMap(p.clips)
+    guard map.outputDuration >= 7 else { throw MCPTestFailure(description: "fixture needs ≥ 7 s") }
+    p.zooms = [Zoom(id: "gz", start: map.sourceTime(atOutput: 1.2), end: map.sourceTime(atOutput: 4), scale: 2, mode: .manual, center: NormPoint(x: 0.62, y: 0.38))]
+    func add(_ name: String, _ params: [String: JSONValue], at: Double, _ length: Double, keys: [Key]? = nil) throws {
+        let made = try GraphicTemplates.make(name, params: params, length: length)
+        guard let id = p.addGraphic(made.graphic, atOutput: at, duration: length, rect: made.rect, track: 0) ?? p.addGraphic(made.graphic, atOutput: at, duration: length, rect: made.rect, track: 1),
+              let i = p.layers.firstIndex(where: { $0.id == id.uuidString }) else { throw MCPTestFailure(description: "\(name) did not place") }
+        p.layers[i].keys = keys
+    }
+    try add("titleCard", ["text": .string("Golden Island"), "subtitle": .string("Building a map editor")], at: 0.1, 1.0)
+    try add("callout", ["text": .string("Add a node"), "x": .number(0.62), "y": .number(0.38)], at: 1.3, 2.6, keys: [Key(t: 0, scale: 0.6, opacity: 0, ease: .spring), Key(t: 0.4, scale: 1, opacity: 1)])
+    try add("counter", ["from": .number(0), "to": .number(1240), "text": .string("# tiles")], at: 4.2, 1.5)
+    try add("progressBar", [:], at: 0.1, map.outputDuration - 0.2)
+    p.texts = [TextBlock(id: "kt", start: map.sourceTime(atOutput: 5.8), end: map.sourceTime(atOutput: 6.8), text: "Keyed title", style: .title)]
+    p.texts[0].keys = [Key(t: 0, y: 0.1, opacity: 0), Key(t: 0.4, y: 0, opacity: 1)]
+    guard p.checkInvariants() == nil else { throw MCPTestFailure(description: "invariants: \(p.checkInvariants()!)") }
+    try p.save(to: url)
+    let times = [0.6, 1.5, 2.8, 5.0, 6.5]
+    let model = try loadEditorModel(package: package)
+    let frames = try await EditorWindowController.renderFramesPNG(model: model, at: times, longEdge: 960)
+    try plain.save(to: url)
+    let plainFrames = try await EditorWindowController.renderFramesPNG(model: try loadEditorModel(package: package), at: times, longEdge: 960)
+    try p.save(to: url)
+    for (i, t) in times.enumerated() {
+        try frames[i].write(to: out.appendingPathComponent(String(format: "graphics-%.1f.png", t)))
+        guard let a = NSBitmapImageRep(data: frames[i]), let b = NSBitmapImageRep(data: plainFrames[i]) else { throw MCPTestFailure(description: "PNG decode") }
+        var changed = 0
+        for y in stride(from: 0, to: a.pixelsHigh, by: 4) { for x in stride(from: 0, to: a.pixelsWide, by: 4) where a.colorAt(x: x, y: y) != b.colorAt(x: x, y: y) { changed += 1 } }
+        guard changed > 50 else { throw MCPTestFailure(description: "graphics at \(t) s changed only \(changed) sampled pixels") }
+        print(String(format: "graphics-png %.1f s: %d sampled pixels changed", t, changed))
+    }
+}

@@ -38,6 +38,8 @@ struct FrameState {
         var cursor: CursorSample?
         var masks: [Mask] = []
         var sourceTime: Double = 0
+        var elapsed: Double = 0      // output seconds since the layer's start (graphics: reveal/count/element keys)
+        var rotation: Double = 0     // degrees, from keys (graphics)
     }
 
     var outputSize: CGSize
@@ -103,6 +105,7 @@ func makeFrameState(model: EditorModel, outputTime: Double, screen: FrameState.T
                        keyChip: inTimeline ? keyChip : nil, texts: inTimeline ? texts : [],
                        layers: model.project.layerStates(atOutput: outputTime).map { sample in
                            var layer = FrameState.Layer(block: sample.block, opacity: sample.opacity, progress: sample.progress, rect: sample.rect)
+                           layer.elapsed = sample.elapsed; layer.rotation = sample.rotation
                            if layer.block.hasMedia, let transform = layerTransforms[layer.block.file] {
                                layer.texture = layerTextures[layer.block.track]
                                layer.texture?.preferredTransform = transform
