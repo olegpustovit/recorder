@@ -21,6 +21,7 @@ public struct Shot: Codable, Equatable, Sendable {
     public var tag: String?          // "result": a hold meant to be long (exempt from maxStatic)
     public var part: String?         // "2/3" when edits split the shot into separate pieces (same id, cut between them)
     public var section: Int?         // 1-based scene of the project (see `inSource`); stable across edits
+    public var layer: String?        // set when this piece is shown by a full-canvas layer, not the video clips (T-901)
     public init(id: String, from: Double, to: Double, kind: ShotKind, boundary: ShotBoundary, energy: Double = 0,
                 staticFrac: Double = 0, clicks: [Double] = [], cursor: NormPoint? = nil, focus: NormRect = NormRect(),
                 reasons: [String] = [], caption: String? = nil, tag: String? = nil) {
@@ -266,6 +267,47 @@ public extension Storyboard {
             }
         }
         var board = summarize(out.sorted { $0.from < $1.from }, duration: map.outputDuration, fps: fps)
+        board.summary.shots = Set(out.map(\.id)).count
+        return board
+    }
+}
+
+public extension Storyboard {
+    /// Media-time storyboard (what analysis measures) → the output timeline of `project` (T-901, EDITING-CORE D2/D3):
+    /// video-clip pieces as `mapped(through:)`, plus full-canvas layers, which hide whatever is under them. A recording
+    /// layer of `screen.mov` shows its media window's shots (same ids, `layer` set); an image/video layer becomes one
+    /// unanalysed coverage shot `L:<layer id>`. Duration is `exportDuration`, the one duration every tool reports.
+    func output(project: Project) -> Storyboard {
+        let map = TimeMap(project.clips)
+        var out = inSource(clips: project.clips).mapped(through: map).shots
+        for layer in project.layers.sorted(by: { $0.track < $1.track }) where layer.rect.w >= 0.999 && layer.rect.h >= 0.999 {
+            guard let start = map.outputTime(atSource: layer.start) else { continue }
+            let end = start + layer.end - layer.start
+            guard end - start > 1e-9 else { continue }
+            out = out.flatMap { s -> [Shot] in   // the layer covers [start, end): keep only what shows around it
+                guard s.to > start, s.from < end else { return [s] }
+                var pieces: [Shot] = []
+                if s.from < start { var a = s; a.to = start; a.clicks = s.clicks.filter { $0 < start }; pieces.append(a) }
+                if s.to > end { var b = s; b.from = end; b.clicks = s.clicks.filter { $0 >= end }; pieces.append(b) }
+                return pieces.filter { $0.to - $0.from > 1e-6 }
+            }
+            if layer.kind == .recording, layer.file == "screen.mov" {
+                let rate = layer.mediaRate ?? 1, m0 = layer.mediaStart, m1 = m0 + (end - start) * rate
+                func output(_ media: Double) -> Double { r2(start + (media - m0) / rate) }
+                for var s in shots where s.to > m0 && s.from < m1 {
+                    let lo = max(s.from, m0), hi = min(s.to, m1)
+                    s.clicks = s.clicks.filter { $0 >= lo && $0 < hi }.map(output)
+                    (s.from, s.to, s.layer, s.part, s.section) = (output(lo), output(hi), layer.id, nil, nil)
+                    out.append(s)
+                }
+            } else {
+                out.append(Shot(id: "L:\(layer.id)", from: r2(start), to: r2(end), kind: layer.kind == .image ? .static : .motion,
+                                boundary: .cut, reasons: ["\(layer.kind.rawValue) layer, not analysed"]))
+                out[out.count - 1].layer = layer.id
+            }
+        }
+        for i in out.indices { out[i].part = nil }
+        var board = summarize(out.sorted { $0.from < $1.from }, duration: project.exportDuration, fps: fps)
         board.summary.shots = Set(out.map(\.id)).count
         return board
     }

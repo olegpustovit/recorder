@@ -84,6 +84,23 @@ import Testing
         #expect(gap.shots.map(\.id) == ["s01", "s02", "s02", "s03"] && gap.summary.shots == 3)   // real cut inside s02: two pieces, one shot
     }
 
+    /// T-901: a recording layer appended after the clips and a full-canvas image layer are part of the shot table,
+    /// and the storyboard's duration is the export duration (feedback run 6: the 6.9 s ending was invisible).
+    @Test func layersAreShotsAndDurationIsExport() {
+        let media = storyboard(signals: Self.signals(), events: [Self.click])           // s01 0–2, s02 2–4, s03 4–6
+        let tail = LayerBlock(id: "rec", kind: .recording, start: 6, end: 8, file: "screen.mov", mediaStart: 1,
+                              rect: NormRect(), backdrop: .none, mediaRate: 2)
+        let still = LayerBlock(id: "img", kind: .image, start: 1, end: 1.5, file: "a.png", rect: NormRect())
+        let pip = LayerBlock(id: "pip", kind: .image, start: 3, end: 5, file: "b.png", rect: NormRect(x: 0.6, y: 0.6, w: 0.3, h: 0.3))
+        let project = Project(source: Source(duration: 6), clips: [Clip(sourceStart: 0, sourceEnd: 6)], layers: [tail, still, pip])
+        let out = media.output(project: project)
+        #expect(out.duration == project.exportDuration && out.duration == 8)
+        #expect(out.shots.map(\.id) == ["s01", "L:img", "s01", "s02", "s03", "s01", "s02", "s03"])
+        #expect(out.shots.map(\.from) == [0, 1, 1.5, 2, 4, 6, 6.5, 7.5] && out.shots.last?.to == 8)
+        #expect(out.shots.map(\.layer) == [nil, "img", nil, nil, nil, "rec", "rec", "rec"])
+        #expect(out.shots[6].clicks == [6.5])                                             // media click 2.0 at 2× after 1.0
+    }
+
     @Test func typingNeedsDensityAndNoShortcuts() {
         let one = storyboard(signals: Self.signals(), events: [InputEvent(t: 4.1, k: .key, keyCode: 0, mods: 0)])
         #expect(one.shots[2].kind == .motion)

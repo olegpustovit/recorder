@@ -627,7 +627,14 @@ enum MCPTools {
                             for i in source.shots.indices { if let c = captions[source.shots[i].id], !c.isEmpty { source.shots[i].caption = c } }
                         }
                     }
-                    let board = source.mapped(through: TimeMap(viewed.clips))
+                    // Media-keyed table mapped through the viewed project's own clips and layers (T-901, EDITING-CORE D2).
+                    var board = try loadStoryboard(model: model, media: true).output(project: viewed)
+                    let named = Dictionary(source.shots.compactMap { s in s.caption.map { (s.id, $0) } }, uniquingKeysWith: { a, _ in a })
+                    let sections = Dictionary(source.shots.compactMap { s in s.section.map { (s.id, $0) } }, uniquingKeysWith: { a, _ in a })
+                    for i in board.shots.indices where board.shots[i].layer == nil {
+                        board.shots[i].caption = named[board.shots[i].id] ?? board.shots[i].caption
+                        board.shots[i].section = sections[board.shots[i].id]
+                    }
                     payload = try object(board)
                     if format == "concise", let shots = payload["shots"] as? [[String: Any]] {
                         payload["shots"] = shots.map { $0.filter { $0.key != "reasons" } }
@@ -1004,12 +1011,14 @@ enum MCPTools {
     }
 
     /// Source-time storyboard from analyze.shots' cached signals, for storyboard/lint/intent/reframe ops.
-    @MainActor static func loadStoryboard(model: EditorModel) throws -> Storyboard {
+    /// `media: true` keeps media-file seconds (for `Storyboard.output(project:)`, which also maps layers).
+    @MainActor static func loadStoryboard(model: EditorModel, media: Bool = false) throws -> Storyboard {
         guard let signals = ShotAnalysis.cachedSignals(package: model.packageURL) else {
             throw MCPFailure(code: "NO_STORYBOARD", message: "run analyze.shots first (decoded once, then cached)")
         }
         let thresholds = (try? JSONDecoder().decode(ShotThresholds.self, from: Data(contentsOf: model.packageURL.appendingPathComponent(ShotAnalysis.thresholdsName)))) ?? ShotThresholds()
-        var board = storyboard(signals: signals, fps: ShotAnalysis.fps, events: model.events.events, thresholds: thresholds).inSource(clips: model.liveProject.clips)
+        var board = storyboard(signals: signals, fps: ShotAnalysis.fps, events: model.events.events, thresholds: thresholds)
+        if !media { board = board.inSource(clips: model.liveProject.clips) }
         if let captions = try? JSONDecoder().decode([String: String].self, from: Data(contentsOf: model.packageURL.appendingPathComponent(ShotAnalysis.captionsName))) {
             for i in board.shots.indices { board.shots[i].caption = captions[board.shots[i].id].flatMap { $0.isEmpty ? nil : $0 } }
         }

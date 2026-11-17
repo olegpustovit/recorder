@@ -58,7 +58,7 @@ import RecorderCore
                 let modified = (try? fm.attributesOfItem(atPath: url.path)[.modificationDate] as? Date) ?? .distantPast
                 let thumbURL = url.appendingPathComponent("thumbnail.jpg")
                 let thumbnail = fm.fileExists(atPath: thumbURL.path) ? NSImage(contentsOf: thumbURL) : nil
-                return Item(id: url, title: project.title, duration: TimeMap(project.clips).outputDuration,
+                return Item(id: url, title: project.title, duration: project.exportDuration,
                             modified: modified, thumbnail: thumbnail, projectID: project.id, hasMic: project.source.hasMic)
             }.sorted { $0.modified > $1.modified }
             DispatchQueue.main.async { self.items = scanned; completion?() }

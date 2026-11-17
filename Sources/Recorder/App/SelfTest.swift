@@ -4888,7 +4888,7 @@ private final class MCPTestClient {
     let reuse = try await MCPAssets.resolve([.layer(from: 10, to: 12, source: .asset(asset.file), rect: nil)], package: package, project: applied.project, library: [], known: resolution.assets)
     guard reuse.created.isEmpty, reuse.assets[asset.file] == asset else { throw fail("known asset not reused") }
     let listing = MCPAssets.list(project: applied.project, library: [.init(id: project.id, title: "self", duration: 1, package: package), .init(id: "other", title: "Other", duration: 9, package: package)])
-    guard let layers = listing["layers"] as? [[String: Any]], layers.count == 1, layers[0]["asset"] as? String == asset.file, layers[0]["kind"] as? String == "image",
+    guard let layers = listing["layers"] as? [[String: Any]], layers.count == 2, layers.allSatisfy({ $0["asset"] as? String == asset.file && $0["kind"] as? String == "image" && $0["mediaRate"] as? Double == 1 }),
           let library = listing["library"] as? [[String: Any]], library.count == 1, library[0]["recording"] as? String == "other" else { throw fail("assets listing") }
     // Video: a generated 1 s movie imports as a video layer through a library recording's screen.mov, using the card placement rect.
     let other = root.appendingPathComponent("other.recorder", isDirectory: true)
