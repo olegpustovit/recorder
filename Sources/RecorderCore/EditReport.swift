@@ -36,15 +36,17 @@ public struct EditReport: Codable, Equatable, Sendable {
     public struct Pair: Codable, Equatable, Sendable { public var before: Double; public var after: Double }
     public struct Static: Codable, Equatable, Sendable { public var sec: Double; public var at: Double }
     public var duration: Pair
-    public var aslSec: Pair
+    public var aslSec: Pair            // average visual shot: timeline split at edit cuts and boundary:"cut" shots
+    public var subShotAslSec: Pair?    // average analyzer shot (sub-shots inside continuous footage count)
     public var hookSec: Double?
     public var longestStatic: Static?
     public var staticSec: Pair
     public var lint: [LintItem]
+    public var reframeJumps: Int?      // crop steps not at a cut (reframed projects only)
 }
 
 /// One kept piece of recorded footage on the output timeline; `speed` is the clip's absolute speed (what a `speed` op sets).
-struct Piece { var range: TimeRange; var speed: Double; var scale: Double }
+struct Piece { var range: TimeRange; var speed: Double; var scale: Double; var source = 0.0 }
 extension TimeMap {
     /// Output pieces where source `[from, to]` is kept (several when the footage was copied or split); recorded clips only.
     func pieces(source from: Double, to: Double) -> [Piece] {
@@ -53,11 +55,20 @@ extension TimeMap {
             defer { start += c.outputDuration }
             let lo = max(from, c.sourceStart), hi = min(to, c.sourceEnd)
             guard hi - lo > 1e-9, !c.isEmpty, c.file == nil else { continue }
-            result.append(Piece(range: TimeRange(start: start + (lo - c.sourceStart) / c.timeScale, end: start + (hi - c.sourceStart) / c.timeScale), speed: c.speed, scale: c.timeScale))
+            result.append(Piece(range: TimeRange(start: start + (lo - c.sourceStart) / c.timeScale, end: start + (hi - c.sourceStart) / c.timeScale), speed: c.speed, scale: c.timeScale, source: lo))
         }
         return result
     }
     func outputRanges(source from: Double, to: Double) -> [TimeRange] { pieces(source: from, to: to).map(\.range) }
+    /// Output times where an edit makes the picture jump: joins of clips that don't continue the same footage.
+    var editCuts: [Double] {
+        var t = 0.0, cuts: [Double] = []
+        for (a, b) in zip(clips, clips.dropFirst()) {
+            t += a.outputDuration
+            if a.file != b.file || a.isEmpty || b.isEmpty || abs(a.sourceEnd - b.sourceStart) > 1e-6 { cuts.append(t) }
+        }
+        return cuts
+    }
     /// Absolute speed of the clip playing at output time `t`.
     func speed(atOutput t: Double) -> Double {
         var start = 0.0
@@ -74,7 +85,12 @@ struct ShotSegment {
 }
 extension Storyboard {
     /// Every kept occurrence of every shot in output time, sorted. Dropped shots have none; partly cut shots are shortened.
+    /// Pieces under one analysis frame are leftover slivers of cut shots (rounding), not footage: lint and intents skip them.
     func segments(_ map: TimeMap) -> [ShotSegment] {
+        let frame = 1 / max(fps, 1)
+        return allSegments(map).filter { $0.duration >= frame - 1e-6 }
+    }
+    private func allSegments(_ map: TimeMap) -> [ShotSegment] {
         shots.flatMap { shot -> [ShotSegment] in
             var result: [ShotSegment] = []
             for piece in map.pieces(source: shot.from, to: shot.to).sorted(by: { $0.range.start < $1.range.start }) {
@@ -94,13 +110,20 @@ func opJSON(_ name: String, _ fields: [String: JSONValue]) -> JSONValue {
 func cutJSON(_ a: Double, _ b: Double) -> JSONValue { opJSON("cut", ["from": .number(r2(a)), "to": .number(r2(b)), "snap": .bool(true)]) }
 
 private struct Metrics {
-    var duration = 0.0, asl = 0.0, staticSec = 0.0, hook: Double?, longest: EditReport.Static?
+    var duration = 0.0, asl = 0.0, subAsl = 0.0, staticSec = 0.0, hook: Double?, longest: EditReport.Static?
     var segs: [ShotSegment] = []
+    var cuts: [Double] = []   // output times a viewer sees as cuts
+    var frame = 0.1           // one analysis frame
+    func isCut(_ t: Double) -> Bool { cuts.contains { abs($0 - t) <= frame + 1e-6 } }
 }
 private func metrics(_ project: Project, _ sb: Storyboard) -> Metrics {
     let map = TimeMap(project.clips)
     var m = Metrics(duration: project.exportDuration)
+    m.frame = 1 / max(sb.fps, 1)
     m.segs = sb.segments(map)
+    let shotCuts = m.segs.filter { $0.shot.boundary == .cut && abs($0.pieces[0].source - $0.shot.from) < 1e-6 }.map(\.range.start)
+    for t in (map.editCuts + shotCuts).sorted() where t > m.frame && t < map.outputDuration - m.frame && !m.isCut(t) { m.cuts.append(t) }
+    m.asl = map.outputDuration / Double(m.cuts.count + 1)
     var perShot: [String: Double] = [:]
     for s in m.segs {
         perShot[s.shot.id, default: 0] += s.duration
@@ -108,7 +131,7 @@ private func metrics(_ project: Project, _ sb: Storyboard) -> Metrics {
         m.staticSec += s.duration
         if s.duration > (m.longest?.sec ?? 0) { m.longest = .init(sec: r2(s.duration), at: r2(s.range.start)) }
     }
-    if !perShot.isEmpty { m.asl = perShot.values.reduce(0, +) / Double(perShot.count) }
+    if !perShot.isEmpty { m.subAsl = perShot.values.reduce(0, +) / Double(perShot.count) }
     // The hook is the first thing that happens: a payoff, a motion shot, or any click (an opening that animates from frame 0 counts).
     m.hook = m.segs.compactMap { s -> Double? in
         let click = s.shot.clicks.compactMap { map.outputTime(atSource: $0) }.filter { $0 >= s.range.start && $0 < s.range.end }.min()
@@ -147,10 +170,13 @@ private func lint(_ project: Project, _ m: Metrics, _ sb: Storyboard, _ p: LintP
                 suggest: factor <= 6 && single <= 16 ? opJSON("speed", ["from": .number(r2(s.range.start)), "to": .number(r2(s.range.end)), "speed": .number((single * 100).rounded(.up) / 100), "snap": .bool(true)])
                                                       : cutJSON(s.range.start + p.maxStatic, s.range.end)))
         }
-        if r2(s.duration) < p.tinyShot - 1e-6 {   // compare what the message prints: "0.25 s, want ≥ 0.25 s" must not fire
+        // Compare what the message prints ("0.25 s, want ≥ 0.25 s" must not fire); only a piece next to a cut flickers,
+        // a sub-shot inside continuous footage does not.
+        if r2(s.duration) < p.tinyShot - 1e-6, m.isCut(s.range.start) || m.isCut(s.range.end) {
+            let fix = applicableCut(project, s.range.start, s.range.end)
             items.append(LintItem(rule: "tinyShot", sev: "warn", at: r2(s.range.start), shot: s.shot.id,
-                msg: String(format: "%@ lasts %.2fs (flicker, want >= %.2fs)", s.shot.id, s.duration, p.tinyShot),
-                suggest: cutJSON(s.range.start, s.range.end)))
+                msg: String(format: "%@ lasts %.2fs (flicker, want >= %.2fs)", s.shot.id, s.duration, p.tinyShot) + (fix == nil ? "; too short to cut, trim the neighbouring clip by hand" : ""),
+                suggest: fix))
         }
         // Reframed projects crop per moment (T-831); sample the window at the shot's middle.
         let f = s.shot.focus, c = project.cropSample(atSource: (s.shot.from + s.shot.to) / 2), tol = 0.005
@@ -188,10 +214,24 @@ private func lint(_ project: Project, _ m: Metrics, _ sb: Storyboard, _ p: LintP
     return items.sorted { $0.at < $1.at }
 }
 
+/// The first cut around output `[a, b]` that `edit.apply` would not skip (snapping drops slivers under its minimum length):
+/// the piece itself, widened to the clip edges it nearly touches, or stretched to the minimum into the neighbouring footage.
+private func applicableCut(_ project: Project, _ a: Double, _ b: Double) -> JSONValue? {
+    var t = 0.0, edges = [0.0]
+    for c in project.clips { t += c.outputDuration; edges.append(t) }
+    let lo = edges.filter { $0 <= a + 1e-6 && a - $0 <= 0.25 }.max() ?? a, hi = edges.filter { $0 >= b - 1e-6 && $0 - b <= 0.25 }.min() ?? b
+    for (x, y) in [(a, b), (lo, hi), (a, max(b, a + 0.12)), (min(a, b - 0.12), b)] where x >= 0 && y <= t {
+        let op = EditOp.cut(from: .seconds(r2(x)), to: .seconds(r2(y)), snap: true)
+        if let trial = try? project.applying([op], context: EditContext()), trial.changes.first?.skipped == false { return cutJSON(x, y) }
+    }
+    return nil
+}
+
 /// `before` is the project the edit started from, `after` the draft.
 public func editReport(before: Project, after: Project, storyboard sb: Storyboard, profile: LintProfile = .reel) -> EditReport {
     let b = metrics(before, sb), a = metrics(after, sb)
     return EditReport(duration: .init(before: r2(b.duration), after: r2(a.duration)), aslSec: .init(before: r2(b.asl), after: r2(a.asl)),
+                      subShotAslSec: .init(before: r2(b.subAsl), after: r2(a.subAsl)),
                       hookSec: a.hook.map(r2), longestStatic: a.longest, staticSec: .init(before: r2(b.staticSec), after: r2(a.staticSec)),
-                      lint: lint(after, a, sb, profile))
+                      lint: lint(after, a, sb, profile), reframeJumps: after.cropKeys.isEmpty ? nil : cropJumps(after.cropKeys, storyboard: sb))
 }

@@ -119,4 +119,20 @@ import Testing
         func shown(_ r: NormRect) -> Double { max(0, min(0.8, r.x + r.w) - max(0.2, r.x)) }
         #expect(k2.allSatisfy { shown($0.rect) + 1e-9 >= shown(NormRect(x: centreX, y: 0, w: $0.rect.w, h: 1)) })
     }
+
+    // Run-2 feedback R2-1: no twitch for near-identical windows, no lurch inside continuous footage, steps only at cuts.
+    @Test func hysteresisAndEaseInsideContinuousFootage() {
+        func s(_ i: Int, _ from: Double, _ to: Double, _ x: Double, _ b: ShotBoundary) -> Shot {
+            Shot(id: "s\(i)", from: from, to: to, kind: .motion, boundary: b, focus: NormRect(x: x, y: 0.4, w: 0.1, h: 0.2))
+        }
+        let sb = board([s(0, 0, 2, 0.30, .start), s(1, 2, 4, 0.31, .animate), s(2, 4, 6, 0.6, .animate), s(3, 6, 8, 0.1, .cut)])
+        let keys = reframePlan(storyboard: sb, aspect: .r9x16, mode: .perShot, sourceSize: size)
+        let p = project(keys)
+        #expect(p.cropSample(atSource: 1.9) == p.cropSample(atSource: 2.1))              // 1 % move: held
+        let mid = p.cropSample(atSource: 4.15).x, before = p.cropSample(atSource: 3.99).x, after = p.cropSample(atSource: 4.3).x
+        #expect(before < mid && mid < after)                                              // eased over 0.3 s, not stepped
+        #expect(abs(p.cropSample(atSource: 5.99).x - p.cropSample(atSource: 6).x) > 0.1)   // a cut still jumps
+        #expect(cropJumps(keys, storyboard: sb) == 0)
+        #expect(cropJumps([CropKey(t: 0, rect: NormRect()), CropKey(t: 4, rect: NormRect()), CropKey(t: 4, rect: NormRect(x: 0.2, y: 0, w: 0.5, h: 1))], storyboard: sb) == 1)
+    }
 }

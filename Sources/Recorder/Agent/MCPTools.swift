@@ -62,11 +62,12 @@ enum MCPTools {
             op("style", ["patch": ["type": "object"]], ["patch"]),
             op("reframe", ["aspect": ["type": "string", "enum": ["4:5", "1:1", "9:16", "16:9"]], "mode": ["type": "string", "enum": ["perShot", "static"], "default": "perShot", "description": "perShot: one stationary or pan crop per shot aimed at its focus and cursor; static: one crop over every focus. Needs analyze.shots."]], ["aspect"]),
             op("keepShots", ["shots": ["type": "array", "items": string, "description": "Shot ids from analyze.shots to keep; everything else is cut."],
+                "protect": ["type": "array", "items": string, "description": "Shots always kept: ids or caption~regex (needs analyze.shots captions:true), e.g. caption~graph, so the subject survives an energy filter."],
                 "where": ["type": "object", "description": "Keep shots by kind and energy instead of ids.", "properties": ["kind": ["type": "array", "items": ["type": "string", "enum": ShotKind.allCases.map(\.rawValue)]], "minEnergy": number], "additionalProperties": false],
                 "trim": ["type": "object", "description": "Source seconds trimmed from the start/end of each kept shot.", "properties": ["lead": number, "tail": number], "additionalProperties": false]], []),
             op("pace", ["beat": ["type": "object", "description": "Seconds a shot is held: default 0.9, payoff 1.3, motion 0.8.", "properties": ["default": number, "payoff": number, "motion": number], "additionalProperties": false],
                 "maxStatic": number, "speedFill": ["type": "object", "description": "Speed range used to squeeze holds and slow shots (default 1.5-6).", "properties": ["min": number, "max": number], "additionalProperties": false]], []),
-            op("fitDuration", ["target": number, "tolerance": number, "protect": ["type": "array", "items": string]], ["target"]),
+            op("fitDuration", ["target": number, "tolerance": number, "protect": ["type": "array", "items": string, "description": "Shots never cut: ids or caption~regex."]], ["target"]),
             op("autoZoom", ["lead": number, "tail": number, "scale": number, "from": number, "to": number], [])
         ]
     }()
@@ -122,7 +123,7 @@ enum MCPTools {
                 "response_format": ["type": "string", "enum": ["concise", "detailed"], "description": "analyze.shots only: concise (default) omits reasons only; focus is always kept."],
                 "thresholds": ["type": "object", "description": "analyze.shots only: optional overrides of ssim, minStable, cutSsim, motionDiff, payoffDiff, cursorSpeed, energyScale. energyScale and minStable must be > 0; ssim and cutSsim within 0…1.", "additionalProperties": ["type": "number", "minimum": 0]]]),   // not read-only: transcribe writes the transcript
             tool("edit", ["apply", "undo"], "Apply atomic edits using the latest ifRevision; edits land in a draft by default. Numeric times use that revision's output timeline; anchors ({marker:id|label, offset}, {ref:name, offset}, {shot, edge}) resolve after earlier ops in the batch. Declare ref:\"name\" on an op to anchor later ops on its start. At most one of keepShots/pace/fitDuration per batch (call edit.apply once per intent). undo inside a draft removes your last edit.apply call. Errors carry fix and current.", ["ifRevision": string, "ops": ["type": "array", "items": ["oneOf": operationSchemas]], "dryRun": boolean, "lint": ["type": "string", "enum": ["reel", "tutorial", "demo"], "description": "Profile for report.lint (default reel)."]]),
-            tool("draft", ["status", "submit", "discard"], "Read your draft's exclusions, skipped reasons and verdict; submit for review or discard it. A pending submitted draft can receive more edit.apply calls, returning to watching until submitted again.", ["note": string]),
+            tool("draft", ["status", "submit", "discard"], "Read your draft's exclusions, skipped reasons and verdict; submit for review or discard it. A pending submitted draft can receive more edit.apply calls, returning to watching until submitted again. Reframe ops show keys as a count (plus jumps: crop steps not at a cut) unless response_format is detailed.", ["note": string, "response_format": ["type": "string", "enum": ["concise", "detailed"]]]),
             tool("render", ["frames", "sheet", "clip", "storyboard", "strip", "compare", "lint", "cancel"], "Render frames, a contact sheet, a 540p proxy, per-shot storyboard tiles (needs analyze.shots), a filmstrip (strip: from, to, fps 4–8, ≤48 tiles) base|draft rows (compare: at ≤6) into the agent cache (key chips hidden), or lint the draft against a profile (lint: reel, tutorial, demo; needs analyze.shots).", ["at": ["type": "array", "items": number, "maxItems": 24], "shots": ["type": "array", "items": string, "maxItems": 48, "description": "render.storyboard only: shot ids; default all shots the draft keeps."], "page": ["type": "integer", "minimum": 1, "description": "render.storyboard only: 48 tiles per page."], "fps": ["type": "integer", "minimum": 4, "maximum": 8, "description": "render.strip only."], "from": number, "to": number, "count": ["type": "integer", "minimum": 1, "maximum": 24], "longEdge": ["type": "integer", "minimum": 2, "maximum": 640], "draft": boolean, "profile": ["type": "string", "enum": ["reel", "tutorial", "demo"]],
                 "grid": ["type": "boolean", "description": "render.frames only: overlay a 0.1-step grid labelled 0–1, origin top-left, matching zoom center and text position coordinates (exact at 1× zoom with no layout padding)."]], read: true),
             tool("export", ["final"], "Export an MP4 after the user's native approval, optionally with SRT subtitles.", ["destination": string, "shortEdge": ["type": "integer", "enum": [720, 1080, 2160]], "fps": ["type": "integer", "enum": [24, 30, 60]], "srt": boolean]),
@@ -429,7 +430,17 @@ enum MCPTools {
         let draft = session.draft
         var changes = draft?.changes.flatMap { $0 } ?? []
         for index in changes.indices { changes[index].op = index }
-        var payload: [String: Any] = ["base": draft?.base as Any? ?? NSNull(), "ops": try json(draft?.calls.flatMap { $0 } ?? []),
+        let flatOps = draft?.calls.flatMap { $0 } ?? []
+        var ops = try json(flatOps) as? [[String: Any]] ?? []
+        if args["response_format"] as? String != "detailed" {   // ~140 crop keys per reframe are most of a 25 KB reply
+            let board = try? loadStoryboard(model: model)
+            for (i, op) in flatOps.enumerated() where i < ops.count {
+                guard case let .reframe(_, _, keys?) = op else { continue }
+                ops[i]["keys"] = keys.count
+                if let board { ops[i]["jumps"] = cropJumps(keys, storyboard: board) }
+            }
+        }
+        var payload: [String: Any] = ["base": draft?.base as Any? ?? NSNull(), "ops": ops,
                                      "changes": try json(changes), "submitted": draft?.submitted ?? false,
                                      "stale": draft.map { $0.verdict == nil && $0.base != (try? revision(model.liveProject)) } ?? false,
                                      "selected": draft?.selectedCount ?? 0]
@@ -558,10 +569,18 @@ enum MCPTools {
                     let thresholds = try ShotAnalysis.thresholds(args["thresholds"])
                     _ = try await ShotAnalysis.signals(package: model.packageURL, progress: progress)
                     // The thresholds used here become the project's segmentation, so every tool reads this same shot table.
-                    try? JSONEncoder().encode(thresholds).write(to: model.packageURL.appendingPathComponent(ShotAnalysis.thresholdsName), options: .atomic)
+                    let thresholdsURL = model.packageURL.appendingPathComponent(ShotAnalysis.thresholdsName)
+                    let captionsURL = model.packageURL.appendingPathComponent(ShotAnalysis.captionsName)
+                    if (try? JSONDecoder().decode(ShotThresholds.self, from: Data(contentsOf: thresholdsURL))) != thresholds { try? FileManager.default.removeItem(at: captionsURL) }   // new ids
+                    try? JSONEncoder().encode(thresholds).write(to: thresholdsURL, options: .atomic)
                     // ponytail: no recorder:// resource mechanism exists, so shots carry no thumb; use render.frames at a shot's time.
                     var source = try loadStoryboard(model: model)
-                    if args["captions"] as? Bool == true { source = try await AgentCaptions.captionShots(source, model: model) }
+                    if args["captions"] as? Bool == true {
+                        source = try await AgentCaptions.captionShots(source, model: model)
+                        // Kept in the package so intent ops can protect "caption~…" shots without re-running OCR.
+                        let captions = Dictionary(source.shots.compactMap { s in s.caption.map { (s.id, $0) } }, uniquingKeysWith: { a, _ in a })
+                        try? JSONEncoder().encode(captions).write(to: captionsURL, options: .atomic)
+                    }
                     let board = source.mapped(through: TimeMap(viewed.clips))
                     payload = try object(board)
                     if format == "concise", let shots = payload["shots"] as? [[String: Any]] {
@@ -837,7 +856,11 @@ enum MCPTools {
             _ = await task?.result
             return (["cancelled": task != nil], [])
         }
-        guard session.renderTask == nil else { throw MCPFailure(code: "RENDER_BUSY", message: "A render is running; call render.cancel or wait for it to finish") }
+        // Agents fire checks in parallel: wait for the running render instead of failing (render.cancel stops only the running one).
+        while let running = session.renderTask {
+            _ = await running.result
+            if session.renderTask == running { await Task.yield() }   // let the finished render's caller clear it
+        }
         let project = args["draft"] as? Bool == false ? model.liveProject : try viewedProject(model, session: session)
         if action == "lint" {
             let report = editReport(before: model.liveProject, after: project, storyboard: try loadStoryboard(model: model), profile: try lintProfile(args["profile"]))
@@ -939,7 +962,11 @@ enum MCPTools {
             throw MCPFailure(code: "NO_STORYBOARD", message: "run analyze.shots first (decoded once, then cached)")
         }
         let thresholds = (try? JSONDecoder().decode(ShotThresholds.self, from: Data(contentsOf: model.packageURL.appendingPathComponent(ShotAnalysis.thresholdsName)))) ?? ShotThresholds()
-        return storyboard(signals: signals, fps: ShotAnalysis.fps, events: model.events.events, thresholds: thresholds).inSource(clips: model.liveProject.clips)
+        var board = storyboard(signals: signals, fps: ShotAnalysis.fps, events: model.events.events, thresholds: thresholds).inSource(clips: model.liveProject.clips)
+        if let captions = try? JSONDecoder().decode([String: String].self, from: Data(contentsOf: model.packageURL.appendingPathComponent(ShotAnalysis.captionsName))) {
+            for i in board.shots.indices { board.shots[i].caption = captions[board.shots[i].id] }
+        }
+        return board
     }
 
     @MainActor static func libraryRecordings() async -> [MCPAssets.LibraryRecording] {

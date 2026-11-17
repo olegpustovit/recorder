@@ -144,13 +144,17 @@ enum AgentRender {
         }
         return url
     }
-    /// Base (live) and draft frames side by side, one row per time; each side clamps to its own duration.
+    /// Base (live) and draft frames side by side, one row per draft time: the base row shows the same source moment (cuts
+    /// shift the timelines apart), clamped to the base when that footage isn't in it. Labels carry draft, base and source time.
     @MainActor static func compare(base: EditorModel, draft: EditorModel, at times: [Double], folder: URL) async throws -> URL {
-        let b = try await frames(model: base, at: times.map { min($0, base.project.exportDuration) }, longEdge: 320, folder: folder)
+        let sources = times.map { TimeMap(draft.project.clips).sourceTime(atOutput: $0) }
+        let baseTimes = zip(times, sources).map { t, s in min(TimeMap(base.project.clips).outputTime(atSource: s) ?? t, base.project.exportDuration) }
+        let b = try await frames(model: base, at: baseTimes, longEdge: 320, folder: folder)
         let d: [URL]
         do { d = try await frames(model: draft, at: times, longEdge: 320, folder: folder) }
         catch { for url in b { try? FileManager.default.removeItem(at: url) }; throw error }
-        return try tiles(zip(b, d).flatMap { [$0, $1] }, labels: times.flatMap { ["base " + timecode($0), "draft " + timecode($0)] }, columns: 2, folder: folder)
+        let labels = times.indices.flatMap { i in ["base " + timecode(baseTimes[i]) + " · src " + timecode(sources[i]), "draft " + timecode(times[i]) + " · src " + timecode(sources[i])] }
+        return try tiles(zip(b, d).flatMap { [$0, $1] }, labels: labels, columns: 2, folder: folder)
     }
     @MainActor static func clip(model: EditorModel, from: Double, to: Double, folder: URL, progress: @escaping (Double) -> Void) async throws -> URL {
         guard from.isFinite, to.isFinite, from >= 0, to > from, to <= model.project.exportDuration else {

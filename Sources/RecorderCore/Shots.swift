@@ -19,6 +19,7 @@ public struct Shot: Codable, Equatable, Sendable {
     public var reasons: [String]
     public var caption: String?
     public var tag: String?          // "result": a hold meant to be long (exempt from maxStatic)
+    public var part: String?         // "2/3" when edits split the shot into separate pieces (same id, cut between them)
     public init(id: String, from: Double, to: Double, kind: ShotKind, boundary: ShotBoundary, energy: Double = 0,
                 staticFrac: Double = 0, clicks: [Double] = [], cursor: NormPoint? = nil, focus: NormRect = NormRect(),
                 reasons: [String] = [], caption: String? = nil, tag: String? = nil) {
@@ -176,6 +177,12 @@ public func storyboard(signals: [FrameSignal], fps: Double = 10, events: [InputE
 }
 
 private func summarize(_ shots: [Shot], duration: Double, fps: Double) -> Storyboard {
+    var shots = shots, seen: [String: Int] = [:]
+    let total = Dictionary(shots.map { ($0.id, 1) }, uniquingKeysWith: +)
+    for i in shots.indices where total[shots[i].id]! > 1 {
+        seen[shots[i].id, default: 0] += 1
+        shots[i].part = "\(seen[shots[i].id]!)/\(total[shots[i].id]!)"
+    }
     let quiet = shots.filter { $0.kind == .`static` }
     let longest = quiet.max { $0.to - $0.from < $1.to - $1.from }
     return Storyboard(duration: duration, fps: fps, shots: shots, summary: StoryboardSummary(

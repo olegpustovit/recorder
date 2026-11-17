@@ -22,11 +22,21 @@ private extension JSONValue {
     var strings: [String]? { if case .array(let a) = self { let s = a.compactMap { v -> String? in if case .string(let x) = v { return x }; return nil }; return s.count == a.count ? s : nil }; return nil }
 }
 
+/// An intent `protect` entry: a shot id, or `caption~REGEX` matched case-insensitively against the shot's OCR caption.
+func protects(_ list: [String], _ shot: Shot) -> Bool {
+    list.contains { entry in
+        guard entry.hasPrefix("caption~") else { return entry == shot.id }
+        return shot.caption?.range(of: String(entry.dropFirst(8)), options: [.regularExpression, .caseInsensitive]) != nil
+    }
+}
+
 /// `storyboard` is only called when an op needs shots (so autoZoom/ramp work without analysis).
 /// `origin[i]` is the index in the agent's batch that produced `ops[i]`; use it to report errors and changes.
 public func lowerIntents(_ ops: [JSONValue], project: Project, clicks: [InputEvent] = [],
                          storyboard: () throws -> Storyboard) throws -> (ops: [JSONValue], origin: [Int], lowered: [LoweredIntent]) {
     let map = TimeMap(project.clips), total = map.outputDuration
+    // End of the last recorded/imported footage: a trailing gap clip has nothing to cut (snapping would skip it).
+    let contentEnd = { () -> Double in var t = 0.0, end = 0.0; for c in project.clips { t += c.outputDuration; if !c.isEmpty { end = t } }; return end }()
     var out: [JSONValue] = [], origin: [Int] = [], lowered: [LoweredIntent] = []
     // Each intent reads the batch-start timeline, so two that change the length would aim at stale times.
     let lengthChanging = ops.enumerated().filter { if case .string(let n)? = $1["op"] { return ["keepShots", "pace", "fitDuration"].contains(n) }; return false }
@@ -76,7 +86,12 @@ public func lowerIntents(_ ops: [JSONValue], project: Project, clicks: [InputEve
                 }
                 let minEnergy = try number("minEnergy", 0, in: w)
                 chosen = board.shots.filter { (kinds?.contains($0.kind) ?? true) && $0.energy >= minEnergy }
-            } else { throw bad("keepShots needs shots:[id] or where:{kind,minEnergy}") }
+            } else if raw["protect"] == nil { throw bad("keepShots needs shots:[id], where:{kind,minEnergy} or protect") } else { chosen = [] }
+            // protect keeps the subject even when the filter would drop it (calm close-ups score low energy).
+            if let list = raw["protect"] {
+                guard let entries = list.strings else { throw bad("protect must be [shot id or caption~regex]") }
+                chosen += board.shots.filter { protects(entries, $0) && !chosen.contains($0) }
+            }
             let keptIDs = Set(chosen.map(\.id)); var seen = Set<String>()
             picks = board.shots.filter { seen.insert($0.id).inserted }.map { ShotPick(id: $0.id, kind: $0.kind, energy: $0.energy, kept: keptIDs.contains($0.id)) }
             let lead = try number("lead", 0, in: raw["trim"]), tail = try number("tail", 0, in: raw["trim"])
@@ -89,7 +104,7 @@ public func lowerIntents(_ ops: [JSONValue], project: Project, clicks: [InputEve
                 if k.start - at > 0.05 { result += cutsAvoidingImported(at, k.start) }
                 at = max(at, k.end)
             }
-            if total - at > 0.05 { result += cutsAvoidingImported(at, total) }
+            if contentEnd - at > 0.05 { result += cutsAvoidingImported(at, contentEnd) }
         case "pace":
             let beat = raw["beat"], fill = raw["speedFill"]
             let dflt = try number("default", 0.9, in: beat), payoff = try number("payoff", 1.3, in: beat), motion = try number("motion", 0.8, in: beat)
@@ -119,10 +134,10 @@ public func lowerIntents(_ ops: [JSONValue], project: Project, clicks: [InputEve
         case "fitDuration":
             let target = try number("target", 0), tolerance = try number("tolerance", 2)
             guard target > 0, tolerance >= 0 else { throw bad("fitDuration needs target > 0 and tolerance >= 0") }
-            let protected = Set(raw["protect"]?.strings ?? [])
+            let protected = raw["protect"]?.strings ?? []
             // Interest: kind rank first, energy as tie-break. Lowest goes first.
             let rank: [ShotKind: Double] = [.static: 0, .cursorOnly: 1, .typing: 2, .motion: 3, .payoff: 4]
-            let order = try sb().segments(map).filter { !protected.contains($0.shot.id) }
+            let order = try sb().segments(map).filter { !protects(protected, $0.shot) }
                 .sorted { (rank[$0.shot.kind]! + $0.shot.energy, -$0.duration) < (rank[$1.shot.kind]! + $1.shot.energy, -$1.duration) }
             // Target the exported length: layers/audio past the video (e.g. an outro) count, and shift earlier with each cut.
             var length = project.exportDuration, ids: [String] = []
@@ -170,6 +185,8 @@ public func lowerIntents(_ ops: [JSONValue], project: Project, clicks: [InputEve
             for i in 0..<nOut { step(midEnd + rout / Double(nOut) * Double(i), midEnd + rout / Double(nOut) * Double(i + 1), speed + (s1 - speed) * (Double(i) + 0.5) / Double(nOut)) }
         default: out.append(raw); origin.append(index); continue
         }
+        // A piece that rounds to nothing (from == to) would fail the whole batch as OUT_OF_RANGE.
+        result = result.filter { op in guard let a = op["from"]?.num, let b = op["to"]?.num else { return true }; return b - a >= 0.01 - 1e-9 }
         out += result; origin += result.map { _ in index }
         lowered.append(LoweredIntent(op: index, intent: name, ops: result, dropped: dropped, note: note, shots: picks))
     }

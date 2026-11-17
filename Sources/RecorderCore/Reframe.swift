@@ -70,10 +70,27 @@ public func reframePlan(storyboard: Storyboard, aspect: Output.Aspect, mode: Ref
         max(0, min(f.x + f.w, r.x + r.w) - max(f.x, r.x)) * max(0, min(f.y + f.h, r.y + r.h) - max(f.y, r.y))
     }
     func guarded(_ r: NormRect, _ f: NormRect) -> NormRect { shown(f, r) + 1e-9 < shown(f, centre) ? centre : r }
-    return storyboard.shots.flatMap { shot -> [CropKey] in
+    var keys: [CropKey] = []
+    for shot in storyboard.shots {
         var (a, b) = rects(focus(shot))
         (a, b) = (guarded(a, shot.focus), guarded(b, shot.focus))
-        // End key at `shot.to` and the next start key at the same t: `cropSample` takes the later one, so the seam is a cut.
-        return [CropKey(t: shot.from, rect: a), CropKey(t: shot.to, rect: b)]
+        if let prev = keys.last?.rect {
+            // Hysteresis: a window within 3 % of the current one that shows as much of the focus keeps the current one (no twitch).
+            if abs(a.x - prev.x) <= 0.03, abs(a.y - prev.y) <= 0.03, shown(shot.focus, prev) + 1e-9 >= shown(shot.focus, a) {
+                if a == b { b = prev }
+                a = prev
+            }
+        }
+        // A cut may jump (`cropSample` takes the later of two keys at one t); continuous footage eases over 0.3 s instead.
+        let ease = keys.isEmpty || shot.boundary == .cut || a == keys.last!.rect ? 0 : min(0.3, shot.duration / 2)
+        keys += [CropKey(t: shot.from + ease, rect: a), CropKey(t: shot.to, rect: b)]
     }
+    return keys
+}
+
+/// Crop steps (two keys at one instant with different windows) at a shot boundary that is not a visual cut: a visible lurch.
+public func cropJumps(_ keys: [CropKey], storyboard: Storyboard) -> Int {
+    zip(keys, keys.dropFirst()).filter { k, n in
+        abs(k.t - n.t) < 1e-6 && k.rect != n.rect && !storyboard.shots.contains { abs($0.from - n.t) < 1e-6 && $0.boundary == .cut }
+    }.count
 }

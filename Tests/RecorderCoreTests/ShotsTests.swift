@@ -121,4 +121,14 @@ import Testing
         #expect(s.precision == 0.5 && abs(s.recall - 2.0 / 3) < 1e-9)   // 1.1 can't reuse 1.2; 9.0 has no match; 7.0 missed
         #expect(boundaryScore(detected: [], truth: [1]).f1 == 0)
     }
+
+    // Run-2 feedback R2-9: a shot split by a cut repeats its id; `part` says so, a plain split stays one shot.
+    @Test func cutShotPiecesArePartNumbered() throws {
+        let sb = Storyboard(duration: 10, fps: 10, shots: [Shot(id: "s01", from: 0, to: 10, kind: .motion, boundary: .start)],
+                            summary: StoryboardSummary(shots: 1, aslSec: 10, staticSec: 0, longestStatic: nil))
+        let cut = try Project(source: Source(duration: 10), clips: [Clip(sourceStart: 0, sourceEnd: 10)]).applying([.cut(from: 4, to: 6)], context: EditContext()).project
+        #expect(sb.mapped(through: TimeMap(cut.clips)).shots.map(\.part) == ["1/2", "2/2"])
+        let split = [Clip(sourceStart: 0, sourceEnd: 5), Clip(sourceStart: 5, sourceEnd: 10)]
+        #expect(sb.mapped(through: TimeMap(split)).shots.map(\.part) == [nil])
+    }
 }

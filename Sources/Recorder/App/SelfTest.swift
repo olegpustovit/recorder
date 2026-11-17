@@ -5293,8 +5293,8 @@ private final class MCPTestClient {
             }
         }
         guard notified, (replies[101]?["structuredContent"] as? [String: Any])?["error"] as? String == "DENIED",
-              (replies[102]?["structuredContent"] as? [String: Any])?["error"] as? String == "RENDER_BUSY",
-              (replies[103]?["structuredContent"] as? [String: Any])?["cancelled"] as? Bool == true else { throw MCPTestFailure(description: "Same-connection busy/cancel/progress contract") }
+              (replies[102]?["structuredContent"] as? [String: Any])?["error"] == nil,   // queued behind the clip, runs after the cancel
+              (replies[103]?["structuredContent"] as? [String: Any])?["cancelled"] as? Bool == true else { throw MCPTestFailure(description: "Same-connection queue/cancel/progress contract") }
         let frame = try client.request("tools/call", ["name": "render", "arguments": ["action": "frames", "at": [0.7], "longEdge": 320]])
         let result = frame["result"] as? [String: Any], content = result?["content"] as? [[String: Any]] ?? []
         guard content.filter({ $0["type"] as? String == "image" }).count == 1,

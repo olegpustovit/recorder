@@ -26,8 +26,9 @@ import Testing
         #expect(r.hookSec == 0.5)                                   // click at 3.5 s lands at 0.5 s once s00 is gone
         #expect(r.staticSec == .init(before: 16.8, after: 13.8))    // static + cursorOnly shots
         #expect(r.longestStatic == .init(sec: 8, at: 9))
-        #expect(abs(r.aslSec.before - 20.0 / 6) < 0.01)             // 6 shots
-        #expect(abs(r.aslSec.after - 17.0 / 5) < 0.01)              // s00 dropped, not counted as 0
+        #expect(r.aslSec == .init(before: 5, after: 5.67))          // visual shots: cut boundaries at 3, 4.2, 12; after: 1.2, 9
+        #expect(abs(r.subShotAslSec!.before - 20.0 / 6) < 0.01)     // 6 analyzer shots
+        #expect(abs(r.subShotAslSec!.after - 17.0 / 5) < 0.01)      // s00 dropped, not counted as 0
     }
 
     @Test func partialCutShortensAndSpeedMapsToOutputTime() throws {
@@ -108,5 +109,31 @@ import Testing
         let p = Project(source: Source(duration: 9), clips: [Clip(sourceStart: 0, sourceEnd: 9)])
         #expect(editReport(before: p, after: p, storyboard: sb).hookSec == 0)
         #expect(!lint(p, storyboard: sb).contains { $0.rule == "hook" || $0.rule == "tinyShot" })   // 0.249 s prints as 0.25 s
+    }
+
+    // Run-2 feedback (R2-2…R2-5): lint measures what a viewer sees, not analyzer granularity.
+    @Test func tinyShotOnlyAtCutsDropsSliversAndSuggestsOnlyCutsThatApply() throws {
+        let shots = [Shot(id: "s01", from: 0, to: 5, kind: .motion, boundary: .start),
+                     Shot(id: "s02", from: 5, to: 5.2, kind: .motion, boundary: .animate),    // sub-shot in continuous footage
+                     Shot(id: "s03", from: 5.2, to: 10, kind: .motion, boundary: .animate),
+                     Shot(id: "s04", from: 10, to: 10.15, kind: .motion, boundary: .cut),     // a real flash after a cut
+                     Shot(id: "s05", from: 10.15, to: 20, kind: .motion, boundary: .animate)]
+        let sb = Storyboard(duration: 20, fps: 10, shots: shots, summary: StoryboardSummary(shots: 5, aslSec: 0, staticSec: 0, longestStatic: nil))
+        let p = Self.project()
+        let tiny = lint(p, storyboard: sb).filter { $0.rule == "tinyShot" }
+        #expect(tiny.map(\.shot) == ["s04"])
+        let op = try JSONDecoder().decode(EditOp.self, from: JSONEncoder().encode(try #require(tiny.first?.suggest)))
+        #expect(try p.applying([op], context: EditContext()).changes.first?.skipped == false)
+        #expect(editReport(before: p, after: p, storyboard: sb).aslSec.after == 10)        // one cut → two visual shots
+        // A cut leaving 0.03 s of s01 (under one analysis frame) reports no zero-length shot.
+        let sliver = try p.applying([.cut(from: 0, to: 4.97)], context: EditContext()).project
+        #expect(!lint(sliver, storyboard: sb).contains { $0.shot == "s01" && $0.rule == "tinyShot" })
+        // An uncuttable sliver (under the 0.1 s snap minimum) next to an edit cut gets a cut that applies, or none.
+        let clipped = try p.applying([.cut(from: 10.21, to: 15)], context: EditContext()).project
+        for item in lint(clipped, storyboard: sb) where item.rule == "tinyShot" {
+            guard let s = item.suggest else { continue }
+            let op = try JSONDecoder().decode(EditOp.self, from: JSONEncoder().encode(s))
+            #expect(try clipped.applying([op], context: EditContext()).changes.first?.skipped == false)
+        }
     }
 }

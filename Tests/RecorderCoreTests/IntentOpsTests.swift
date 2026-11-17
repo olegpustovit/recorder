@@ -145,4 +145,33 @@ import Testing
         let r = try lower(#"[{"op":"keepShots","shots":["s01"]}]"#, project: p)
         #expect(r.ops == [.cut(from: 0, to: 3, snap: true), .cut(from: 4, to: 20, snap: true)])   // 20…23 is the imported clip
     }
+
+    // Run-2b feedback R2-10/R2-12: keepShots → pace → fitDuration chain on a project whose source runs past its last clip.
+    @Test func intentChainSurvivesTrailingGapAndSlivers() throws {
+        var gap = Clip(sourceStart: 19.4, sourceEnd: 20); gap.isGap = true
+        var project = EditReportTests.project([Clip(sourceStart: 0, sourceEnd: 19.4), gap])
+        func step(_ json: String) throws {
+            let r = try lowerIntents(try JSONDecoder().decode([JSONValue].self, from: Data(json.utf8)), project: project) { board }
+            let ops = try JSONDecoder().decode([EditOp].self, from: JSONEncoder().encode(r.ops))
+            let applied = try project.applying(ops, context: EditContext())
+            let skipped = applied.changes.contains { $0.skipped }
+            #expect(!skipped)                                                        // the tail cut stops at the footage, not the gap
+            project = applied.project
+        }
+        project = try project.applying([.cut(from: 0, to: 2.996)], context: EditContext()).project   // s00 leaves a 0.004 s sliver
+        try step(#"[{"op":"fitDuration","target":14,"tolerance":0.5}]"#)              // was OUT_OF_RANGE: cut 0.00–0.00
+        try step(#"[{"op":"keepShots","where":{"kind":["payoff","motion","typing","static"]}}]"#)
+        try step(#"[{"op":"pace","maxStatic":0.8}]"#)
+        try step(#"[{"op":"fitDuration","target":5,"tolerance":0.5}]"#)
+        #expect(project.exportDuration <= 5.5)
+    }
+
+    // R2-11: an energy filter drops calm close-ups of the subject; protect by caption keeps them.
+    @Test func keepShotsProtectsByCaption() throws {
+        var shots = board.shots
+        shots[5].caption = "Graph Editor"; shots[5].energy = 0.02
+        let r = try lower(#"[{"op":"keepShots","where":{"kind":["payoff"]},"protect":["caption~graph","s04"]}]"#, board: one(shots))
+        #expect(r.lowered[0].shots?.filter(\.kept).map(\.id) == ["s01", "s04", "s05"])
+        #expect(throws: EditError.self) { try lower(#"[{"op":"keepShots","protect":"s01"}]"#) }
+    }
 }

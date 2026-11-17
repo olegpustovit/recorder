@@ -11,6 +11,7 @@ enum ShotAnalysis {
     static let algorithmVersion = 3
     private static let cacheName = "shots-cache.json"
     static let thresholdsName = "shots-thresholds.json"
+    static let captionsName = "shots-captions.json"   // id → OCR caption from the last analyze.shots captions:true
     private struct Cache: Codable { var key: String; var signals: [FrameSignal] }
 
     // ponytail: fingerprint = size + mtime + SHA256 of the first MB, not the whole file; an in-place edit past 1 MB that

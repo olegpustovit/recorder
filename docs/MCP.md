@@ -143,12 +143,12 @@ client takes over a disconnected session's in-memory draft of this project, pref
 | `transcript` | `get {from?,to?,format:"words"\|"phrases"}` → `AgentTranscript` (§T-801). `NOT_TRANSCRIBED` if `model.transcript == nil`. |
 | `analyze` | `transcribe` (async, progress) · `pauses {minDuration=0.6,threshold=0.02}` → `[{from,to}]` · `fillers` → `[{word,from,to,text}]` · `activity` → `{idle:[…],typing:[…],clicks:[t…]}` (ranges only, never characters) · `shots {response_format="concise"\|"detailed", thresholds?}` → `Storyboard` `{duration,fps,shots:[{id,from,to,kind,boundary,energy,staticFrac,clicks,cursor,focus,reasons,caption}],summary}` in output seconds (dropped footage omitted; ids s01… come from the unedited recording so they survive cuts; concise omits `reasons` only (`focus` is kept); no `thumb` yet). Signals (10 fps, 1/8 luma diff/SSIM/changed bbox) are cached in `shots-cache.json` in the package; progress reported. `thresholds` (an object) overrides `ssim=0.985, minStable=0.3, cutSsim=0.9, motionDiff=0.01, payoffDiff=0.03, cursorSpeed=0.05, energyScale=0.1` (`energyScale`, `minStable` > 0; `ssim`, `cutSsim` within 0…1; others ≥ 0; else INVALID_OP) |
 | `edit` | `apply {ifRevision, ops:[EditOp], dryRun=false}` → `{revision, mode:"draft"\|"live", changes:[EditChange], duration:{before,after}, warnings:[…], report?:EditReport, lowered?:[LoweredIntent]}` (`lint:"reel"\|"tutorial"\|"demo"` picks the report profile) · `undo` (live only: `model.undo()` if the top undo name starts with `Claude:`) |
-| `draft` | `status` → `{base, ops, changes, submitted, verdict?}` · `submit {note}` → opens review in the editor · `discard` |
-| `render` | `frames {at:[t…] ≤24, draft=true, longEdge=640, grid=false}` (grid: 0.1-step magenta overlay labelled 0–1, origin top-left, the coordinates zoom `center` and text `position` use) → images + links · `sheet {count=12 ≤24 \| at:[…], draft=true}` → 1 JPEG + link · `clip {from,to, draft=true}` → job, then link (async, progress) · `storyboard {shots?:[id], page=1, draft=true}` → 1 JPEG, one 320 px tile per shot at its settled keyframe (just before `to`), labelled `id duration`, ≤48 per page (`page`/`pages` returned), shots the draft dropped are skipped; needs `analyze.shots` (else `NO_STORYBOARD`) · `strip {from,to,fps=6 (4–8)}` → 1 filmstrip JPEG, ≤48 tiles · `compare {at:[t…] ≤6}` → 1 JPEG, one row per time, live base left, draft right (each side clamped to its own duration) · `lint {profile="reel", draft=true}` → `{revision, profile, report}` (needs a storyboard) · `cancel` |
+| `draft` | `status {response_format="concise"}` → `{base, ops, changes, submitted, verdict?}`; concise shows a reframe op's `keys` as a count plus `jumps`, `detailed` returns every key · `submit {note}` → opens review in the editor · `discard` |
+| `render` | `frames {at:[t…] ≤24, draft=true, longEdge=640, grid=false}` (grid: 0.1-step magenta overlay labelled 0–1, origin top-left, the coordinates zoom `center` and text `position` use) → images + links · `sheet {count=12 ≤24 \| at:[…], draft=true}` → 1 JPEG + link · `clip {from,to, draft=true}` → job, then link (async, progress) · `storyboard {shots?:[id], page=1, draft=true}` → 1 JPEG, one 320 px tile per shot at its settled keyframe (just before `to`), labelled `id duration`, ≤48 per page (`page`/`pages` returned), shots the draft dropped are skipped; needs `analyze.shots` (else `NO_STORYBOARD`) · `strip {from,to,fps=6 (4–8)}` → 1 filmstrip JPEG, ≤48 tiles · `compare {at:[t…] ≤6}` → 1 JPEG, one row per draft time, live base left at the **same source moment** (clamped when the base lacks it), draft right; labels carry base/draft/source time · `lint {profile="reel", draft=true}` → `{revision, profile, report}` (needs a storyboard) · `cancel` |
 | `export` | `final {destination?, shortEdge?, fps?, srt=false}` → waits for approval → `{path, seconds, bytes}` or `DENIED` |
 | `ui` | `show {at, select?:[id]}` → moves the playhead / selection in the editor |
 
-Optional shot captions (T-832): `AgentCaptions.captionShots(storyboard, model:)` fills `Shot.caption` (6–10 words, Vision OCR on the shot's focus crop, classifier label fallback, shaped by Core `ShotCaption.shape`); `null` on any failure. New recordings write the `analyze.shots` signal cache while recording (`ShotAnalysis.Live`, 4:2:0 or BGRA window capture; older recordings decode once on first call). Opt-in with `captions:true` on `analyze.shots`; captions are returned only, never cached or persisted.
+Optional shot captions (T-832): `AgentCaptions.captionShots(storyboard, model:)` fills `Shot.caption` (6–10 words, Vision OCR on the shot's focus crop, classifier label fallback, shaped by Core `ShotCaption.shape`); `null` on any failure. New recordings write the `analyze.shots` signal cache while recording (`ShotAnalysis.Live`, 4:2:0 or BGRA window capture; older recordings decode once on first call). Opt-in with `captions:true` on `analyze.shots`; captions are kept in the package as `shots-captions.json` (id → caption, removed when the thresholds change) so `protect:["caption~regex"]` works in later edits; typing shots are never captioned.
 
 `draft=true` renders the project with the session's draft applied (or the live project when there is no draft).
 
@@ -175,7 +175,7 @@ Zoom centers are normalized0–1 in the source frame, with the origin at the top
 {"op":"marker","at":31,"label":"Recording"}
 {"op":"update","id":"…","from":2,"to":6,"text":"…","position":{…},"size":44,"scale":1.8,"center":{…}}
 {"op":"remove","id":"…"}
-{"op":"reframe","aspect":"9:16","mode":"perShot"}   // "4:5"|"1:1"|"9:16"|"16:9"; sets output.aspect + time-varying crop per shot (needs analyze.shots; error "run analyze.shots first" otherwise)
+{"op":"reframe","aspect":"9:16","mode":"perShot"}   // "4:5"|"1:1"|"9:16"|"16:9"; sets output.aspect + time-varying crop per shot (needs analyze.shots; error "run analyze.shots first" otherwise). perShot holds the window when the next shot's is within 3 % and shows as much focus, eases over 0.3 s at non-cut shot boundaries, and only steps at `boundary:"cut"`
 {"op":"style","patch":{"background":{"kind":"color","color":"#101010"},"frame":{"padding":0.06}}}   // merge into Preset
 ```
 
@@ -193,6 +193,7 @@ whole batch is one `applying` call and one undo step. Every intent reads the bat
 
 ```jsonc
 {"op":"keepShots","shots":["s02","s05"],"trim":{"lead":0.1,"tail":0.2}}   // or "where":{"kind":["payoff"],"minEnergy":0.3}; trim = source seconds per kept shot; others cut (snap)
+{"op":"keepShots","where":{"kind":["payoff","motion"],"minEnergy":0.1},"protect":["caption~graph","s49"]}   // protect: always kept (ids or caption~regex, case-insensitive)
 {"op":"pace","beat":{"default":0.9,"payoff":1.3,"motion":0.8},"maxStatic":1.2,"speedFill":{"min":1.5,"max":6}}
 {"op":"fitDuration","target":30,"tolerance":2,"protect":["s02"]}          // lowered.dropped = shots removed whole
 {"op":"autoZoom","lead":0.4,"tail":1.5,"scale":2,"from":0,"to":60}        // AutoZoom.swift click clustering → zoom ops (from/to optional output window)
@@ -204,12 +205,12 @@ within `speedFill`, with any remainder cut; shorter overshoot is simply cut. Pay
 
 `fitDuration`: drops whole segments in ascending interest (static < cursorOnly < typing < motion < payoff, energy breaks ties)
 until the length is within `tolerance` of `target`; the last one is compressed (speed ≤ 6x) or tail-trimmed to land on target.
-`protect` ids are never touched; if the target is unreachable `lowered[].note` says so.
+`protect` entries (ids or `caption~regex`) are never touched; if the target is unreachable `lowered[].note` says so. Intents skip shot pieces under one analysis frame and never emit a range that rounds to zero length; `keepShots` cuts up to the end of the last footage clip (a trailing gap is left alone).
 
-`report`: `{duration, aslSec, staticSec: {before,after}, hookSec, longestStatic:{sec,at}, lint:[…]}`, computed draft vs the timeline
+`report`: `{duration, aslSec, subShotAslSec, staticSec: {before,after}, hookSec, longestStatic:{sec,at}, lint:[…], reframeJumps?}`, computed draft vs the timeline
 the batch started from. Static = `static` or `cursorOnly` shots. `hookSec` = output time of the first payoff's first kept click
 (its start when none). Lint item: `{rule, sev, at, shot?, msg, suggest?}`; `suggest` is an op for the next `edit.apply`
-(output seconds of the edited timeline). `edgeContent` suggests the T-831 `reframe` op.
+(output seconds of the edited timeline). `edgeContent` suggests the T-831 `reframe` op. `aslSec` is the visual average shot: the timeline split at edit cuts (clip joins that don't continue the same footage) and `boundary:"cut"` shots; `subShotAslSec` averages analyzer shots. `tinyShot` fires only for a piece with a cut on at least one edge, and its `suggest` is a cut that a dry run confirmed applies (else none). Pieces under one analysis frame are ignored. `reframeJumps` counts crop steps not at a cut. A shot split into separate pieces by cuts carries `part:"k/n"`.
 
 | Rule | reel | demo | tutorial |
 |---|---|---|---|
@@ -473,8 +474,8 @@ enum AgentRender {
   samples and end at `from + rendered duration`. Decode video from zero to preserve frames held across idle spans;
   skip audio packets entirely before `from`. The earlier proposed `removeSourceRanges` complement cannot reliably
   trim imported clips, sub-minimum slices or connected tails, and rebuilding paths would change zooms at the cut.
-  Forward progress through a request-local token (at most every 0.25 s). One job per session; a second call →
-  `RENDER_BUSY` unless `cancel` first. The socket accepts concurrent requests so `cancel` on that connection can
+  Forward progress through a request-local token (at most every 0.25 s). One job per session; a second render call waits
+  for it (queued), `export` still gets `RENDER_BUSY`. The socket accepts concurrent requests so `cancel` on that connection can
   cancel and await the job, remove its partial MP4, then allow another render.
 - Tool result: images inline only for `frames` (≤ 6, long edge ≤ 640) and `sheet` (1); `clip` returns a `resource_link`
   plus `{seconds, bytes}`. Every file is also listed as `resource_link`.
