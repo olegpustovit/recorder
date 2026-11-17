@@ -491,11 +491,19 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
             throw RenderFail(description: "failed to set up Metal resources")
         }
         var frames = [Data](repeating: Data(), count: times.count)
+        // Decoding up to a frame (the reader walks the video sequentially) and PNG encoding run off the main thread; only the
+        // cheap frame state + GPU encode stay here, so an agent's render never freezes the editor.
+        let holds = UncheckedBox((screenHold, cameraHold, layerHolds))
         for (index, outputTime) in times.enumerated().sorted(by: { $0.element < $1.element }) {
             try Task.checkCancellation()
-            let screen = screenHold.imageBuffer(upTo: outputTime).flatMap { textureCache.texture(from: $0) }
-            let camera = cameraHold?.imageBuffer(upTo: outputTime).flatMap { textureCache.texture(from: $0) }
-            let layers = layerHolds.compactMapValues { $0.imageBuffer(upTo: outputTime).flatMap { textureCache.texture(from: $0) } }
+            let buffers = try await Task.detached { () -> UncheckedBox<(CVPixelBuffer?, CVPixelBuffer?, [Int: CVPixelBuffer])> in
+                try Task.checkCancellation()
+                let (screen, camera, layers) = holds.value
+                return UncheckedBox((screen.imageBuffer(upTo: outputTime), camera?.imageBuffer(upTo: outputTime), layers.compactMapValues { $0.imageBuffer(upTo: outputTime) }))
+            }.value.value
+            let screen = buffers.0.flatMap { textureCache.texture(from: $0) }
+            let camera = buffers.1.flatMap { textureCache.texture(from: $0) }
+            let layers = buffers.2.compactMapValues { textureCache.texture(from: $0) }
             guard reader.status != .failed else { throw reader.error ?? RenderFail(description: "frame reader failed") }
             let state = makeFrameState(model: model, outputTime: outputTime, screen: screen, camera: camera, size: outputSize, layerTextures: layers, layerTransforms: layerTransforms)
             guard let commandBuffer = queue.makeCommandBuffer() else { throw RenderFail(description: "no command buffer") }
@@ -503,8 +511,15 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
             try await commandBuffer.commitAndWait()
             var bytes = [UInt8](repeating: 0, count: width * height * 4)
             target.getBytes(&bytes, bytesPerRow: width * 4, from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0)
+            frames[index] = try await Task.detached { [bytes] in try Self.encodePNG(bytes, width: width, height: height) }.value
+        }
+        return frames
+    }
 
-            // BGRA8 bytes (as rendered by `Compositor`) -> PNG, same layout `Exporter.gifFrame` uses.
+    /// BGRA8 bytes (as rendered by `Compositor`) -> PNG, same layout `Exporter.gifFrame` uses. Pure, so it runs off the main thread.
+    nonisolated private static func encodePNG(_ bytes: [UInt8], width: Int, height: Int) throws -> Data {
+        struct RenderFail: Error, CustomStringConvertible { let description: String }
+        do {
             let colorSpace = VideoColor.space
             let bitmapInfo = CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue
             guard let provider = CGDataProvider(data: Data(bytes) as CFData),
@@ -519,9 +534,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
             }
             CGImageDestinationAddImage(dest, cgImage, nil)
             guard CGImageDestinationFinalize(dest) else { throw RenderFail(description: "PNG encode failed") }
-            frames[index] = data as Data
+            return data as Data
         }
-        return frames
     }
 
     // MARK: - Menu actions (T-311)
@@ -1005,4 +1019,11 @@ private struct WeakEditorWindowController {
                                              transport: placeholder(""), inspector: placeholder("Inspector"),
                                              timeline: placeholder("Timeline"))
     }
+}
+
+/// Hands non-Sendable values (reader outputs, pixel buffers) to one background hop at a time; the frame loop awaits each
+/// hop before the next, so the reader is never used from two threads at once.
+struct UncheckedBox<T>: @unchecked Sendable {
+    let value: T
+    init(_ value: T) { self.value = value }
 }

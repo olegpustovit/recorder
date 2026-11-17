@@ -7298,8 +7298,13 @@ private func runTimelineHeaderSelfTest() async throws {
     }
     AgentAccess.set(.draft, for: fixture.id)
     let base = model.project
+    // UI responsiveness: the worst main-thread stall during each tool call (a watchdog pings the main queue every 10 ms).
+    let stalls = MainStallMonitor()
+    defer { stalls.stop(); print("mcp-shots main-thread stalls (ms): " + stalls.report()) }
     func tool(_ name: String, _ args: [String: Any], error: String? = nil) async throws -> ([String: Any], Int) {
+        _ = stalls.take()
         let result = await MCPTools.call(name, args, session: session)
+        stalls.record("\(name).\(args["action"] as? String ?? "")", stalls.take())
         let payload = result["structuredContent"] as? [String: Any] ?? [:]
         let images = (result["content"] as? [[String: Any]] ?? []).filter { $0["type"] as? String == "image" }.count
         if let error {
@@ -7357,6 +7362,8 @@ private func runTimelineHeaderSelfTest() async throws {
     guard model.project == base, model.undoStepNames.isEmpty, !fm.fileExists(atPath: package.appendingPathComponent("agent-draft.json").path) else {
         throw MCPTestFailure(description: "discard left the project changed or the draft file behind")
     }
+    // UI regression guard: no tool may freeze the editor (analyze.shots used to block it 1.3 s rendering frames on main).
+    if let (worst, stall) = stalls.worstTool(), stall > 0.25 { throw MCPTestFailure(description: "\(worst) blocked the main thread \(Int(stall * 1000)) ms") }
     print("mcp-shots draft ops \((status["ops"] as? [Any])?.count ?? -1), lint items \(((lint["report"] as? [String: Any])?["lint"] as? [Any])?.count ?? -1)")
 }
 
@@ -7460,3 +7467,36 @@ private func shotsFixture(_ path: String) throws -> (package: URL, project: Proj
     print("shots-live ticks \(recorded.count)/\(decoded.count) shots \(a.shots.count)/\(b.shots.count) boundaryF1 \(String(format: "%.2f", boundaryScore(detected: a.shots.dropFirst().map(\.from), truth: b.shots.dropFirst().map(\.from)).f1))")
     guard recorded.count == decoded.count, abs(a.shots.count - b.shots.count) <= max(1, b.shots.count / 10) else { throw MCPTestFailure(description: "recording-time signals disagree with decode") }
 }
+
+/// Measures how long the main thread fails to answer: a background thread posts to the main queue every 10 ms and
+/// records the delay. A tool that blocks the UI shows up as a large worst-case stall.
+final class MainStallMonitor: @unchecked Sendable {
+    private let lock = NSLock()
+    private var running = true, worst = 0.0, byTool: [String: Double] = [:], pendingSince: Date?
+    init() {
+        Thread.detachNewThread { [self] in
+            while lock.withLock({ running }) {
+                let sent = Date(), done = DispatchSemaphore(value: 0)
+                lock.withLock { pendingSince = sent }
+                DispatchQueue.main.async { done.signal() }
+                if done.wait(timeout: .now() + 10) == .timedOut { lock.withLock { worst = max(worst, 10); pendingSince = nil }; continue }
+                let lag = Date().timeIntervalSince(sent)
+                lock.withLock { worst = max(worst, lag); pendingSince = nil }
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+        }
+    }
+    /// Worst stall since the last call, then resets. Called on main, so the ping that is still waiting for main right now
+    /// measured exactly the work that just finished: count it too (otherwise a stall at the end of a call is missed).
+    func take() -> Double {
+        lock.withLock {
+            defer { worst = 0 }
+            return max(worst, pendingSince.map { Date().timeIntervalSince($0) } ?? 0)
+        }
+    }
+    func record(_ tool: String, _ stall: Double) { lock.withLock { byTool[tool] = max(byTool[tool] ?? 0, stall) } }
+    func worstTool() -> (String, Double)? { lock.withLock { byTool.max { $0.value < $1.value }.map { ($0.key, $0.value) } } }
+    func report() -> String { lock.withLock { byTool.sorted { $0.value > $1.value }.map { "\($0.key) \(Int($0.value * 1000))" }.joined(separator: ", ") } }
+    func stop() { lock.withLock { running = false } }
+}
+

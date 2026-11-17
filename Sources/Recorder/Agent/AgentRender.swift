@@ -87,7 +87,9 @@ enum AgentRender {
     }
     @MainActor static func sheet(model: EditorModel, at times: [Double], labels: [String]? = nil, columns: Int = 4, folder: URL) async throws -> URL {
         let portrait = model.project.source.pixelHeight > model.project.source.pixelWidth
-        return try tiles(try await frames(model: model, at: times, longEdge: 320, folder: folder), labels: labels ?? times.map(timecode), columns: portrait ? 8 : columns, folder: folder)
+        let rendered = try await frames(model: model, at: times, longEdge: 320, folder: folder), tileLabels = labels ?? times.map(timecode)
+        // Image decode + sheet JPEG encode stay off the main thread (the UI stays responsive while an agent renders).
+        return try await Task.detached { try tiles(rendered, labels: tileLabels, columns: portrait ? 8 : columns, folder: folder) }.value
     }
     /// Settled keyframe of a shot: output seconds just before the end of its last kept piece, plus the KEPT duration; nil when the draft dropped it all.
     static func keyframe(_ shot: Shot, fps: Double, map: TimeMap) -> (output: Double, kept: Double)? {
@@ -108,7 +110,7 @@ enum AgentRender {
         return String(format: "%d:%02d.%d", tenths / 600, tenths / 10 % 60, tenths % 10)
     }
     /// Draws rendered frame files (deleted afterwards) into one labelled JPEG grid.
-    @MainActor static func tiles(_ frames: [URL], labels: [String], columns: Int, folder: URL) throws -> URL {
+    nonisolated static func tiles(_ frames: [URL], labels: [String], columns: Int, folder: URL) throws -> URL {
         defer { for frame in frames { try? FileManager.default.removeItem(at: frame) } }
         let images = try frames.map { url -> CGImage in
             guard let source = CGImageSourceCreateWithURL(url as CFURL, nil), let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
@@ -154,7 +156,8 @@ enum AgentRender {
         do { d = try await frames(model: draft, at: times, longEdge: 320, folder: folder) }
         catch { for url in b { try? FileManager.default.removeItem(at: url) }; throw error }
         let labels = times.indices.flatMap { i in ["base " + timecode(baseTimes[i]) + " · src " + timecode(sources[i]), "draft " + timecode(times[i]) + " · src " + timecode(sources[i])] }
-        return try tiles(zip(b, d).flatMap { [$0, $1] }, labels: labels, columns: 2, folder: folder)
+        let pairs = zip(b, d).flatMap { [$0, $1] }
+        return try await Task.detached { try tiles(pairs, labels: labels, columns: 2, folder: folder) }.value
     }
     @MainActor static func clip(model: EditorModel, from: Double, to: Double, folder: URL, progress: @escaping (Double) -> Void) async throws -> URL {
         guard from.isFinite, to.isFinite, from >= 0, to > from, to <= model.project.exportDuration else {

@@ -172,5 +172,10 @@ import Testing
         var named = board
         for i in named.shots.indices where named.shots[i].id == reps[1].id { named.shots[i].caption = "Graph editor" }
         #expect(editReport(before: base, after: base, storyboard: named).sections?.first { $0.section == reps[1].section }?.name == "Graph editor")
+        // R5-2: a heading beats a longer shot's noise; noise alone names nothing.
+        func shot(_ id: String, _ d: Double, _ c: String) -> Shot { Shot(id: id, from: 0, to: d, kind: .motion, boundary: .cut, caption: c) }
+        #expect(sectionName([shot("a", 5, "array/range 256 type lter t"), shot("b", 3, "document"), shot("c", 1, "SOURCE ATLAS")]) == "SOURCE ATLAS")
+        #expect(sectionName([shot("a", 5, "tlow 1Im 016 STEER PANOUR 7"), shot("b", 2, "Where lines run long")]) == "Where lines run long")
+        #expect(sectionName([shot("a", 5, "tlow 1Im 016 ab 9")]) == nil)
     }
 }

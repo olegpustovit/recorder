@@ -241,10 +241,10 @@ public extension Storyboard {
         for k in shots.indices { shots[k].section = (bounds.dropLast().lastIndex { $0 <= shots[k].from + 1e-6 } ?? 0) + 1 }
     }
 
-    /// One shot per section that names it: the longest non-typing shot (typing is never read, key presses stay private).
+    /// Shots read to name each section: its 3 longest non-typing shots (typing is never read, key presses stay private).
     func sectionRepresentatives() -> [Shot] {
         Dictionary(grouping: shots.filter { $0.section != nil && $0.kind != .typing }, by: { $0.section! })
-            .values.compactMap { $0.max { $0.duration < $1.duration } }.sorted { $0.from < $1.from }
+            .values.flatMap { $0.sorted { $0.duration > $1.duration }.prefix(3) }.sorted { $0.from < $1.from }
     }
 
     /// Source-time storyboard (see `inSource`) → output time through the project's clips.

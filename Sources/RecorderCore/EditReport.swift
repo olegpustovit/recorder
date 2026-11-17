@@ -252,11 +252,25 @@ private func sectionStats(_ sb: Storyboard, segs: [ShotSegment]) -> [SectionStat
     let kept = sectionSeconds(segs)
     return groups.keys.sorted().map { k in
         let shots = groups[k]!.sorted { $0.from < $1.from }, out = segs.filter { $0.shot.section == k }
-        // Named by its longest captioned shot (analyze.shots reads one representative per section).
-        return SectionStat(section: k, name: shots.filter { $0.caption != nil }.max { $0.duration < $1.duration }?.caption, srcFrom: r2(shots.first!.from), srcTo: r2(shots.last!.to),
+        return SectionStat(section: k, name: sectionName(shots), srcFrom: r2(shots.first!.from), srcTo: r2(shots.last!.to),
                            outFrom: out.map(\.range.start).min().map(r2), outTo: out.map(\.range.end).max().map(r2),
                            shots: [shots.first!.id, shots.last!.id], keptSec: r2(kept[k] ?? 0))
     }
+}
+
+/// A section's title from its OCR captions: one that looks like a heading (an ALL-CAPS word of 4+ letters, e.g. "SOURCE
+/// ATLAS"), else one that is mostly real words, longest shot first; noise ("tlow 1Im 016 …") names nothing.
+func sectionName(_ shots: [Shot]) -> String? {
+    let captions = shots.sorted { $0.duration > $1.duration }.compactMap(\.caption)
+    func words(_ c: String) -> [Substring] { c.split(whereSeparator: { !$0.isLetter && !$0.isNumber }) }
+    func clean(_ c: String) -> Bool {
+        let w = words(c), good = w.filter { $0.count >= 3 && $0.allSatisfy(\.isLetter) }
+        return !w.isEmpty && Double(good.count) / Double(w.count) >= 0.6 && c.filter(\.isNumber).count * 5 <= c.count
+    }
+    if let heading = captions.first(where: { c in clean(c) && words(c).contains { $0.count >= 4 && $0.allSatisfy(\.isLetter) && $0.allSatisfy(\.isUppercase) } }) {
+        return heading
+    }
+    return captions.first { clean($0) && words($0).count >= 2 }
 }
 
 /// `before` is the project the edit started from, `after` the draft.

@@ -660,7 +660,12 @@ enum AgentAccess: String, CaseIterable {
                 var structured = reply["structuredContent"] as? [String: Any] ?? [:]
                 structured["schemaNotice"] = notice
                 reply["structuredContent"] = structured
-                reply["content"] = (reply["content"] as? [[String: Any]] ?? []) + [["type": "text", "text": notice]]
+                // The first text item mirrors structuredContent (MCP clients without structured output read it): keep them equal.
+                var content = reply["content"] as? [[String: Any]] ?? []
+                if let data = try? JSONSerialization.data(withJSONObject: structured, options: [.sortedKeys]), let text = String(data: data, encoding: .utf8) {
+                    if content.first?["type"] as? String == "text" { content[0]["text"] = text } else { content.insert(["type": "text", "text": text], at: 0) }
+                }
+                reply["content"] = content
             }
             result = reply
         default: return Self.error(-32601, "Unknown method \(method); call initialize or tools/list", id: id)
