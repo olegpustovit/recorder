@@ -509,9 +509,11 @@ Rules:
   Camera, key, layout and text lanes keep absolute output positions when recording clips move between lane kinds.
   Audio collisions preserve sound settings and may require another lane. Recording layers count toward the four
   video-decoder-lane limit; minimum length is 0.1 media seconds, including output spans below 0.1 seconds at speed.
-- Maximum supported format is 5. New/versionless models default to version 3 metadata; atomic `save` chooses the
-  minimum version using the rule above. The loaded version remains metadata in memory. File loading checks
-  the version header before decoding feature enums so a future version fails clearly without rewriting it.
+- **One format version** (7, decided 2026-11-17: no backward-compatibility shims). `save` always writes
+  `Project.currentVersion`; there are no per-feature minimum versions, and the "vN" notes in this section are history.
+  Loading still fills missing fields with defaults so existing projects open; a file with a newer version than the
+  app fails clearly before decoding feature enums, without being rewritten. Keyframes (`keys` on texts/layers) and
+  graphics are part of version 7 (EDITING-CORE D5/D6).
 - Screen/camera-linked audio uses timeline-clock start/end, with file playback rate `mediaRate ?? 1`, mapped through
   the overlapping video clips. Unlinked/layer-linked audio and all layers are **connected**: output start =
   `TimeMap.outputTime(atSource: start)`, output duration = `end - start`, independent of video speed. Their own media

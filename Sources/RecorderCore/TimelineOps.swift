@@ -2152,6 +2152,7 @@ public extension Project {
         if let e = masks.blockInvariantError(kind: "mask", duration: timelineSourceDuration) { return e }
         for style in [TextBlock.Style.caption, .lowerThird, .chapter] {
             if let e = texts.filter({ $0.style.sharesLane(with: style) }).blockInvariantError(kind: "text", duration: timelineSourceDuration) { return e }
+            if let e = texts.lazy.compactMap({ t in t.keys.flatMap { keysError($0, length: t.end - t.start) }.map { "text \(t.id) \($0)" } }).first { return e }
         }
         if let e = windowShots.blockInvariantError(kind: "window shot", duration: timelineSourceDuration) { return e }
         func mediaIsValid(file: String, start: Double, length: Double) -> Bool {
@@ -2232,6 +2233,7 @@ public extension Project {
                 }
             }
             if layer.kind == .recording && (!(0.25...16).contains(rate) || layer.file != "screen.mov") { return "recording layer \(index) invalid file or rate" }
+            if let keys = layer.keys, let e = keysError(keys, length: layer.end - layer.start) { return "layer \(index) \(e)" }
             if layer.kind != .image && !mediaIsValid(file: layer.file, start: layer.mediaStart, length: (layer.end - layer.start) * rate) {
                 return "layer \(index) media range outside file"
             }

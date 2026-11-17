@@ -743,7 +743,7 @@ TimelineOps primitive → EditOp → human command → selftest (D4), and fills 
 |---|---|---|
 | A. Reliability (feedback run 6) | T-901…T-905 | 5/5 |
 | B. Kernel: item view, fuzz, `set` | T-910…T-912 | 3/3 |
-| C. Keyframes + motion graphics | T-920…T-925 | 0/6 |
+| C. Keyframes + motion graphics | T-920…T-925 | 1/6 |
 | D. Human editor gaps | T-930…T-937 | 0/8 |
 | E. Docs + eval | T-940 | 0/1 |
 
@@ -772,7 +772,7 @@ TimelineOps primitive → EditOp → human command → selftest (D4), and fills 
   root cause it finds in the shared op. Verify: `make test FILTER=KernelFuzz`; `make test`.
 - [x] **T-912 Generic `set` op** — patch any item by id over `Item.editable`; `update` = alias; unknown field error lists
   valid fields; mask `kind` (blur/highlight) settable. Verify: `make test FILTER=EditOps`; schema parity selftest.
-- [ ] **T-920 Keyframes core** (D5) — `Key`, `Transform`, `evaluate` (per-property neighbours, eases, spring via
+- [x] **T-920 Keyframes core** (D5) — `Key`, `Transform`, `evaluate` (per-property neighbours, eases, spring via
   `Spring`); optional `keys` on LayerBlock/TextBlock; version 7 only when used; invariants (sorted, inside item).
   Verify: `make test FILTER=Keyframes`; `make test`.
 - [ ] **T-921 Graphic model** (D6) — `Project.graphics`, `GraphicElement`, connected-item TimelineOps (add/move/resize/
@@ -1798,3 +1798,4 @@ T-905 · 2026-11-17 · verified: `make test` 286/286 (new `toolPolishSheetStaleR
 T-910 · 2026-11-17 · verified: `make test` 287/287 (new `itemsCoverEveryKind`); `agentTimeline` JSON for Golden Island (+ markers, zooms, text, a from/to window) byte-identical before/after the rewrite (temporary dump test, removed); `mcp-edit --headless` OK · `Items.swift`: `Item {id, kind, track, out, spine?, media?, anchor, editable, label}` for 12 kinds (graphics join in T-921), `editableFields(kind)` is the one field table; `agentTimeline` and `project.assets` ranges are built from `items`. `Storyboard.output` and `uncoveredRanges` keep their own coverage pass (they need full-canvas, not every layer).
 T-911 · 2026-11-17 · verified: `make test` 288/288 (new `KernelFuzzTests`: 500 seeded batches over simple/layered/Golden Island/Golden Island Free; also run once at 2,400 batches, clean); `mcp-edit --headless` OK · Root causes the fuzz found and fixed in shared code: (1) `resizeLayer` let an imported video layer run past its file when the caller had no duration (agent `update`/`set`) — it now caps at the current media end unless the duration is passed (human path always passes it); `set mediaStart` on such a video may only slip earlier; (2) `items` listed blocks over a trailing gap past the export (Free mode) — items are now clamped to the visible part. Trailing gap clips themselves may sit past the export by design (the export ignores them).
 T-912 · 2026-11-17 · verified: `make test` 289/289 (new `genericSetUsesTheFieldTable`: zoom scale, text text+position, mask from+kind blur, text-on-zoom error lists valid fields, layout has none, JSON decode); `mcp-schema` OK; `mcp-edit --headless` OK · `SetFields` carries every update field + mask `kind`; `set` validates against `editableFields(item.kind)` from `items(base)`, then non-layer items run the existing update path per phase (the stored op stays `set`, so replay/IDs are unchanged); mask kind applied after it. `update` kept as the older name (no deprecation churn for existing drafts).
+T-920 · 2026-11-17 · verified: `make test` 292/292 (new `KeyframesTests`: per-property neighbours, holds before/after, eases 0→1 incl. spring overshoot, validation, round-trip, invariant); `mcp-edit --headless` OK · `Keyframes.swift`: `Key`, `Transform`, `eased`, `evaluate`, `keysError`; optional `keys` on TextBlock (spine s since start) and LayerBlock (output s since start), checked in `checkInvariants`. User direction mid-task (no backward compatibility): `save` now always writes `currentVersion` 7; the per-feature minimum-version rule and its tests are gone (tests now assert the single version); loading keeps defaults so existing projects open. SPEC §5 and EDITING-CORE D1 updated. Spring ease is closed-form (`shortcut:` comment).

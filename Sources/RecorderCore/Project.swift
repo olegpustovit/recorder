@@ -237,13 +237,15 @@ public struct TextBlock: Codable, Equatable, Sendable {
     public var position: NormPoint
     public var size: Double
     public var color: BlockColor? = nil
+    /// Keyframed transform (T-920), seconds since `start` on the spine clock; nil = the style's built-in motion only.
+    public var keys: [Key]? = nil
 
     public init(id: String = makeProjectID().uuidString, start: Double = 0, end: Double = 0, text: String = "Text", words: [Word]? = nil,
                 style: Style = .title, position: NormPoint? = nil, size: Double = 48) {
         self.id = id; self.start = start; self.end = end; self.text = text; self.words = words; self.style = style
         self.position = position ?? (style == .lowerThird ? NormPoint(x: 0.05, y: 0.8) : NormPoint(x: 0.5, y: style == .caption ? 0.8 : 0.5)); self.size = size
     }
-    enum CodingKeys: String, CodingKey { case id, start, end, text, words, style, position, size, color }
+    enum CodingKeys: String, CodingKey { case id, start, end, text, words, style, position, size, color, keys }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.value(.id, default: makeProjectID().uuidString)
@@ -255,6 +257,7 @@ public struct TextBlock: Codable, Equatable, Sendable {
         position = try c.value(.position, default: style == .lowerThird ? NormPoint(x: 0.05, y: 0.8) : NormPoint())
         size = try c.value(.size, default: 48)
         color = try? c.decodeIfPresent(BlockColor.self, forKey: .color)
+        keys = try c.decodeIfPresent([Key].self, forKey: .keys)
     }
 
     /// Index into `words` of the word being spoken at source time `t` (the last one that has started).
@@ -466,6 +469,8 @@ public struct LayerBlock: Codable, Equatable, Sendable {
     public var fadeOut: Double?
     public var aboveCamera: Bool
     public var color: BlockColor? = nil
+    /// Keyframed transform (T-920), output seconds since `start`; when set it replaces the `motion` entrance (fades still apply).
+    public var keys: [Key]? = nil
 
     public init(id: String = makeProjectID().uuidString, kind: Kind, start: Double, end: Double, file: String,
                 mediaStart: Double = 0, track: Int = 0, rect: NormRect, backdrop: Backdrop = .dim,
@@ -476,7 +481,7 @@ public struct LayerBlock: Codable, Equatable, Sendable {
         self.motion = motion; self.fadeIn = fadeIn; self.fadeOut = fadeOut; self.aboveCamera = aboveCamera
     }
     enum CodingKeys: String, CodingKey {
-        case id, kind, start, end, file, mediaStart, track, rect, backdrop, motion, fadeIn, fadeOut, aboveCamera, color, mediaRate, scene
+        case id, kind, start, end, file, mediaStart, track, rect, backdrop, motion, fadeIn, fadeOut, aboveCamera, color, mediaRate, scene, keys
     }
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -496,6 +501,7 @@ public struct LayerBlock: Codable, Equatable, Sendable {
         fadeOut = container.contains(.fadeOut) ? try container.decodeIfPresent(Double.self, forKey: .fadeOut) : 0.3
         aboveCamera = try container.value(.aboveCamera, default: false)
         color = try? container.decodeIfPresent(BlockColor.self, forKey: .color)
+        keys = try container.decodeIfPresent([Key].self, forKey: .keys)
     }
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
@@ -508,6 +514,7 @@ public struct LayerBlock: Codable, Equatable, Sendable {
         try container.encode(aboveCamera, forKey: .aboveCamera)
         try container.encodeIfPresent(mediaRate, forKey: .mediaRate); try container.encodeIfPresent(scene, forKey: .scene)
         try container.encodeIfPresent(color, forKey: .color)
+        try container.encodeIfPresent(keys, forKey: .keys)
     }
 }
 
@@ -762,7 +769,7 @@ public struct Marker: Codable, Equatable, Sendable {
 }
 
 public struct Project: Codable, Equatable, Sendable {
-    public static let currentVersion = 6
+    public static let currentVersion = 7
 
     public var framingEnabled: Bool { frame.enabled ?? true }
 
@@ -805,7 +812,7 @@ public struct Project: Codable, Equatable, Sendable {
     public var keys: Keys
 
     public init(
-        version: Int = 3,
+        version: Int = Project.currentVersion,
         id: String = makeProjectID().uuidString,
         title: String = "Untitled",
         createdAt: String = ISO8601DateFormatter().string(from: Date()),
@@ -852,7 +859,7 @@ public struct Project: Codable, Equatable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        version = try c.value(.version, default: 3)
+        version = try c.value(.version, default: Project.currentVersion)
         id = try c.value(.id, default: makeProjectID().uuidString)
         title = try c.value(.title, default: "Untitled")
         createdAt = try c.value(.createdAt, default: ISO8601DateFormatter().string(from: Date()))
@@ -906,7 +913,7 @@ public struct Project: Codable, Equatable, Sendable {
     public static func load(from url: URL) throws -> Project {
         let data = try Data(contentsOf: url)
         struct Header: Decodable { var version: Int? }
-        let version = try JSONDecoder().decode(Header.self, from: data).version ?? 3
+        let version = try JSONDecoder().decode(Header.self, from: data).version ?? currentVersion
         guard version <= currentVersion else { throw ProjectError.newerVersion(version) }
         return try JSONDecoder().decode(Project.self, from: data)
     }
@@ -915,9 +922,7 @@ public struct Project: Codable, Equatable, Sendable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         var saved = self
-        if output.aspect == .r4x5 || !cropKeys.isEmpty { saved.version = 6 } // older builds can't decode 4:5 or follow crop keys
-        else if texts.contains(where: { $0.style == .lowerThird || $0.style == .chapter }) { saved.version = 5 }
-        else { saved.version = layers.contains { $0.kind == .recording } || clips.contains { $0.file != nil } ? 4 : 3 }
+        saved.version = Self.currentVersion   // one format: no per-feature minimum versions (user, 2026-11-17)
         try encoder.encode(saved).write(to: url, options: .atomic)
     }
 }

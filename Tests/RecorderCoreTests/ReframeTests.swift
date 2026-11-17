@@ -74,8 +74,7 @@ import Testing
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".json")
         defer { try? FileManager.default.removeItem(at: url) }
         try r.save(to: url)
-        #expect(try Project.load(from: url).version == 6 && (try base.save(to: url)) == ())
-        #expect(try Project.load(from: url).version == 3)
+        #expect(try Project.load(from: url).version == Project.currentVersion)
         #expect(throws: EditError.self) { try base.applying([.reframe(aspect: .r9x16)], context: EditContext()) }
         #expect(throws: EditError.self) { try base.applying([.reframe(aspect: .r4x3, keys: keys)], context: EditContext()) }
         var bad = keys; bad[0].rect.x = 0.9   // leaves the frame

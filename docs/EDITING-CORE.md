@@ -54,8 +54,10 @@ Discrete commands added from now on use `EditOp` (§3.4).
 
 ## 3. Architecture decisions (closed)
 
-**D1. Evolve, don't rewrite.** `project.json` keeps its arrays. New fields are additive. Version 7 is written
-only when graphics or keyframes are used (same rule as v5/v6). No new targets, layers or managers.
+**D1. Evolve the arrays, no compatibility layers.** `project.json` keeps its per-kind arrays (no new targets, layers or
+managers). Per the user (2026-11-17), there is no backward compatibility: one format version (7) is always written,
+`set` is the only patch op (`update` removed), and no aliases or per-feature version gates exist. Loading keeps
+field defaults so existing projects still open; that is data-loss protection, not compatibility.
 
 **D2. Three clocks, named.**
 - **Output** time: the timeline x-axis and every MCP number.

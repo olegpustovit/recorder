@@ -11,24 +11,18 @@ import Testing
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".json")
         defer { try? FileManager.default.removeItem(at: url) }
         try project.save(to: url)
-        #expect(try Project.load(from: url).version == 3)
+        #expect(try Project.load(from: url).version == Project.currentVersion)   // one format version
         project.clips[0].file = "media/import.mov"
-        try project.save(to: url)
-        #expect(try Project.load(from: url).version == 4)
         for style in [TextBlock.Style.lowerThird, .chapter] {
             project.texts[0].style = style
             try project.save(to: url)
             let loaded = try Project.load(from: url)
-            #expect(loaded.version == 5 && loaded.texts == project.texts && loaded.markers == project.markers)
-            #expect(project.version == 3)
+            #expect(loaded.version == Project.currentVersion && loaded.texts == project.texts && loaded.markers == project.markers)
         }
         #expect(TextBlock(style: .lowerThird).position == NormPoint(x: 0.05, y: 0.8))
         let minimal = Data(#"{"style":"lowerThird"}"#.utf8)
         #expect(try JSONDecoder().decode(TextBlock.self, from: minimal).position == NormPoint(x: 0.05, y: 0.8))
         #expect(TextBlock(style: .lowerThird, position: NormPoint(x: 0.2, y: 0.3)).position == NormPoint(x: 0.2, y: 0.3))
-        project.texts = []
-        try project.save(to: url)
-        #expect(try Project.load(from: url).version == 4)
         #expect(project.checkInvariants() == nil)
     }
 
@@ -168,7 +162,7 @@ import Testing
                             rect: NormRect(), backdrop: .none, motion: .scale, fadeIn: nil, fadeOut: nil)])
     #expect(project.checkInvariants(mediaDurations: ["media/video.mov": 8]) == nil)
     #expect(try JSONDecoder().decode(Project.self, from: JSONEncoder().encode(project)) == project)
-    #expect(Project.currentVersion == 6)
+    #expect(Project.currentVersion == 7)
     let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".json")
     defer { try? FileManager.default.removeItem(at: url) }
     try project.save(to: url)
