@@ -89,5 +89,13 @@ public func items(_ project: Project) -> [Item] {
         out.append(Item(id: marker.id, kind: .marker, track: 0, out: TimeRange(start: at, end: at), spine: TimeRange(start: marker.time, end: marker.time),
                         media: nil, anchor: .spine, editable: editableFields(.marker), label: marker.label))
     }
-    return out
+    // Only what plays: a block over a trailing gap (past the export, e.g. Free mode) is never seen (T-911 fuzz).
+    let end = project.exportDuration
+    return out.compactMap { item in
+        guard item.kind != .clip, item.kind != .gap, item.kind != .marker else { return item }
+        guard item.out.start < end - 1e-9 else { return nil }
+        var visible = item
+        visible.out.end = min(item.out.end, end)
+        return visible
+    }
 }

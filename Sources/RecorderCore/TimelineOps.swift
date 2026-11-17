@@ -1528,7 +1528,8 @@ public extension Project {
             changed.advanceMedia(by: changed.start - range.start)
         case .trailing:
             let upper = min(neighbours.filter { $0.start >= range.end - 1e-9 }.map(\.start).min() ?? .infinity,
-                            layer.kind != .image ? range.start + ((mediaDuration ?? (layer.kind == .recording ? source.duration : .infinity)) - layer.mediaStart) / (layer.mediaRate ?? 1) : .infinity)
+                            // An imported video whose length the caller doesn't know may shrink but not run past its current media end (T-911 fuzz).
+                            layer.kind != .image ? range.start + ((mediaDuration ?? (layer.kind == .recording ? source.duration : layer.mediaStart + (range.end - range.start) * (layer.mediaRate ?? 1))) - layer.mediaStart) / (layer.mediaRate ?? 1) : .infinity)
             changed.end = max(min(requested, upper), range.start + (layer.kind == .recording ? Self.minClipLength / (layer.mediaRate ?? 1) : 0.5))
         }
         guard changed.start != range.start || changed.end != range.end else { return }

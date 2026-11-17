@@ -742,7 +742,7 @@ TimelineOps primitive → EditOp → human command → selftest (D4), and fills 
 | Scope | Tasks | Done |
 |---|---|---|
 | A. Reliability (feedback run 6) | T-901…T-905 | 5/5 |
-| B. Kernel: item view, fuzz, `set` | T-910…T-912 | 1/3 |
+| B. Kernel: item view, fuzz, `set` | T-910…T-912 | 2/3 |
 | C. Keyframes + motion graphics | T-920…T-925 | 0/6 |
 | D. Human editor gaps | T-930…T-937 | 0/8 |
 | E. Docs + eval | T-940 | 0/1 |
@@ -767,7 +767,7 @@ TimelineOps primitive → EditOp → human command → selftest (D4), and fills 
 - [x] **T-910 `Items.swift` unified item view** (D3) — `items(project)` covering all 13 kinds with anchor, out/spine/media
   ranges and `editable`; `agentTimeline` and `project.assets` built on it. Verify: `make test FILTER=Items` (every array
   represented, out ranges in 0…exportDuration, Golden Island timeline unchanged); `make test`.
-- [ ] **T-911 Kernel fuzz** (D8) — `KernelFuzzTests`: seeded random EditOp batches over 4 fixtures, 500 batches; per
+- [x] **T-911 Kernel fuzz** (D8) — `KernelFuzzTests`: seeded random EditOp batches over 4 fixtures, 500 batches; per
   batch invariants, Codable round-trip, items in range, determinism, failed batch leaves project unchanged. Fix every
   root cause it finds in the shared op. Verify: `make test FILTER=KernelFuzz`; `make test`.
 - [ ] **T-912 Generic `set` op** — patch any item by id over `Item.editable`; `update` = alias; unknown field error lists
@@ -1796,3 +1796,4 @@ T-903 · 2026-11-17 · verified: `make test` 284/284 (new `GoldenIslandLayerTest
 T-904 · 2026-11-17 · verified: `make test` 285/285 (new `uncoveredGapIsLintedAndCuttable` on Golden Island: the 0.56 s tail gap is found, linted with a cut, the cut removes it, ripples the appended layer by 0.56 s and shortens export by the same; the existing pipeline tests now also apply every `uncovered` suggestion); `mcp-edit --headless`, `mcp-shots` OK · Core `uncoveredRanges(project)` (no non-gap clip and no full-canvas layer, ≥ 1/60 s); lint rule `uncovered` suggests a cut of the part inside the clips, rounded inward to 0.01 s (a tail past the clips gets no op); unsnapped `cut` ranges include gap clips and `agentRemoveSourceRanges` shortens gap time (`removeGapTime`) then `settleConnected` re-anchors layers.
 T-905 · 2026-11-17 · verified: `make test` 286/286 (new `toolPolishSheetStaleRefocus`); `--selftest mcp-schema` OK; `mcp-edit --headless` OK · Core `sheetTimes`, `staleRevisionMessage`, `Storyboard.refocused` (pure, tested) wired into MCPTools: render.sheet honours from/to; STALE_REVISION says "You passed X; the current draft revision is Y" and names the base only when it moved; reframe accepts `focus:{shotId:{x,y}}` and edit.apply returns `reframe:{keysBefore,keysAfter,changed,shots}`. Assertions for the sheet range and stale text were also added to the windowed `mcp-roundtrip`/`mcp-edit <fixture>` selftests but NOT run (user: no test windows/focus changes).
 T-910 · 2026-11-17 · verified: `make test` 287/287 (new `itemsCoverEveryKind`); `agentTimeline` JSON for Golden Island (+ markers, zooms, text, a from/to window) byte-identical before/after the rewrite (temporary dump test, removed); `mcp-edit --headless` OK · `Items.swift`: `Item {id, kind, track, out, spine?, media?, anchor, editable, label}` for 12 kinds (graphics join in T-921), `editableFields(kind)` is the one field table; `agentTimeline` and `project.assets` ranges are built from `items`. `Storyboard.output` and `uncoveredRanges` keep their own coverage pass (they need full-canvas, not every layer).
+T-911 · 2026-11-17 · verified: `make test` 288/288 (new `KernelFuzzTests`: 500 seeded batches over simple/layered/Golden Island/Golden Island Free; also run once at 2,400 batches, clean); `mcp-edit --headless` OK · Root causes the fuzz found and fixed in shared code: (1) `resizeLayer` let an imported video layer run past its file when the caller had no duration (agent `update`/`set`) — it now caps at the current media end unless the duration is passed (human path always passes it); `set mediaStart` on such a video may only slip earlier; (2) `items` listed blocks over a trailing gap past the export (Free mode) — items are now clamped to the visible part. Trailing gap clips themselves may sit past the export by design (the export ignores them).
