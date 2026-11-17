@@ -732,6 +732,83 @@ acceptance undo, privacy (renders hide key overlays) and existing op semantics; 
 
 ---
 
+## Editing core v2: human + Claude on one model — 2026-11-17
+
+Source: [EDITING-CORE.md](EDITING-CORE.md) (normative: decisions D1–D8, MCP v2 §4, capability table §5) · feedback run 6
+https://artifacts.microapps.space/a/6h4p6rzd4tdr · prototype https://artifacts.microapps.space/a/2a8nw5c559k4. The user requested
+**the whole plan**. Order matters: reliability first, then the kernel the rest builds on. Each new capability lands as
+TimelineOps primitive → EditOp → human command → selftest (D4), and fills its row in EDITING-CORE §5.
+
+| Scope | Tasks | Done |
+|---|---|---|
+| A. Reliability (feedback run 6) | T-901…T-905 | 0/5 |
+| B. Kernel: item view, fuzz, `set` | T-910…T-912 | 0/3 |
+| C. Keyframes + motion graphics | T-920…T-925 | 0/6 |
+| D. Human editor gaps | T-930…T-937 | 0/8 |
+| E. Docs + eval | T-940 | 0/1 |
+
+- [ ] **T-901 One duration, layers visible to agent tools** — `project.list`/`info`/`timeline.get`/`analyze.shots`/sheet
+  report `Project.exportDuration`; `project.assets.layers` lists every layer `{id,kind,file,from,to,mediaStart,mediaRate}`;
+  shots/sections/lint treat output spans covered only by a layer as `kind:"layer"` coverage. Verify: Core test that a
+  project with a layer past the last clip reports one duration in `agentTimeline` and the storyboard view;
+  `--selftest mcp-roundtrip <fixture>`; `make test`.
+- [ ] **T-902 Media-time anchors** (D2) — `{shot}` anchors resolve base spine → media → spine of the batch prefix, so a
+  `speed` earlier in the batch (which may switch to the output clock) no longer reports "removed footage". Verify:
+  `make test FILTER=EditOps` (new `shotAnchorAfterSpeed`); `make test`.
+- [ ] **T-903 Layer trim and speed via `update`** — layer `to`, `mediaStart`, `mediaRate` (connected item; limits: media
+  length, 0.5 s minimum, track collisions; reports the reachable limit); works for layers beyond clips' end. Verify:
+  `make test FILTER=LayerEdit` cases trim/slip/rate/limit/past-end; `make test`.
+- [ ] **T-904 No uncovered canvas** — `cut` over a range that is a gap (interior or before a connected layer) removes it
+  and ripples connected items; lint rule `uncovered` (output span with no clip and no layer, ≥ 1 frame) with a dry-run
+  `cut` suggestion. Verify: Core tests (Golden Island 91.13–91.69 tail gap shape); `make test`.
+- [ ] **T-905 Tool polish** — `render.sheet` honours `from`/`to`; `STALE_REVISION` names what you passed and the
+  current draft/base revisions; `reframe` returns `{keysBefore,keysAfter,changed,shots}` and accepts
+  `focus:{"s12":{x,y}}` overrides. Verify: `make test FILTER=Reframe`; `--selftest mcp-render <fixture>`; MCP.md updated.
+- [ ] **T-910 `Items.swift` unified item view** (D3) — `items(project)` covering all 13 kinds with anchor, out/spine/media
+  ranges and `editable`; `agentTimeline` and `project.assets` built on it. Verify: `make test FILTER=Items` (every array
+  represented, out ranges in 0…exportDuration, Golden Island timeline unchanged); `make test`.
+- [ ] **T-911 Kernel fuzz** (D8) — `KernelFuzzTests`: seeded random EditOp batches over 4 fixtures, 500 batches; per
+  batch invariants, Codable round-trip, items in range, determinism, failed batch leaves project unchanged. Fix every
+  root cause it finds in the shared op. Verify: `make test FILTER=KernelFuzz`; `make test`.
+- [ ] **T-912 Generic `set` op** — patch any item by id over `Item.editable`; `update` = alias; unknown field error lists
+  valid fields; mask `kind` (blur/highlight) settable. Verify: `make test FILTER=EditOps`; schema parity selftest.
+- [ ] **T-920 Keyframes core** (D5) — `Key`, `Transform`, `evaluate` (per-property neighbours, eases, spring via
+  `Spring`); optional `keys` on LayerBlock/TextBlock; version 7 only when used; invariants (sorted, inside item).
+  Verify: `make test FILTER=Keyframes`; `make test`.
+- [ ] **T-921 Graphic model** (D6) — `Project.graphics`, `GraphicElement`, connected-item TimelineOps (add/move/resize/
+  delete/duplicate via the generic timed-block ops), invariants, v7 rule. Verify: `make test FILTER=Graphics`.
+- [ ] **T-922 Templates** — `titleCard`, `callout`, `stepBadge`, `spotlight`, `progressBar`, `counter` as pure
+  `(params) -> [GraphicElement]` with param schemas (for `project.templates`). Verify: `make test FILTER=Graphics`.
+- [ ] **T-923 Render graphics + keyframes** — Compositor draws graphics (CG → cached texture), `space: screen` mapped
+  through `ZoomTargetMapping`; layer/text keys applied. Verify: `--selftest parity` with graphics/keys fixtures maxDelta 0;
+  `--selftest graphics-png <out>` inspected.
+- [ ] **T-924 Human: Graphics lane, template gallery, GraphicPanel, keyframes** — lane in TimelineView, `G` menu of
+  templates, inspector params/elements/colours (Theme tokens), on-canvas move/resize (SelectionRectView), keyframe
+  diamonds on the selected block, ⌥K add key at playhead, drag diamond. Verify: `--selftest graphics-ui`, inspector PNGs;
+  HUMAN: compare with the prototype.
+- [ ] **T-925 MCP `graphic`, `animate`, `project.templates`** — ops lower to T-921/T-920 primitives; schema + parity;
+  timeline.get emits graphics. Verify: `--selftest mcp-edit <fixture>` (title card + screen callout through a zoom,
+  frames rendered); MCP.md §5.
+- [ ] **T-930 Markers UI** — `M` adds at playhead, ruler flags, double-click rename, ⌃←/⌃→ jump, delete. Verify:
+  `--selftest markers`; HUMAN look.
+- [ ] **T-931 Editable transcript** — transcript panel words selectable; ⌫ applies `cutWords` through
+  `EditorModel.apply`; fillers highlighted with "Remove fillers". Verify: `--selftest transcript-edit <fixture>`.
+- [ ] **T-932 Roll and slip** — Core `rollEdit(boundary, delta)`, `slipClip(id, delta)` (clips and video layers);
+  ⌥-drag seam = roll, ⌘-drag body = slip. Verify: `make test FILTER=TimelineOps`; `--selftest timeline-trim`.
+- [ ] **T-933 Freeze frame** — `Clip.freeze` (hold one media frame for d output seconds) in TimeMap; ⇧F; MCP `freeze`.
+  Verify: `make test FILTER=TimeMap`; parity selftest.
+- [ ] **T-934 Seam transitions** — `Clip.transitionIn {kind: dissolve|dipToBlack|push, duration}` centred on the seam;
+  compositor blends both frames; MCP `transition`. Verify: Core TimeMap/overlap tests; parity selftest.
+- [ ] **T-935 Speed ramp UI** — clip inspector ramp in/out (reuse stepped ramp lowering). Verify: `--selftest clip-speed`.
+- [ ] **T-936 Ducking + gain envelope** — music track `duck` under mic/voiceover; editable envelope points on audio clips.
+  Verify: `--selftest audio-mix`; `make test FILTER=AudioClip`.
+- [ ] **T-937 Export range** — I/O on the timeline, export sheet "Range: whole | in–out"; `export.final {from,to}`.
+  Verify: `--selftest export-sheet`, `mcp-export`.
+- [ ] **T-940 Docs + eval** — MCP.md v2, SPEC §5/§10, eval harness brief "30 s reel with a title card and two callouts"
+  on Golden Island. Verify: `make mcp-smoke`; harness run recorded.
+
+---
+
 ## Requested Nudge fixes — 2026-09-22
 
 User-requested fixes are handled individually in this order, separately from the outstanding HUMAN milestone gates.
