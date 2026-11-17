@@ -743,7 +743,7 @@ TimelineOps primitive → EditOp → human command → selftest (D4), and fills 
 |---|---|---|
 | A. Reliability (feedback run 6) | T-901…T-905 | 5/5 |
 | B. Kernel: item view, fuzz, `set` | T-910…T-912 | 3/3 |
-| C. Keyframes + motion graphics | T-920…T-925 | 2/6 |
+| C. Keyframes + motion graphics | T-920…T-925 | 3/6 |
 | D. Human editor gaps | T-930…T-937 | 0/8 |
 | E. Docs + eval | T-940 | 0/1 |
 
@@ -777,7 +777,7 @@ TimelineOps primitive → EditOp → human command → selftest (D4), and fills 
   Verify: `make test FILTER=Keyframes`; `make test`.
 - [x] **T-921 Graphic model** (D6) — `Project.graphics`, `GraphicElement`, connected-item TimelineOps (add/move/resize/
   delete/duplicate via the generic timed-block ops), invariants, v7 rule. Verify: `make test FILTER=Graphics`.
-- [ ] **T-922 Templates** — `titleCard`, `callout`, `stepBadge`, `spotlight`, `progressBar`, `counter` as pure
+- [x] **T-922 Templates** — `titleCard`, `callout`, `stepBadge`, `spotlight`, `progressBar`, `counter` as pure
   `(params) -> [GraphicElement]` with param schemas (for `project.templates`). Verify: `make test FILTER=Graphics`.
 - [ ] **T-923 Render graphics + keyframes** — Compositor draws graphics (CG → cached texture), `space: screen` mapped
   through `ZoomTargetMapping`; layer/text keys applied. Verify: `--selftest parity` with graphics/keys fixtures maxDelta 0;
@@ -1801,3 +1801,4 @@ T-912 · 2026-11-17 · verified: `make test` 289/289 (new `genericSetUsesTheFiel
 T-920 · 2026-11-17 · verified: `make test` 292/292 (new `KeyframesTests`: per-property neighbours, holds before/after, eases 0→1 incl. spring overshoot, validation, round-trip, invariant); `mcp-edit --headless` OK · `Keyframes.swift`: `Key`, `Transform`, `eased`, `evaluate`, `keysError`; optional `keys` on TextBlock (spine s since start) and LayerBlock (output s since start), checked in `checkInvariants`. User direction mid-task (no backward compatibility): `save` now always writes `currentVersion` 7; the per-feature minimum-version rule and its tests are gone (tests now assert the single version); loading keeps defaults so existing projects open. SPEC §5 and EDITING-CORE D1 updated. Spring ease is closed-form (`shortcut:` comment).
 Clean core · 2026-11-17 · verified: `make test` 292/292; `mcp-schema`, `mcp-edit --headless` OK · Per the user (no backward compatibility): removed `EditOp.update` and its JSON name; `set` is the only patch op (Core prepare/apply branches now match `.set` for non-layer items, the dead layer branch of the old update path is deleted, mask `kind` lives in the mask branch); tests and selftests converted mechanically; MCP schema/docs list only `set`. Persisted drafts containing "update" ops will not replay (reported as unrecoverable and kept as agent-draft.failed.json).
 T-921 · 2026-11-17 · verified: `make test` 295/295 (new `GraphicsTests`: connected placement/cut ripple/set move/remove, table rejects mediaStart, validation, count/type-out text, colour parse); `mcp-edit --headless` OK · Graphic = `LayerBlock.kind .graphic` + `graphic` payload (D6 revised: reuse layer machinery, no new array); `hasMedia` replaces 18 `kind != .image` checks; `Item.Kind.graphic`; graphics never count as coverage or shots; `Project.addGraphic`.
+T-922 · 2026-11-17 · verified: `make test FILTER=Graphics` 4/4 (new `templatesBuildValidGraphics`: every template from its example and from defaults is valid and places; unknown template/param/out-of-range errors) · `GraphicTemplates.make(name, params, length)` + `catalog` (titleCard, callout, stepBadge, spotlight, progressBar, counter); screen-space templates use a full-frame box so element coordinates are source-frame coordinates.

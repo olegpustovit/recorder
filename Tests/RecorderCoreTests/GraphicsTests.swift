@@ -52,3 +52,22 @@ import Testing
         #expect(graphicColor("#FF000080")! == (1, 0, 0, 128.0 / 255) && graphicColor("#00FF00")!.a == 1 && graphicColor("FF0000") == nil)
     }
 }
+
+/// T-922: every template builds a valid graphic from its own example and defaults; bad params name the valid ones.
+@Test func templatesBuildValidGraphics() throws {
+    for info in GraphicTemplates.catalog {
+        for params in [info.example, [:]] {
+            let made = try GraphicTemplates.make(info.name, params: params, length: 3)
+            #expect(graphicError(made.graphic, length: 3) == nil, "\(info.name)")
+            #expect(made.graphic.template?.name == info.name && made.rect.w > 0 && made.rect.h > 0)
+            var p = Project(source: Source(duration: 20), clips: [Clip(sourceStart: 0, sourceEnd: 20)])
+            let id = p.addGraphic(made.graphic, atOutput: 1, duration: 3, rect: made.rect)
+            #expect(id != nil && p.checkInvariants() == nil, "\(info.name) does not place")
+        }
+    }
+    #expect(try GraphicTemplates.make("callout", params: ["x": .number(0.8)], length: 2).graphic.space == .screen)
+    #expect(throws: GraphicTemplates.Failure.self) { try GraphicTemplates.make("nope", params: [:], length: 2) }
+    do { _ = try GraphicTemplates.make("callout", params: ["colour": .string("red")], length: 2); Issue.record("unknown param") }
+    catch { #expect("\(error)".contains("params: text, x, y")) }
+    #expect(throws: GraphicTemplates.Failure.self) { try GraphicTemplates.make("stepBadge", params: ["x": .number(2)], length: 2) }
+}
