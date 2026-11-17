@@ -165,29 +165,29 @@ Rational time would touch every file for no failure we have seen.
 | `render.sheet` honours `from`/`to`. `reframe` returns `{keysBefore, keysAfter, changed, shots}` and accepts `focus:{shotId:{x,y}}`. | `render`, `edit.apply` |
 | `STALE_REVISION: you passed X; the current draft revision is Y (base Z)` | errors |
 
-## 5. Capability parity (human ↔ Claude)
+## 5. Capability parity (human ↔ Claude) — state 2026-11-17
 
-Each row must have all three columns before its task is ticked. "—" marks a column that is still missing and
-names the task that fills it.
+Every row has its Core primitive, a human command and an MCP op. "HUMAN" means the look and feel is waiting for the
+user's check in the running app (no test windows were used).
 
 | Capability | Core primitive | Human | MCP op |
 |---|---|---|---|
-| Cut / split / remove | `split`, `deleteClips` | C, ⌫ | `cut`, `cutPauses`, `cutWords` |
-| Speed / ramp | `setSpeed` | inspector; ramp — T-935 | `speed {ramp}` |
+| Cut / split / remove | `split`, `deleteClips`, gap removal | C, ⌫ | `cut` (also removes gaps), `cutPauses`, `cutWords` |
+| Speed / ramp | `setSpeed`, ramp lowering | inspector, Ramp 0.3/0.6/1 s | `speed {ramp}` |
 | Zoom (auto/manual/follow) | `addZoom` | Z, inspector | `zoom`, `autoZoom` |
-| Text styles | `addText` | T, TextPanel | `text` |
-| Mask / highlight / blur | `addMask` | inspector | `highlight`; blur — T-912 via `set` kind |
-| Layers (image/video/recording) | `addLayer` | import, LayerPanel | `layer`, `set` trim — T-903 |
-| Keyframes | `Key`/`evaluate` — T-920 | diamonds, ⌥K — T-924 | `animate` — T-925 |
-| Graphics / templates | `Graphic` — T-921/922 | G, GraphicPanel — T-924 | `graphic` — T-925 |
-| Markers | `markers` | M, ruler flags — T-930 | `marker` |
-| Transcript cut / fillers | `cutWords` lowering | transcript panel — T-931 | `cutWords` |
-| Roll / slip | T-932 | ⌥/⌘ drag — T-932 | `set` (`mediaStart`) — T-932 |
-| Freeze frame | T-933 | ⇧F — T-933 | `freeze` — T-933 |
-| Transitions | T-934 | right-click seam — T-934 | `transition` — T-934 |
-| Ducking / envelope | T-936 | AudioPanel — T-936 | `style` patch / `set` — T-936 |
-| Export range | T-937 | I / O — T-937 | `export.final {from,to}` — T-937 |
-| Reframe / aspect | `reframe` | aspect menu | `reframe {focus}` — T-905 |
+| Text styles + keys | `addText`, `keys` | T, TextPanel | `text`, `animate` |
+| Mask / highlight / blur | `addMask` | inspector | `highlight`, `set {kind}` |
+| Layers (image/video/recording) | `addLayer`, `resizeLayer` | import, LayerPanel | `layer`, `set {from,to,mediaStart,mediaRate}` |
+| Keyframes | `Key`, `evaluate`, `layerStates` | ⌥K, diamonds, GraphicPanel list (HUMAN) | `animate`, `graphic.keys` |
+| Graphics / templates | `addGraphic`, `GraphicTemplates` | G menu, Edit ▸ Add Graphic, GraphicPanel (HUMAN) | `graphic`, `project.templates` |
+| Markers | `markers` | M, ruler flags, ⌃←/⌃→ (HUMAN) | `marker`, `set {from,text}` |
+| Transcript cut / fillers | `cutWords` | Transcript editor, Remove fillers (HUMAN) | `cutWords` |
+| Roll / slip | `rollEdit`, `slipClip` | ⌥-drag edge, ⌥, / ⌥. (HUMAN) | `set {id:"cN", mediaStart}` |
+| Freeze frame | `insertStill` | ⇧F | `freeze` |
+| Transitions | `addTransition` (dissolve still, dip) | ⌘T, Add Dip | `transition` |
+| Ducking / envelope | `duckedVolumeRamps`, `setGainPoint` | AudioPanel (HUMAN) | `set {id:<audio>, duck}` |
+| Export range | `Exporter(outputRange:)` | I / O / ⌥X, sheet row | `export.final {from,to}` |
+| Reframe / aspect | `reframe` | aspect menu | `reframe {focus}` |
 
 ## 6. Out of scope (named so nobody builds them)
 

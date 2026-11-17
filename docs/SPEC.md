@@ -1236,6 +1236,9 @@ notifications when the client supplies a progress token. The shim exits if the a
 | `ui` | `show` a playhead time and optional selected IDs |
 
 All tool times are **output seconds** at the supplied `ifRevision`; Core converts to source time before mutation.
+Editing core v2 (2026-11-17, `docs/EDITING-CORE.md`): one item view (`items`) behind timeline.get/assets/lint; `set` is the
+only patch op; new ops `graphic`, `animate`, `freeze`, `transition`, `export.final {from,to}`; `project.templates`. The human
+editor reaches the same ops through `EditorModel.apply` for discrete commands (transcript cuts, ramps).
 Reads and renders include the calling session's draft by default; final export renders the accepted live project.
 The thirteen edit operations are `cut`, `cutPauses`, `cutWords`, `speed`, `zoom`, `text`, `captions`, `highlight`,
 `marker`, `update`, `layer`, `remove` and `style`. IDs come from timeline/transcript reads. Revision conflicts return

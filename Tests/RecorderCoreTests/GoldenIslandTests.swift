@@ -45,6 +45,33 @@ import Testing
         }
     }
 
+    /// T-940 eval brief on the real layout, as the agent would send it: "30 s reel with a title card and two callouts".
+    /// fitDuration → cut the uncovered gap if lint asks → title card on the hook → callouts on the two biggest payoff shots
+    /// (screen space, keyed pop-in) → a dissolve at the first rearranged seam. Must end ~30 s, invariants, every lint
+    /// suggestion applicable, nothing background-only, three graphics visible in timeline.get.
+    @Test func reelWithTitleCardAndCallouts() throws {
+        var p = try apply(base, #"[{"op":"fitDuration","target":30,"tolerance":2,"minPerSection":2,"balance":"even"}]"#)
+        if let gap = uncoveredRanges(p).first, gap.end <= TimeMap(p.clips).outputDuration {
+            p = try apply(p, "[{\"op\":\"cut\",\"from\":\((gap.start * 100).rounded(.up) / 100),\"to\":\((gap.end * 100).rounded(.down) / 100)}]")
+        }
+        let shots = board.mapped(through: TimeMap(p.clips)).shots.filter { $0.kind == .payoff && $0.to - $0.from >= 1.2 }
+            .sorted { $0.energy > $1.energy }.prefix(2).sorted { $0.from < $1.from }
+        #expect(shots.count == 2)
+        var ops = [#"{"op":"graphic","from":0.1,"to":1.6,"template":{"name":"titleCard","params":{"text":"Golden Island","subtitle":"A map editor in 30 seconds"}},"keys":[{"t":0,"opacity":0,"scale":0.96},{"t":0.3,"opacity":1,"scale":1}]}"#]
+        for (i, shot) in shots.enumerated() {
+            let c = shot.cursor ?? NormPoint(x: shot.focus.x + shot.focus.w / 2, y: shot.focus.y + shot.focus.h / 2)
+            ops.append("{\"op\":\"graphic\",\"from\":\(shot.from),\"to\":\(min(shot.to, shot.from + 2.5)),\"template\":{\"name\":\"callout\",\"params\":{\"text\":\"Step \(i + 1)\",\"x\":\(c.x),\"y\":\(c.y)}},\"keys\":[{\"t\":0,\"opacity\":0,\"scale\":0.7,\"ease\":\"spring\"},{\"t\":0.35,\"opacity\":1,\"scale\":1}]}")
+        }
+        p = try apply(p, "[" + ops.joined(separator: ",") + "]")
+        if let seam = p.seam(near: 10) {   // dissolve needs the app's rendered frame; dip is pure
+            p = try apply(p, "[{\"op\":\"transition\",\"at\":\(seam.at),\"kind\":\"dip\",\"duration\":0.4}]")
+        }
+        #expect(abs(p.exportDuration - 30) <= 2.5, "\(p.exportDuration)")
+        #expect(agentTimeline(p).blocks.filter { $0.lane == "graphic" }.count == 3)
+        #expect(uncoveredRanges(p).allSatisfy { $0.start >= TimeMap(p.clips).outputDuration - 1e-6 })   // only an audio/layer tail may remain
+        #expect(p.layers.filter { $0.kind == .graphic }.allSatisfy { $0.keys?.count == 2 })
+    }
+
     @Test func intentPipelineRunsCleanOnRealLayout() throws {
         var p = try apply(base, #"[{"op":"keepShots","where":{"kind":["payoff","motion","typing"]}}]"#)
         p = try apply(p, #"[{"op":"pace"}]"#)

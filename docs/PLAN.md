@@ -745,7 +745,7 @@ TimelineOps primitive → EditOp → human command → selftest (D4), and fills 
 | B. Kernel: item view, fuzz, `set` | T-910…T-912 | 3/3 |
 | C. Keyframes + motion graphics | T-920…T-925 | 5/6 (+T-924 HUMAN) |
 | D. Human editor gaps | T-930…T-937 | 4/8 (+T-930…T-932, T-936 HUMAN) |
-| E. Docs + eval | T-940 | 0/1 |
+| E. Docs + eval | T-940 | 1/1 |
 
 - [x] **T-901 One duration, layers visible to agent tools** — `project.list`/`info`/`timeline.get`/`analyze.shots`/sheet
   report `Project.exportDuration`; `project.assets.layers` lists every layer `{id,kind,file,from,to,mediaStart,mediaRate}`;
@@ -804,7 +804,7 @@ TimelineOps primitive → EditOp → human command → selftest (D4), and fills 
   Verify: `--selftest audio-mix`; `make test FILTER=AudioClip`.
 - [x] **T-937 Export range** — I/O on the timeline, export sheet "Range: whole | in–out"; `export.final {from,to}`.
   Verify: `--selftest export-sheet`, `mcp-export`.
-- [ ] **T-940 Docs + eval** — MCP.md v2, SPEC §5/§10, eval harness brief "30 s reel with a title card and two callouts"
+- [x] **T-940 Docs + eval** — MCP.md v2, SPEC §5/§10, eval harness brief "30 s reel with a title card and two callouts"
   on Golden Island. Verify: `make mcp-smoke`; harness run recorded.
 
 ---
@@ -1813,3 +1813,4 @@ T-934 · 2026-11-17 · verified: `make test` 302/302 (new `seamTransitions`: nea
 T-935 · 2026-11-17 · verified: `make test` OK; new headless `--selftest speed-ramp <package>` (temp copy: middle clip at 4× its neighbours, Ramp 0.6 s → 2.00 2.75 4.25 5.75 7.25 8.00 … 2.00, one undo step, invariants) OK · ClipPanel shows Ramp 0.3/0.6/1.0 s when the clip's speed differs from 1; `EditorModel.rampSpeed` rebuilds the change from the neighbour's speed to the clip's speed through the agent's own `speed {ramp}` lowering (`lowerIntents`) — one shared path. First attempt ramped from the clip's current speed to itself (all steps 8×); caught by the selftest. Button look not inspected (no windows).
 T-936 · 2026-11-17 · `- [~]` pending HUMAN listen · verified: `make test` 304/304 (new `DuckingTests`: speech ranges 4–8 s, ducked music 1.0 → 0.625 at −0.15 s → 0.25 inside → 1.0, duck round-trips; gain point at 10 s lands in the ramps media-keyed, out-of-clip/over-range refused); `--selftest audio-mix`, `audio-lanes` OK (mix path now goes through `duckedVolumeRamps`); `mcp-schema`, `mcp-edit --headless` OK · `AudioTrack.duck`; Core `speechRanges`, `duckedVolumeRamps` (FrameSource uses it), `setGainPoint` (freezes fades into media-keyed points; found by the test: clearing fades resets the envelope, so it is cleared first); AudioPanel: Duck under speech, Level at playhead + Set, n points + Clear; MCP `set {id:<audio>, duck}`. Not done: dragging envelope points on the timeline (points are set at the playhead), timeline envelope drawing does not show ducking.
 T-937 · 2026-11-17 · verified: new headless `--selftest export-in-out <package>` (temp copy: In 2.0 / Out 4.5 through the model → a real 2.50 s MP4 via `Exporter(outputRange:)`; setting the full range clears it) OK; existing `export-range` (export-duration rules) still OK; `mcp-schema`, `mcp-edit --headless`, `make test` OK · Reuse: `Exporter` already took `outputRange` (built for proxy clips) — wired to `EditorModel.exportRange` (I / O / ⌥X, per session), a white band on the ruler, the export sheet (Range row + Whole video, duration/size from the range; GIF stays whole), and MCP `export.final {from,to}` (rejected with srt). Found while testing: a duplicate selftest key traps the whole case table, so the new case is `export-in-out`.
+T-940 · 2026-11-17 · verified: `make test` 305/305 (new `GoldenIslandTests.reelWithTitleCardAndCallouts`: the eval brief "30 s reel with a title card and two callouts" as the agent's ops on the real layout — fitDuration, gap cut if linted, titleCard + two screen-space callouts on the strongest payoff shots with keyed pop-in, a dip at a seam → 30 ± 2.5 s, three graphic blocks in timeline.get, no background-only canvas, every lint suggestion applicable); `make mcp-smoke` OK · EDITING-CORE §5 parity table at its final state, SPEC §10 note, MCP.md updated per task. Not run: a live Claude session through the eval harness (it opens editor windows; the user asked for none) — run `scripts/score` after a real session.
