@@ -41,7 +41,8 @@ import Testing
     @Test func reelRulesFire() {
         let found = lint(Self.project(), storyboard: Self.board())
         let names = found.map(\.rule)
-        #expect(names.contains("hook") && names.contains("tinyShot") && names.contains("asl"))
+        #expect(names.contains("hook") && names.contains("asl"))
+        #expect(!names.contains("tinyShot"))                              // s02 (0.2 s) flows into s03: no cut on both sides
         #expect(!names.contains("duration"))                              // 20 s is inside 15–45
         let holds = found.filter { $0.rule == "maxStatic" }.compactMap(\.shot)
         #expect(holds == ["s00", "s05"])                                  // s03 is tagged result
@@ -117,14 +118,14 @@ import Testing
                      Shot(id: "s02", from: 5, to: 5.2, kind: .motion, boundary: .animate),    // sub-shot in continuous footage
                      Shot(id: "s03", from: 5.2, to: 10, kind: .motion, boundary: .animate),
                      Shot(id: "s04", from: 10, to: 10.15, kind: .motion, boundary: .cut),     // a real flash after a cut
-                     Shot(id: "s05", from: 10.15, to: 20, kind: .motion, boundary: .animate)]
+                     Shot(id: "s05", from: 10.15, to: 20, kind: .motion, boundary: .cut)]   // cut on both sides of s04
         let sb = Storyboard(duration: 20, fps: 10, shots: shots, summary: StoryboardSummary(shots: 5, aslSec: 0, staticSec: 0, longestStatic: nil))
         let p = Self.project()
         let tiny = lint(p, storyboard: sb).filter { $0.rule == "tinyShot" }
         #expect(tiny.map(\.shot) == ["s04"])
         let op = try JSONDecoder().decode(EditOp.self, from: JSONEncoder().encode(try #require(tiny.first?.suggest)))
         #expect(try p.applying([op], context: EditContext()).changes.first?.skipped == false)
-        #expect(editReport(before: p, after: p, storyboard: sb).aslSec.after == 10)        // one cut → two visual shots
+        #expect(editReport(before: p, after: p, storyboard: sb).aslSec.after == 6.67)      // cuts at 10 and 10.15 → three visual shots
         // A cut leaving 0.03 s of s01 (under one analysis frame) reports no zero-length shot.
         let sliver = try p.applying([.cut(from: 0, to: 4.97)], context: EditContext()).project
         #expect(!lint(sliver, storyboard: sb).contains { $0.shot == "s01" && $0.rule == "tinyShot" })

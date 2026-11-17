@@ -591,6 +591,9 @@ enum AgentAccess: String, CaseIterable {
     var draft: AgentDraft?
     var draftRestoreError: String?
     private var schemaChanged = false
+    /// Fields the client's cached tool list lacks, until it calls tools/list on this connection. A client that ignores
+    /// tools/list_changed (or a reconnect after an app update) would otherwise never see new op fields (run-4 R4-1).
+    private var unseenFields: [String] = []
     /// Package holding this session's `agent-draft.json`; set when written or adopted, so only its owner deletes it.
     var persistedPackage: URL?
     var lastDraftVerdict: String?
@@ -636,17 +639,30 @@ enum AgentAccess: String, CaseIterable {
             let seen = UserDefaults.standard.string(forKey: key)
             schemaChanged = seen != nil && seen != MCPTools.schemaVersion
             UserDefaults.standard.set(MCPTools.schemaVersion, forKey: key)
+            if schemaChanged, let old = UserDefaults.standard.stringArray(forKey: key + ".fields") {
+                unseenFields = MCPTools.fieldPaths.subtracting(old).sorted()
+                if unseenFields.isEmpty { unseenFields = ["(changed descriptions or limits)"] }
+            }
+            UserDefaults.standard.set(MCPTools.fieldPaths.sorted(), forKey: key + ".fields")
             result = ["protocolVersion": "2025-06-18", "capabilities": ["tools": ["listChanged": true]], "schemaVersion": MCPTools.schemaVersion,
                       "serverInfo": ["name": "recorder", "version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"],
                       "instructions": MCPTools.instructions]
         case "ping": result = [:]
-        case "tools/list": result = ["tools": MCPTools.list]
+        case "tools/list": result = ["tools": MCPTools.list]; unseenFields = []
         case "tools/call":
             guard let name = params["name"] as? String, params["arguments"] == nil || params["arguments"] is [String: Any] else {
                 return Self.error(-32602, "tools/call needs name and object arguments", id: id)
             }
             let token = (params["_meta"] as? [String: Any])?["progressToken"]
-            result = await MCPTools.call(name, params["arguments"] as? [String: Any] ?? [:], session: self, progress: progressReporter(token: token))
+            var reply = await MCPTools.call(name, params["arguments"] as? [String: Any] ?? [:], session: self, progress: progressReporter(token: token))
+            if !unseenFields.isEmpty {   // say it in every result until the client re-lists
+                let notice = "Recorder's tools changed since your client listed them; re-list tools (reconnect the MCP server). New: " + unseenFields.joined(separator: ", ")
+                var structured = reply["structuredContent"] as? [String: Any] ?? [:]
+                structured["schemaNotice"] = notice
+                reply["structuredContent"] = structured
+                reply["content"] = (reply["content"] as? [[String: Any]] ?? []) + [["type": "text", "text": notice]]
+            }
+            result = reply
         default: return Self.error(-32601, "Unknown method \(method); call initialize or tools/list", id: id)
         }
         return ["jsonrpc": "2.0", "id": id, "result": result]

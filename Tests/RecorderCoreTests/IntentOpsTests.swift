@@ -126,7 +126,8 @@ import Testing
         #expect(r.ops == [.speed(from: 0, to: 7.25, speed: 6.05, snap: true)])      // 6.0417 rounded up, 0.05 s remainder not cut
         _ = try apply(r.ops)   // lowered batch applies
         let held = one([Shot(id: "s00", from: 0, to: 8, kind: .payoff, boundary: .start, clicks: [1])])
-        #expect(try lower(#"[{"op":"pace"}]"#, board: held).ops == [.cut(from: 2.3, to: 8, snap: true)])   // settle 1 s + payoff 1.3 s
+        // beat cut: keep [click - 0.1, click + payoff 1.3], lose the wait before and the hold after
+        #expect(try lower(#"[{"op":"pace"}]"#, board: held).ops == [.cut(from: 0, to: 0.9, snap: true), .cut(from: 2.3, to: 8, snap: true)])
         let moving = one([Shot(id: "s00", from: 0, to: 4, kind: .motion, boundary: .start), Shot(id: "s01", from: 4, to: 8, kind: .typing, boundary: .type)])
         #expect(try lower(#"[{"op":"pace"}]"#, board: moving).ops == [.speed(from: 0, to: 4, speed: 1.5, snap: true), .speed(from: 4, to: 8, speed: 1.5, snap: true)])
     }

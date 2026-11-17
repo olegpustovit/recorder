@@ -69,7 +69,8 @@ enum MCPTools {
                 "maxStatic": number, "speedFill": ["type": "object", "description": "Speed range used to squeeze holds and slow shots (default 1.5-6).", "properties": ["min": number, "max": number], "additionalProperties": false]], []),
             op("fitDuration", ["target": number, "tolerance": number, "protect": ["type": "array", "items": string, "description": "Shots never cut: ids, section:N or caption~regex."],
                 "minPerSection": ["type": "number", "minimum": 0, "description": "Output seconds every section (shot.section from analyze.shots) keeps at least; report.sections shows kept time per section."],
-                "balance": ["type": "string", "enum": ["energy", "even"], "default": "energy", "description": "energy: drop the least interesting shots first; even: take from the section that keeps the most."]], ["target"]),
+                "balance": ["type": "string", "enum": ["energy", "even"], "default": "energy", "description": "energy: drop the least interesting shots first; even: take from the section that keeps the most."],
+                "drop": ["type": "array", "items": ["type": "integer", "minimum": 1], "description": "Sections cut whole first (weak scenes), protected shots excepted."]], ["target"]),
             op("autoZoom", ["lead": number, "tail": number, "scale": number, "from": number, "to": number], [])
         ]
     }()
@@ -82,12 +83,26 @@ enum MCPTools {
             "timeline": ["duration": number, "clips": array, "blocks": array, "markers": array],
             "transcript": ["transcript": string, "words": array, "phrases": array, "truncated": boolean, "from": number],
             "analyze": ["pauses": array, "fillers": array, "idle": array, "typing": array, "clicks": array, "transcript": string, "words": ["type": "integer"]],
-            "edit": ["mode": string, "changes": array, "duration": object, "warnings": array, "dryRun": boolean, "undone": string],
+            "edit": ["mode": string, "changes": array, "duration": object, "warnings": array, "dryRun": boolean, "undone": string, "lowered": array,
+                     "report": ["type": "object", "description": "With a storyboard: duration, aslSec (visual shots), subShotAslSec, staticSec {before,after}, hookSec, longestStatic {sec,at}, lint [{rule,sev,at,shot,msg,suggest}], reframeJumps, sections [{section, name, srcFrom, srcTo (source s), outFrom, outTo (output s), shots [first,last], keptSec}]."]],
             "draft": ["base": ["type": ["string", "null"]], "ops": ["type": ["array", "integer"]], "changes": ["type": ["array", "integer"]], "submitted": boolean, "stale": boolean, "selected": ["type": "integer"],
                       "excluded": array, "skipped": array, "verdict": string],
             "render": ["files": array, "at": array, "seconds": number, "bytes": ["type": "integer"], "cancelled": boolean],
             "export": ["path": string, "srtPath": string, "seconds": number, "bytes": ["type": "integer"]],
             "ui": ["at": number, "select": array]]
+    }()
+    /// Every argument and op field path ("render.longEdge", "op.fitDuration.balance"), to tell a stale client what it misses.
+    static let fieldPaths: Set<String> = {
+        var paths = Set<String>()
+        for tool in list {
+            guard let name = tool["name"] as? String, let props = (tool["inputSchema"] as? [String: Any])?["properties"] as? [String: Any] else { continue }
+            paths.formUnion(props.keys.map { "\(name).\($0)" })
+        }
+        for schema in operationSchemas {
+            guard let props = schema["properties"] as? [String: Any], let op = ((props["op"] as? [String: Any])?["enum"] as? [String])?.first else { continue }
+            paths.formUnion(props.keys.filter { $0 != "op" }.map { "op.\(op).\($0)" })
+        }
+        return paths
     }()
     /// Changes whenever any tool name, schema or annotation changes; sent in `initialize` (R2).
     static let schemaVersion: String = {

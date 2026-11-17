@@ -4774,7 +4774,7 @@ private final class MCPTestClient {
 }
 
 /// R5/R6: tools/list and the handlers agree, every tool declares annotations and an outputSchema, and handler limits come from the schema.
-@MainActor private func checkMCPSchema() throws {
+@MainActor private func checkMCPSchema() async throws {
     func fail(_ message: String) -> MCPTestFailure { MCPTestFailure(description: "mcp-schema: " + message) }
     var listed: Set<String> = []
     for tool in MCPTools.list {
@@ -4798,7 +4798,32 @@ private final class MCPTestClient {
     guard schemaViolation(["action": "frames", "at": Array(repeating: 1.0, count: 24)], render) == nil,
           schemaViolation(["action": "frames", "at": Array(repeating: 1.0, count: 25)], render)?.range == true,
           schemaViolation(["action": "frames", "longEdge": 1], render)?.range == true else { throw fail("render.frames limits do not follow the schema") }
-    print("MCP schema: \(listed.count) tool actions have handlers, annotations and outputSchemas; limits are validated from the schema")
+    // R4-1 parity: the fields Core's intents read are exactly what tools/list advertises (speed: the ramp fields are a subset).
+    for (op, fields) in intentFields {
+        guard let schema = MCPTools.operationSchemas.first(where: { (($0["properties"] as? [String: Any])?["op"] as? [String: Any])?["enum"] as? [String] == [op] }),
+              let props = schema["properties"] as? [String: Any] else { throw fail("no tools/list schema for intent \(op)") }
+        let advertised = Set(props.keys).subtracting(["op", "ref"])
+        guard op == "speed" ? fields.isSubset(of: advertised) : fields == advertised else {
+            throw fail("\(op): Core reads \(fields.sorted()) but tools/list advertises \(advertised.sorted())")
+        }
+    }
+    // A client whose cached tool list predates new fields is told about them in every result until it re-lists (R4-1).
+    let staleKey = "mcpSchemaVersion.schema-stale-test@1"
+    UserDefaults.standard.set("old", forKey: staleKey)
+    UserDefaults.standard.set(Array(MCPTools.fieldPaths.subtracting(["op.fitDuration.balance"])), forKey: staleKey + ".fields")
+    defer { UserDefaults.standard.removeObject(forKey: staleKey); UserDefaults.standard.removeObject(forKey: staleKey + ".fields") }
+    let stale = MCPSession()
+    _ = await stale.handle(["jsonrpc": "2.0", "id": 1, "method": "initialize", "params": ["clientInfo": ["name": "schema-stale-test", "version": "1"]]])
+    func notice() async -> String? {
+        let reply = await stale.handle(["jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": ["name": "nope", "arguments": [:]]])
+        return ((reply?["result"] as? [String: Any])?["structuredContent"] as? [String: Any])?["schemaNotice"] as? String
+    }
+    guard await notice()?.contains("op.fitDuration.balance") == true else { throw fail("stale client not told about new fields") }
+    _ = await stale.handle(["jsonrpc": "2.0", "id": 3, "method": "tools/list"])
+    guard await notice() == nil else { throw fail("schema notice persists after tools/list") }
+    // A stale client is told which fields it is missing (R4-1): every op field has a path.
+    guard MCPTools.fieldPaths.contains("op.fitDuration.minPerSection"), MCPTools.fieldPaths.contains("op.fitDuration.drop") else { throw fail("fieldPaths misses op fields") }
+    print("MCP schema: \(listed.count) tool actions have handlers, annotations and outputSchemas; limits are validated from the schema; intent fields match tools/list")
 }
 
 @MainActor private func checkMCPAssetsHeadless() async throws {

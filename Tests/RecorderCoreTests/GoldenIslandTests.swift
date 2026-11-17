@@ -18,7 +18,8 @@ import Testing
     var board: Storyboard { Self.board }
 
     /// One edit.apply the way MCPTools runs it: lower intents, apply in one call.
-    func apply(_ project: Project, _ json: String) throws -> Project {
+    func apply(_ project: Project, _ json: String) throws -> Project { try applyLowered(project, json).project }
+    func applyLowered(_ project: Project, _ json: String) throws -> (project: Project, lowered: [LoweredIntent]) {
         let raw = try JSONDecoder().decode([JSONValue].self, from: Data(json.utf8))
         let lowered = try lowerIntents(raw, project: project) { board }
         let ops = try JSONDecoder().decode([EditOp].self, from: JSONEncoder().encode(lowered.ops))
@@ -26,7 +27,7 @@ import Testing
         let skipped = result.changes.filter(\.skipped).map { "\(ops[$0.op]) \($0.note ?? "")" }
         #expect(skipped.isEmpty, "\(json): skipped \(skipped)")
         try check(result.project, after: json)
-        return result.project
+        return (result.project, lowered.lowered)
     }
 
     /// What must hold after any step.
@@ -35,7 +36,7 @@ import Testing
         let report = editReport(before: base, after: p, storyboard: board)
         for item in report.lint {
             // Every suggestion must apply as-is (R2-2), and no zero-length shot is reported (R2-3).
-            #expect(!item.msg.contains("lasts 0.0"), "\(step): \(item.msg)")
+            #expect(!item.msg.contains("lasts 0.0") && !item.msg.contains("for 0.0"), "\(step): \(item.msg)")
             if let s = item.suggest, case .object(let o) = s, o["op"] == .string("cut") {
                 let op = try JSONDecoder().decode(EditOp.self, from: JSONEncoder().encode(s))
                 let trial = try p.applying([op], context: EditContext())
@@ -92,5 +93,43 @@ import Testing
         let sections = try #require(editReport(before: base, after: even, storyboard: board).sections)
         #expect(sections.count == 8 && sections.allSatisfy { $0.keptSec >= 2 - 0.01 }, "\(sections.map(\.keptSec))")
         #expect(abs(even.exportDuration - 30) <= 2)
+    }
+
+    /// Run 4, the agent's exact pipeline: remove the tail layer → keepShots minEnergy 0.05 → pace → fitDuration 30 even
+    /// minPerSection 2 → apply lint's flicker cuts → reframe 1:1. Each assertion is a run-4 finding.
+    @Test func run4PipelineShipsCleanAndBalanced() throws {
+        var p = try apply(base, #"[{"op":"remove","id":"\#(base.layers[0].id)"}]"#)
+        p = try apply(p, #"[{"op":"keepShots","where":{"minEnergy":0.05}}]"#)
+        let paced = try applyLowered(p, #"[{"op":"pace"}]"#)
+        let speeds = paced.lowered[0].ops.filter { if case .object(let o) = $0 { return o["op"] == .string("speed") }; return false }.count
+        #expect(Double(speeds) <= Double(paced.lowered[0].ops.count) / 2, "pace is still mostly a blanket speed-up (R4-5)")
+        p = paced.project
+        let fit = try applyLowered(p, #"[{"op":"fitDuration","target":30,"balance":"even","minPerSection":2}]"#)
+        p = fit.project
+        let sections = try #require(editReport(before: base, after: p, storyboard: board).sections)
+        for s in sections where s.keptSec < 2 - 0.01 {   // R4-2: never silently under the minimum
+            #expect(fit.lowered[0].note?.contains("section \(s.section) keeps") == true, "section \(s.section) short without a note")
+        }
+        #expect(sections.allSatisfy { $0.keptSec == 0 ? $0.outFrom == nil : $0.outFrom != nil && $0.srcTo > $0.srcFrom })   // R4-4
+        for item in lint(p, storyboard: board) where item.rule == "tinyShot" {   // the agent's "cut flicker" step
+            guard let s = item.suggest else { continue }
+            p = try apply(p, String(decoding: try JSONEncoder().encode([s]), as: UTF8.self))
+            break   // later suggestions moved with that cut; one per apply, like the agent
+        }
+        let keys = reframePlan(storyboard: board, aspect: .r1x1, mode: .perShot, sourceSize: CGSize(width: base.source.pixelWidth, height: base.source.pixelHeight))
+        p = try p.applying([.reframe(aspect: .r1x1, mode: .perShot, keys: keys)], context: EditContext()).project
+        let report = editReport(before: base, after: p, storyboard: board)
+        #expect(abs(report.duration.after - 30) <= 2.5, "duration \(report.duration.after)")
+        #expect(LintProfile.reel.asl.contains(report.aslSec.after), "asl \(report.aslSec.after)")
+        #expect(report.reframeJumps == 0)
+        #expect(!report.lint.contains { $0.rule == "edgeContent" }, "\(report.lint.filter { $0.rule == "edgeContent" }.map(\.msg))")
+    }
+
+    /// R4-3: a weak section can be dropped whole, and the rest still balances.
+    @Test func fitDurationDropsChosenSections() throws {
+        let fit = try applyLowered(base, #"[{"op":"fitDuration","target":30,"balance":"even","minPerSection":2,"drop":[3]}]"#)
+        let sections = try #require(editReport(before: base, after: fit.project, storyboard: board).sections)
+        #expect(sections.first { $0.section == 3 }?.keptSec == 0)
+        #expect(sections.filter { $0.section != 3 }.allSatisfy { $0.keptSec >= 2 - 0.01 })
     }
 }

@@ -32,6 +32,15 @@ func protects(_ list: [String], _ shot: Shot) -> Bool {
     }
 }
 
+/// Top-level fields each intent reads. `mcp-schema` checks them against the tools/list op schemas (intents: equal; ramped
+/// speed: a subset), and every read below asserts its key is listed, so Core and the advertised schema cannot drift (R4-1).
+public let intentFields: [String: Set<String>] = [
+    "keepShots": ["shots", "where", "trim", "protect"],
+    "pace": ["beat", "maxStatic", "speedFill"],
+    "fitDuration": ["target", "tolerance", "protect", "minPerSection", "balance", "drop"],
+    "autoZoom": ["lead", "tail", "scale", "from", "to"],
+    "speed": ["from", "to", "speed", "ramp", "snap"]]
+
 /// `storyboard` is only called when an op needs shots (so autoZoom/ramp work without analysis).
 /// `origin[i]` is the index in the agent's batch that produced `ops[i]`; use it to report errors and changes.
 public func lowerIntents(_ ops: [JSONValue], project: Project, clicks: [InputEvent] = [],
@@ -61,8 +70,15 @@ public func lowerIntents(_ ops: [JSONValue], project: Project, clicks: [InputEve
     for (index, raw) in ops.enumerated() {
         func bad(_ reason: String) -> EditError { .invalidOp(index: index, reason: reason) }
         guard case .string(let name)? = raw["op"] else { out.append(raw); origin.append(index); continue }
-        func number(_ key: String, _ fallback: Double, in v: JSONValue? = nil) throws -> Double {
-            guard let field = (v ?? raw)[key] else { return fallback }
+        func arg(_ key: String) -> JSONValue? {
+            assert(intentFields[name]?.contains(key) ?? true, "\(name).\(key) is read but not in intentFields/tools schema")
+            return raw[key]
+        }
+        func number(_ key: String, _ fallback: Double) throws -> Double { try value(arg(key), key, fallback) }
+        /// A field of a nested object (`where`, `trim`, `beat`, `speedFill`, `ramp`); an absent object means the default.
+        func nested(_ key: String, _ fallback: Double, in v: JSONValue?) throws -> Double { try value(v?[key], key, fallback) }
+        func value(_ field: JSONValue?, _ key: String, _ fallback: Double) throws -> Double {
+            guard let field else { return fallback }
             guard let n = field.num, n.isFinite else { throw bad("\(key) must be a number") }
             return n
         }
@@ -79,24 +95,24 @@ public func lowerIntents(_ ops: [JSONValue], project: Project, clicks: [InputEve
         case "keepShots":
             let board = try sb()
             var chosen: [Shot]
-            if let ids = raw["shots"]?.strings {
+            if let ids = arg("shots")?.strings {
                 chosen = try ids.map { id in guard let s = board.shots.first(where: { $0.id == id }) else { throw bad("unknown shot \(id); call analyze.shots") }; return s }
-            } else if let w = raw["where"] {
+            } else if let w = arg("where") {
                 let kinds = try w["kind"].map { v -> Set<ShotKind> in
                     guard let names = v.strings else { throw bad("where.kind must be [kind]") }
                     return Set(try names.map { n in guard let k = ShotKind(rawValue: n) else { throw bad("unknown shot kind \(n)") }; return k })
                 }
-                let minEnergy = try number("minEnergy", 0, in: w)
+                let minEnergy = try nested("minEnergy", 0, in: w)
                 chosen = board.shots.filter { (kinds?.contains($0.kind) ?? true) && $0.energy >= minEnergy }
-            } else if raw["protect"] == nil { throw bad("keepShots needs shots:[id], where:{kind,minEnergy} or protect") } else { chosen = [] }
+            } else if arg("protect") == nil { throw bad("keepShots needs shots:[id], where:{kind,minEnergy} or protect") } else { chosen = [] }
             // protect keeps the subject even when the filter would drop it (calm close-ups score low energy).
-            if let list = raw["protect"] {
+            if let list = arg("protect") {
                 guard let entries = list.strings else { throw bad("protect must be [shot id or caption~regex]") }
                 chosen += board.shots.filter { protects(entries, $0) && !chosen.contains($0) }
             }
             let keptIDs = Set(chosen.map(\.id)); var seen = Set<String>()
             picks = board.shots.filter { seen.insert($0.id).inserted }.map { ShotPick(id: $0.id, kind: $0.kind, energy: $0.energy, kept: keptIDs.contains($0.id), section: $0.section) }
-            let lead = try number("lead", 0, in: raw["trim"]), tail = try number("tail", 0, in: raw["trim"])
+            let lead = try nested("lead", 0, in: arg("trim")), tail = try nested("tail", 0, in: arg("trim"))
             guard lead >= 0, tail >= 0 else { throw bad("trim.lead and trim.tail must be >= 0") }
             var keep: [TimeRange] = []
             for s in chosen where s.to - tail > s.from + lead { keep += map.outputRanges(source: s.from + lead, to: s.to - tail) }
@@ -108,13 +124,28 @@ public func lowerIntents(_ ops: [JSONValue], project: Project, clicks: [InputEve
             }
             if contentEnd - at > 0.05 { result += cutsAvoidingImported(at, contentEnd) }
         case "pace":
-            let beat = raw["beat"], fill = raw["speedFill"]
-            let dflt = try number("default", 0.9, in: beat), payoff = try number("payoff", 1.3, in: beat), motion = try number("motion", 0.8, in: beat)
+            let beat = arg("beat"), fill = arg("speedFill")
+            let dflt = try nested("default", 0.9, in: beat), payoff = try nested("payoff", 1.3, in: beat), motion = try nested("motion", 0.8, in: beat)
             let maxStatic = try number("maxStatic", 1.2)
-            let lo = try number("min", 1.5, in: fill), hi = try number("max", 6, in: fill)
+            let lo = try nested("min", 1.5, in: fill), hi = try nested("max", 6, in: fill)
             guard dflt > 0, payoff > 0, motion > 0, maxStatic > 0, lo >= 1, hi >= lo else { throw bad("pace beats and maxStatic must be > 0 and speedFill 1 <= min <= max") }
             for s in try sb().segments(map) {
                 let a = s.range.start, b = s.range.end, d = s.duration
+                // Beat cut (R3-5/R4-5): a shot with clicks keeps [click - 0.1, click + beat] and loses the waiting around it,
+                // instead of a blanket speed-up. Gaps under 0.5 s stay (no flicker cuts); shots without clicks fall through.
+                let beats = s.shot.clicks.compactMap { map.outputTime(atSource: $0) }.filter { $0 >= a && $0 < b }.sorted()
+                if !s.shot.isStatic, !beats.isEmpty {
+                    let hold = s.shot.kind == .payoff ? payoff : s.shot.kind == .motion ? motion : dflt
+                    var windows: [(Double, Double)] = []
+                    for c in beats {
+                        let w = (max(a, c - 0.1), min(b, c + hold))
+                        if let last = windows.last, w.0 <= last.1 + 0.5 { windows[windows.count - 1].1 = max(last.1, w.1) } else { windows.append(w) }
+                    }
+                    var at = a
+                    for w in windows { if w.0 - at >= 0.5 { result.append(cutJSON(at, w.0)) }; at = w.1 }
+                    if b - at >= 0.5 { result.append(cutJSON(at, b)) }
+                    continue
+                }
                 switch s.shot.kind {
                 case .static, .cursorOnly:
                     guard s.shot.tag != "result", d > maxStatic + 1e-6 else { continue }
@@ -133,15 +164,37 @@ public func lowerIntents(_ ops: [JSONValue], project: Project, clicks: [InputEve
                     if d / target >= 1.1 { speedUp(s, a, b, min(up(d / target), lo)) }
                 }
             }
+            // No flicker from beat cuts: a kept piece under 0.3 s between two cuts (or a cut and an edit cut / the timeline
+            // edge) is cut too, and a speed op inside a cut is dropped.
+            let cuts = result.compactMap { op -> (Double, Double)? in
+                guard op["op"] == .string("cut"), let x = op["from"]?.num, let y = op["to"]?.num else { return nil }
+                return (x, y)
+            }.sorted { $0.0 < $1.0 }
+            if !cuts.isEmpty {
+                let edges = ([0, contentEnd] + map.editCuts).sorted()
+                var merged: [(Double, Double)] = []
+                for c in cuts { if let l = merged.last, c.0 - l.1 < 0.3 { merged[merged.count - 1].1 = max(l.1, c.1) } else { merged.append(c) } }
+                merged = merged.map { c in
+                    var (x, y) = c
+                    if let e = edges.last(where: { $0 <= x + 1e-9 }), x - e < 0.3 { x = e }
+                    if let e = edges.first(where: { $0 >= y - 1e-9 }), e - y < 0.3 { y = e }
+                    return (x, y)
+                }
+                result = result.filter { op in
+                    guard op["op"] != .string("cut") else { return false }
+                    guard let f = op["from"]?.num, let t = op["to"]?.num else { return true }
+                    return !merged.contains { f >= $0.0 - 1e-9 && t <= $0.1 + 1e-9 }
+                } + merged.map { cutJSON($0.0, $0.1) }
+            }
         case "fitDuration":
             let target = try number("target", 0), tolerance = try number("tolerance", 2)
             guard target > 0, tolerance >= 0 else { throw bad("fitDuration needs target > 0 and tolerance >= 0") }
-            let protected = raw["protect"]?.strings ?? []
+            let protected = arg("protect")?.strings ?? []
             // Interest: kind rank first, energy as tie-break. Lowest goes first.
             let rank: [ShotKind: Double] = [.static: 0, .cursorOnly: 1, .typing: 2, .motion: 3, .payoff: 4]
             let minPerSection = try number("minPerSection", 0)
             let balance: String
-            switch raw["balance"] { case nil: balance = "energy"; case .string(let v)? where ["even", "energy"].contains(v): balance = v; default: throw bad("balance must be even or energy") }
+            switch arg("balance") { case nil: balance = "energy"; case .string(let v)? where ["even", "energy"].contains(v): balance = v; default: throw bad("balance must be even or energy") }
             guard minPerSection >= 0 else { throw bad("minPerSection must be >= 0") }
             let all = try sb().segments(map)
             var kept = sectionSeconds(all)   // output seconds per section; minPerSection never lets one fall below it
@@ -149,6 +202,14 @@ public func lowerIntents(_ ops: [JSONValue], project: Project, clicks: [InputEve
                 .sorted { (rank[$0.shot.kind]! + $0.shot.energy, -$0.duration) < (rank[$1.shot.kind]! + $1.shot.energy, -$1.duration) }
             // Target the exported length: layers/audio past the video (e.g. an outro) count, and shift earlier with each cut.
             var length = project.exportDuration, ids: [String] = []
+            // drop: whole sections the agent judged weak (e.g. an empty code view) go first, except protected shots.
+            guard arg("drop") == nil || arg("drop").map({ v -> Bool in if case .array(let a) = v { return a.allSatisfy { $0.num != nil } }; return false }) == true else { throw bad("drop must be [section number]") }
+            let dropSections: Set<Int> = { if case .array(let a)? = arg("drop") { return Set(a.compactMap { $0.num.map(Int.init) }) }; return [] }()
+            for s in order where dropSections.contains(s.shot.section ?? 1) {
+                result.append(cutJSON(s.range.start, s.range.end)); length -= s.duration; kept[s.shot.section ?? 1, default: 0] -= s.duration
+                if !ids.contains(s.shot.id) { ids.append(s.shot.id) }
+            }
+            order.removeAll { dropSections.contains($0.shot.section ?? 1) }
             while length - target > tolerance {
                 let excess = length - target
                 func amount(_ s: ShotSegment) -> Double { s.duration <= excess + tolerance ? s.duration : excess }
@@ -167,7 +228,13 @@ public func lowerIntents(_ ops: [JSONValue], project: Project, clicks: [InputEve
                 }
             }
             dropped = ids
-            if length - target > tolerance { note = String(format: "could not reach %.1fs: %.1fs left after protected shots and minPerSection", target, length) }
+            var notes: [String] = []
+            if length - target > tolerance { notes.append(String(format: "could not reach %.1fs: %.1fs left after protected shots and minPerSection", target, length)) }
+            // minPerSection never cuts a section below it, so a short one had less footage to begin with: say so (R4-2).
+            for (k, sec) in kept.sorted(by: { $0.key < $1.key }) where minPerSection > 0 && !dropSections.contains(k) && sec < minPerSection - 0.01 {
+                notes.append(String(format: "section %d keeps %.1fs < minPerSection %.1fs: it only had that much footage", k, max(0, sec), minPerSection))
+            }
+            note = notes.isEmpty ? nil : notes.joined(separator: "; ")
         case "autoZoom":
             let lead = try number("lead", 0.4), tail = try number("tail", 1.5), scale = try number("scale", 2)
             let from = try number("from", 0), to = try number("to", total)
@@ -181,11 +248,11 @@ public func lowerIntents(_ ops: [JSONValue], project: Project, clicks: [InputEve
             }
         case "speed" where raw["ramp"] != nil:
             // ponytail: no native speed easing, so the ramp is 4 stepped speeds per side; upgrade when clips gain a speed curve.
-            guard let from = raw["from"]?.num, let to = raw["to"]?.num, to > from, let speed = raw["speed"]?.num, speed > 0 else { throw bad("a ramped speed needs numeric from < to and speed > 0") }
-            var rin = try number("in", 0.2, in: raw["ramp"]), rout = try number("out", 0.2, in: raw["ramp"])
+            guard let from = arg("from")?.num, let to = arg("to")?.num, to > from, let speed = arg("speed")?.num, speed > 0 else { throw bad("a ramped speed needs numeric from < to and speed > 0") }
+            var rin = try nested("in", 0.2, in: arg("ramp")), rout = try nested("out", 0.2, in: arg("ramp"))
             guard rin >= 0, rout >= 0 else { throw bad("ramp.in and ramp.out must be >= 0") }
             if rin + rout > 0.8 * (to - from) { let k = 0.8 * (to - from) / (rin + rout); rin *= k; rout *= k }
-            let snap = raw["snap"] ?? .bool(false)
+            let snap = arg("snap") ?? .bool(false)
             func step(_ a: Double, _ b: Double, _ v: Double) {
                 result.append(opJSON("speed", ["from": .number(r2(a)), "to": .number(r2(b)), "speed": .number(r2(v)), "snap": snap]))
             }

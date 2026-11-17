@@ -49,7 +49,8 @@ public struct EditReport: Codable, Equatable, Sendable {
 public struct SectionStat: Codable, Equatable, Sendable {
     public var section: Int
     public var name: String?           // first caption in the section, when analyze.shots ran with captions
-    public var from: Double, to: Double   // source seconds
+    public var srcFrom: Double, srcTo: Double     // source seconds (the unedited recording's clock)
+    public var outFrom: Double?, outTo: Double?   // output seconds of the edited timeline; nil when nothing is kept
     public var shots: [String]         // first and last shot id
     public var keptSec: Double         // output seconds kept
 }
@@ -184,14 +185,6 @@ private func lint(_ project: Project, _ m: Metrics, _ sb: Storyboard, _ p: LintP
                 suggest: factor <= 6 && single <= 16 ? opJSON("speed", ["from": .number(r2(s.range.start)), "to": .number(r2(s.range.end)), "speed": .number((single * 100).rounded(.up) / 100), "snap": .bool(true)])
                                                       : cutJSON(s.range.start + p.maxStatic, s.range.end)))
         }
-        // Compare what the message prints ("0.25 s, want ≥ 0.25 s" must not fire); only a piece next to a cut flickers,
-        // a sub-shot inside continuous footage does not.
-        if r2(s.duration) < p.tinyShot - 1e-6, m.isCut(s.range.start) || m.isCut(s.range.end) {
-            let fix = applicableCut(project, s.range.start, s.range.end)
-            items.append(LintItem(rule: "tinyShot", sev: "warn", at: r2(s.range.start), shot: s.shot.id,
-                msg: String(format: "%@ lasts %.2fs (flicker, want >= %.2fs)", s.shot.id, s.duration, p.tinyShot) + (fix == nil ? "; too short to cut, trim the neighbouring clip by hand" : ""),
-                suggest: fix))
-        }
         // Reframed projects crop per moment (T-831): sample after the 0.3 s ease, the middle and the end, so a late move shows.
         // Only a focus box that would fit the crop but pokes out of it is a framing problem; a wider one can't be fixed by moving.
         let f = s.shot.focus, tol = 0.005, d = s.shot.duration
@@ -204,6 +197,16 @@ private func lint(_ project: Project, _ m: Metrics, _ sb: Storyboard, _ p: LintP
                 msg: "\(s.shot.id) focus box is clipped by the output crop" + (aspect == .auto ? "; move the crop" : ""),
                 suggest: aspect == .auto ? nil : .object(["op": .string("reframe"), "aspect": .string(aspect.rawValue), "mode": .string("perShot")])))
         }
+    }
+    // A flicker is what the viewer sees between two cuts, not an analyzer sub-shot: split the timeline at visible cuts and
+    // flag pieces shorter than tinyShot (compare what the message prints: "0.25 s, want ≥ 0.25 s" must not fire).
+    let end = map.outputDuration, edges = [0] + m.cuts + [end]
+    for (a, b) in zip(edges, edges.dropFirst()) where r2(b - a) < p.tinyShot - 1e-6 && b - a >= m.frame - 1e-6 && !m.segs.isEmpty {
+        let id = shotAt(a + 1e-6) ?? shotAt(a) ?? "?"
+        let fix = applicableCut(project, a, b)
+        items.append(LintItem(rule: "tinyShot", sev: "warn", at: r2(a), shot: id,
+            msg: String(format: "%@ shows for %.2fs between cuts (flicker, want >= %.2fs)", id, b - a, p.tinyShot) + (fix == nil ? "; too short to cut, trim the neighbouring clip by hand" : ""),
+            suggest: fix))
     }
     if !m.segs.isEmpty, !p.asl.contains(m.asl) {
         let high = m.asl > p.asl.upperBound
@@ -243,12 +246,14 @@ private func applicableCut(_ project: Project, _ a: Double, _ b: Double) -> JSON
     return nil
 }
 
-private func sectionStats(_ sb: Storyboard, kept: [Int: Double]) -> [SectionStat]? {
+private func sectionStats(_ sb: Storyboard, segs: [ShotSegment]) -> [SectionStat]? {
     let groups = Dictionary(grouping: sb.shots.filter { $0.section != nil }, by: { $0.section! })
     guard groups.count > 1 else { return nil }
+    let kept = sectionSeconds(segs)
     return groups.keys.sorted().map { k in
-        let shots = groups[k]!.sorted { $0.from < $1.from }
-        return SectionStat(section: k, name: shots.compactMap(\.caption).first, from: r2(shots.first!.from), to: r2(shots.last!.to),
+        let shots = groups[k]!.sorted { $0.from < $1.from }, out = segs.filter { $0.shot.section == k }
+        return SectionStat(section: k, name: shots.compactMap(\.caption).first, srcFrom: r2(shots.first!.from), srcTo: r2(shots.last!.to),
+                           outFrom: out.map(\.range.start).min().map(r2), outTo: out.map(\.range.end).max().map(r2),
                            shots: [shots.first!.id, shots.last!.id], keptSec: r2(kept[k] ?? 0))
     }
 }
@@ -260,5 +265,5 @@ public func editReport(before: Project, after: Project, storyboard sb: Storyboar
                       subShotAslSec: .init(before: r2(b.subAsl), after: r2(a.subAsl)),
                       hookSec: a.hook.map(r2), longestStatic: a.longest, staticSec: .init(before: r2(b.staticSec), after: r2(a.staticSec)),
                       lint: lint(after, a, sb, profile), reframeJumps: after.cropKeys.isEmpty ? nil : cropJumps(after.cropKeys, storyboard: sb),
-                      sections: sectionStats(sb, kept: sectionSeconds(a.segs)))
+                      sections: sectionStats(sb, segs: a.segs))
 }
