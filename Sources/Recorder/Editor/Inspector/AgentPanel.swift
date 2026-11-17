@@ -292,6 +292,7 @@ extension EnvironmentValues {
         case .reframe: "Reframe"
         case .graphic: "Add graphic"
         case .animate: "Animate"
+        case .freeze: "Freeze frame"
         }
     }
 }

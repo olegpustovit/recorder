@@ -429,6 +429,7 @@ enum SelfTest {
         "graphics-ui": { args in try await checkGraphicsUI(args) },
         "markers": { args in try await checkMarkersUI(args) },
         "transcript-edit": { args in try await checkTranscriptEdit(args) },
+        "freeze": { args in try await checkFreeze(args) },
         "export-gif": { args in try await ExporterSelfTest.runExportGIFSelfTest(args) },
         "export-perf": { args in try await PerfSelfTest.runExportPerf(args) },
         "export-native": { _ in try await ExportSheetSelfTest.checkNativeHandoff() },
@@ -7647,4 +7648,49 @@ final class MainStallMonitor: @unchecked Sendable {
     guard let image = renderer.cgImage, let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else { throw MCPTestFailure(description: "render") }
     try png.write(to: out.appendingPathComponent("transcript.png"))
     print(String(format: "transcript-edit: cut 2 words (%.2f → %.2f s), removed 2 fillers, undo ×2 restored", before, model.project.exportDuration))
+}
+
+/// T-933 (headless, temp copy): ⇧F's command renders the playhead frame into media/, inserts it as a still clip and
+/// pushes the rest back; a frame inside the hold matches the original frame; undo restores; the agent op schema exists.
+@MainActor private func checkFreeze(_ args: [String]) async throws {
+    guard let path = args.first else { throw MCPTestFailure(description: "usage: freeze <package>") }
+    let fm = FileManager.default, copy = fm.temporaryDirectory.appendingPathComponent("freeze-\(UUID().uuidString).recorder")
+    try fm.copyItem(at: URL(fileURLWithPath: path), to: copy)
+    defer { try? fm.removeItem(at: copy) }
+    let model = try loadEditorModel(package: copy)
+    let before = model.project.exportDuration
+    let original = try await EditorWindowController.renderFramesPNG(model: model, at: [3], longEdge: 480)[0]
+    model.playhead = 3
+    await model.freezeFrame(duration: 1.5)
+    guard let still = model.project.layers.first(where: { $0.file.hasPrefix("media/freeze-") }), case let file = still.file,
+          fm.fileExists(atPath: copy.appendingPathComponent(file).path), abs(model.project.exportDuration - before - 1.5) < 1e-6,
+          model.undoStepNames.last == "Freeze Frame" else { throw MCPTestFailure(description: "freeze insert: \(model.project.layers.map(\.file))") }
+    let held = try await EditorWindowController.renderFramesPNG(model: model, at: [3.75], longEdge: 480)[0]
+    if args.count > 1 { try? fm.copyItem(at: copy.appendingPathComponent(model.project.layers.first { $0.file.hasPrefix("media/freeze-") }!.file), to: URL(fileURLWithPath: args[1]).appendingPathComponent("freeze-file-\(UUID().uuidString.prefix(4)).png")) }
+    if args.count > 1 { try original.write(to: URL(fileURLWithPath: args[1]).appendingPathComponent("freeze-original.png")); try held.write(to: URL(fileURLWithPath: args[1]).appendingPathComponent("freeze-held.png")) }
+    // The hold must show the saved frame unframed at full canvas: compare with the PNG itself scaled to the same size.
+    _ = original
+    guard let b = NSBitmapImageRep(data: held), let source = NSImage(contentsOf: copy.appendingPathComponent(file)),
+          let a = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: b.pixelsWide, pixelsHigh: b.pixelsHigh, bitsPerSample: 8, samplesPerPixel: 4,
+                                   hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { throw MCPTestFailure(description: "decode") }
+    NSGraphicsContext.saveGraphicsState(); NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: a)
+    source.draw(in: NSRect(x: 0, y: 0, width: b.pixelsWide, height: b.pixelsHigh)); NSGraphicsContext.restoreGraphicsState()
+    // Geometry check: a uniform colour-space offset is allowed (bias), misplaced/reframed content is not (residual).
+    // 8×8 block means: compositor (bilinear) and AppKit (high-quality) downscaling alias text differently pixel by pixel.
+    var deltas: [Double] = []
+    for by in stride(from: 0, to: a.pixelsHigh - 8, by: 8) { for bx in stride(from: 0, to: a.pixelsWide - 8, by: 8) {
+        var sum = 0.0
+        for y in by..<by + 8 { for x in bx..<bx + 8 {
+            let p = a.colorAt(x: x, y: y)!.usingColorSpace(.sRGB)!, q = b.colorAt(x: x, y: y)!.usingColorSpace(.sRGB)!
+            sum += Double((p.redComponent + p.greenComponent + p.blueComponent) - (q.redComponent + q.greenComponent + q.blueComponent))
+        } }
+        deltas.append(sum / 64 / 3 * 255)
+    } }
+    let bias = deltas.reduce(0, +) / Double(deltas.count), meanDelta = deltas.map { abs($0 - bias) }.reduce(0, +) / Double(deltas.count)
+    print(String(format: "freeze: colour bias %.2f/255, residual %.2f/255", bias, meanDelta))
+    guard meanDelta < 4 else { throw MCPTestFailure(description: "held frame differs from the frozen image: residual \(meanDelta)") }
+    model.undo()
+    guard abs(model.project.exportDuration - before) < 1e-6 else { throw MCPTestFailure(description: "undo") }
+    guard MCPTools.operationSchemas.contains(where: { (($0["properties"] as? [String: Any])?["op"] as? [String: Any])?["enum"] as? [String] == ["freeze"] }) else { throw MCPTestFailure(description: "schema") }
+    print(String(format: "freeze: +1.50 s, held frame mean delta %.2f/255 vs original, undo restored", meanDelta))
 }

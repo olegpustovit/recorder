@@ -2685,6 +2685,7 @@ final class TimelineView: NSView {
         if cmd, chars?.lowercased() == "v" { paste(nil); return }
         if cmd, chars?.lowercased() == "l" { toggleAudioLink(); return }
         if !cmd, chars?.lowercased() == "n" { toggleSnapping(); return }
+        if !cmd, shift, chars?.lowercased() == "f", let model { Task { await model.freezeFrame() }; return }   // ⇧F = freeze frame (T-933)
         if !cmd, chars?.lowercased() == "f" { menuZoomToSelection(); return }
         if cmd, chars == "=" || chars == "+", let model {
             zoom(by: 1.4, anchorX: geometry.x(forOutput: model.playhead))

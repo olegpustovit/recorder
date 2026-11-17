@@ -1,3 +1,4 @@
+import AppKit
 import Dispatch
 import Foundation
 import Observation
@@ -77,6 +78,22 @@ import RecorderCore
             if result.project != project { edit(name) { $0 = result.project } }
             return nil
         } catch { return "\(error)" }
+    }
+
+    /// ⇧F (T-933): renders the frame at the playhead into `media/` and holds it for `duration` s (one undo step).
+    func freezeFrame(duration: Double = 1) async {
+        let time = playhead
+        guard let png = try? await EditorWindowController.renderFramesPNG(model: self, at: [time], longEdge: nil).first else { NSSound.beep(); return }
+        let file = "media/freeze-\(UUID().uuidString).png"
+        do {
+            try FileManager.default.createDirectory(at: packageURL.appendingPathComponent("media"), withIntermediateDirectories: true)
+            try png.write(to: packageURL.appendingPathComponent(file), options: .atomic)
+        } catch { NSSound.beep(); return }
+        var trial = project
+        guard trial.insertStill(file: file, atOutput: time, duration: duration) else {
+            try? FileManager.default.removeItem(at: packageURL.appendingPathComponent(file)); NSSound.beep(); return
+        }
+        edit("Freeze Frame") { $0 = trial }
     }
 
     /// `M` (T-930): adds "Marker N" at the playhead, or removes the marker already there (within 0.1 s); one undo step.

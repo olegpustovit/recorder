@@ -395,6 +395,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         edit.addItem(item("Add Graphic", submenu: graphics))
         edit.addItem(item("Add Keyframe", "k", [.option], action: #selector(EditorWindowController.addKeyframe(_:))))
         edit.addItem(item("Add / Remove Marker", "m", [], action: #selector(EditorWindowController.toggleMarker(_:))))
+        edit.addItem(item("Freeze Frame", "f", [.shift], action: #selector(EditorWindowController.freezeFrame(_:))))
         edit.addItem(item("Regenerate Auto Zooms", action: #selector(EditorWindowController.regenerateAutoZooms(_:))))
         edit.addItem(item("Remove All Zooms", action: #selector(EditorWindowController.removeAllZooms(_:))))
         edit.addItem(item("Restore All Cuts", action: #selector(EditorWindowController.restoreAllCuts(_:))))

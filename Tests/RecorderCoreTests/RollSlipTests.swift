@@ -48,3 +48,20 @@ import Testing
     do { _ = try p.applying([.set(id: "c1", fields: SetFields(from: 2))], context: EditContext()); Issue.record("from on a clip") }
     catch { #expect("\(error)".contains("clip does not take from; valid: mediaStart")) }
 }
+
+/// T-933: a freeze inserts a still clip at the playhead and pushes later footage back by its length.
+@Test func freezeInsertsAStill() throws {
+    var p = Project(source: Source(duration: 20, hasMic: true), clips: [Clip(sourceStart: 0, sourceEnd: 20)])
+    p.zooms = [Zoom(id: "z", start: 12, end: 14)]
+    let before = TimeMap(p.clips).outputDuration, zoomAt = TimeMap(p.clips).outputTime(atSource: 12)!
+    let frozen = p.insertStill(file: "media/freeze.png", atOutput: 6, duration: 1.5)
+    #expect(frozen && p.checkInvariants() == nil)
+    #expect(abs(TimeMap(p.clips).outputDuration - (before + 1.5)) < 1e-6)
+    let still = try #require(p.layers.first { $0.file == "media/freeze.png" })
+    #expect(abs(still.end - still.start - 1.5) < 1e-6 && still.rect == NormRect() && still.backdrop == .none)
+    #expect(uncoveredRanges(p).isEmpty)                                  // the gap under it is covered by the still
+    let after = items(p).first { $0.id == "z" }!
+    #expect(abs(after.out.start - (zoomAt + 1.5)) < 1e-6)            // effects after the freeze move with their footage
+    let bad = p.insertStill(file: "media/freeze.png", atOutput: 99, duration: 1)
+    #expect(!bad)
+}

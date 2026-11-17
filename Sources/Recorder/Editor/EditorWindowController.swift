@@ -608,6 +608,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
     }
     @objc func addKeyframe(_ sender: Any?) { model.addKeyAtPlayhead() }
     @objc func toggleMarker(_ sender: Any?) { model.toggleMarkerAtPlayhead() }
+    @objc func freezeFrame(_ sender: Any?) { Task { await model.freezeFrame() } }
 
     @objc func addZoomAtPlayhead(_ sender: Any?) {
         let s = model.timeMap.sourceTime(atOutput: model.playhead)

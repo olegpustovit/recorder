@@ -2801,3 +2801,34 @@ public extension Project {
         return true
     }
 }
+
+// MARK: - Freeze frame (T-933)
+
+public extension Project {
+    /// Holds a still (`file`, a package `media/` image — the frame rendered by the caller) for `duration` output seconds
+    /// at output `time`, pushing later footage back. Built from existing ops: split, image layer, insert into the Video lane.
+    @discardableResult
+    mutating func insertStill(file: String, atOutput time: Double, duration: Double) -> Bool {
+        let before = self
+        guard time.isFinite, duration.isFinite, duration >= 0.1, time >= 0, time <= TimeMap(clips).outputDuration else { return false }
+        if time > 1e-6, time < TimeMap(clips).outputDuration - 1e-6, !clips.indices.contains(where: { i in
+            abs(clips[..<i].reduce(0) { $0 + $1.outputDuration } - time) < 1e-6 }) {
+            guard split(atOutput: time) else { self = before; return false }
+        }
+        var offset = 0.0, index = clips.count
+        for (i, clip) in clips.enumerated() { if abs(offset - time) < 1e-6 { index = i; break }; offset += clip.outputDuration }
+        guard let id = addLayer(kind: .image, file: file, atOutput: time, duration: max(0.5, duration), rect: NormRect()) else { self = before; return false }
+        if duration < 0.5, let i = layers.firstIndex(where: { $0.id == id.uuidString }) { layers[i].end = layers[i].start + duration }
+        guard let inserted = insertLayers([id], intoVideoAt: index, copy: false).first else { self = before; return false }
+        // `file` is the finished frame (background, zoom, cursor), so it must not be framed again as screen footage: the
+        // inserted time becomes a gap and the still is a full-canvas image layer over it (drawn unframed).
+        clips[inserted].isGap = true; clips[inserted].file = nil; clips[inserted].mediaStart = nil
+        guard let start = TimeMap(clips).outputTime(atSource: clips[inserted].sourceStart),
+              let still = addLayer(kind: .image, file: file, atOutput: start, duration: max(0.5, clips[inserted].outputDuration), rect: NormRect()),
+              let i = layers.firstIndex(where: { $0.id == still.uuidString }) else { self = before; return false }
+        layers[i].end = layers[i].start + clips[inserted].outputDuration
+        layers[i].backdrop = .none; layers[i].fadeIn = nil; layers[i].fadeOut = nil
+        guard checkInvariants() == nil else { self = before; return false }
+        return true
+    }
+}

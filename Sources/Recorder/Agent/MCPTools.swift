@@ -66,6 +66,7 @@ enum MCPTools {
                 "space": ["type": "string", "enum": ["canvas", "screen"], "description": "screen: positions are source-frame 0–1 and follow zoom/crop."],
                 "anchor": point, "rect": rect,
                 "keys": ["type": "array", "description": "Whole-graphic keyframes [{t (s since start), x, y (offsets 0–1), scale, rotation (deg), opacity, ease linear|hold|easeIn|easeOut|easeInOut|spring}]", "items": ["type": "object"], "maxItems": 64]], ["from", "to"]),
+            op("freeze", ["at": number, "duration": ["type": "number", "minimum": 0.1, "maximum": 10, "description": "Seconds to hold the frame at `at`; later footage moves back."]], ["at", "duration"]),
             op("animate", ["id": string, "keys": ["type": "array", "description": "Replace the keyframes of a layer, graphic or text block (same key shape as graphic.keys); [] clears.", "items": ["type": "object"], "maxItems": 64]], ["id", "keys"]),
             op("layer", ["from": number, "to": number, "asset": ["type": "string", "description": "A media/ file listed by project.assets (reuse an existing layer's media)."],
                 "path": ["type": "string", "description": "Absolute path to an image or video in your home or temp folder; imported into the project when applied."],
@@ -349,9 +350,24 @@ enum MCPTools {
         let dryRun = args["dryRun"] as? Bool ?? false
         let resolution = try await MCPAssets.resolve(decoded, package: model.packageURL, project: model.liveProject, library: decoded.contains(where: { if case .layer(_, _, .recording, _) = $0 { return true }; return false }) ? await libraryRecordings() : [],
                                                      known: session.draft?.assets ?? [:])
-        var keepImported = false
-        defer { if !keepImported || dryRun { MCPAssets.removeFiles(resolution.created) } }
-        let ops = try await reframed(resolution.ops, raw: loweredOps, model: model)
+        var keepImported = false, rendered: [URL] = []
+        defer { if !keepImported || dryRun { MCPAssets.removeFiles(resolution.created + rendered) } }
+        var ops = try await reframed(resolution.ops, raw: loweredOps, model: model)
+        // freeze: render the held frame from the viewed project (draft included) into media/ (T-933).
+        for (i, op) in ops.enumerated() {
+            guard case let .freeze(at, duration, nil) = op else { continue }
+            guard case .seconds(let time) = at else { throw MCPFailure(code: "INVALID_OP", message: "freeze at must be numeric output seconds") }
+            let viewed = try viewedProject(model, session: session)
+            let frame = EditorModel(packageURL: model.packageURL, project: viewed, events: model.events)
+            guard time >= 0, time <= viewed.exportDuration, let png = try await EditorWindowController.renderFramesPNG(model: frame, at: [time], longEdge: nil).first else {
+                throw MCPFailure(code: "OUT_OF_RANGE", message: "freeze at must be inside 0–\(viewed.exportDuration)")
+            }
+            let file = "media/freeze-\(UUID().uuidString).png", url = model.packageURL.appendingPathComponent(file)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try png.write(to: url, options: .atomic)
+            rendered.append(url)
+            ops[i] = .freeze(at: at, duration: duration, file: file)
+        }
         var context = try await editContext(ops, model: model)
         context.assets = resolution.assets
         context.refs = try opRefs(args["ops"])
@@ -402,9 +418,9 @@ enum MCPTools {
         } catch let error as EditError { throw error.remapped(origin) }
         // Draft replay keeps lowered indices; the payload speaks the agent's original batch indices.
         result.changes = result.changes.map { var c = $0; c.op = origin.indices.contains(c.op) ? origin[c.op] : c.op; return c }
-        if !dryRun, !resolution.created.isEmpty {
+        if !dryRun, !(resolution.created + rendered).isEmpty {
             keepImported = true
-            session.agentMedia.formUnion(resolution.created.map { "media/" + $0.lastPathComponent })
+            session.agentMedia.formUnion((resolution.created + rendered).map { "media/" + $0.lastPathComponent })
             session.agentMediaPackage = model.packageURL
         }
         var payload: [String: Any] = ["revision": nextRevision, "mode": level.rawValue, "changes": try json(result.changes),
