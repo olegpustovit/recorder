@@ -5218,7 +5218,13 @@ private final class MCPTestClient {
     model.beginGesture()
     _ = try await tool("edit", ["action": "apply", "ifRevision": baseRevision, "ops": style], error: "REVIEW_IN_PROGRESS")
     model.cancelGesture()
-    guard model.project.checkInvariants() == nil, MCPTools.operationSchemas.count == 22 else { throw MCPTestFailure(description: "Edit invariants/schemas: \(MCPTools.operationSchemas.count) op schemas") }   // v2: -update, +set graphic animate freeze transition
+    // The op set the plan specifies (EDITING-CORE §4, MCP.md §5.2/§5.3): primitives, v2 additions, intents; `update` is gone.
+    let opNames = Set(MCPTools.operationSchemas.compactMap { (($0["properties"] as? [String: Any])?["op"] as? [String: Any])?["enum"] as? [String] }.flatMap { $0 })
+    let planned: Set<String> = ["cut", "cutPauses", "cutWords", "speed", "zoom", "text", "captions", "highlight", "marker", "set", "remove", "style", "layer", "reframe",
+                                "graphic", "animate", "freeze", "transition", "keepShots", "pace", "fitDuration", "autoZoom"]
+    guard model.project.checkInvariants() == nil, opNames == planned, MCPTools.operationSchemas.count == planned.count else {
+        throw MCPTestFailure(description: "Edit invariants/schemas: missing \(planned.subtracting(opNames).sorted()), unplanned \(opNames.subtracting(planned).sorted())")
+    }
     let activity = AgentActivity.shared.rows.filter { $0.sessionID == session.id }
     guard activity.allSatisfy({ row in [row.intent, row.result, row.tool].allSatisfy { !$0.contains("PRIVATE_ACTIVITY_") } }),
           activity.contains(where: { $0.isError && $0.result == "STALE_REVISION" }),
