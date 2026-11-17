@@ -1,5 +1,6 @@
 import AVFoundation
 import CryptoKit
+import VideoToolbox
 import RecorderCore
 
 /// analyze.shots (T-827) app half: decode screen.mov at 10 fps, 1/8 scale luma, and reduce it to `FrameSignal`s
@@ -7,7 +8,7 @@ import RecorderCore
 enum ShotAnalysis {
     static let fps = 10.0
     /// Bump whenever decoding or the signal maths change: it is part of the cache key.
-    static let algorithmVersion = 2
+    static let algorithmVersion = 3
     private static let cacheName = "shots-cache.json"
     private struct Cache: Codable { var key: String; var signals: [FrameSignal] }
 
@@ -51,6 +52,8 @@ enum ShotAnalysis {
         }
         let duration = try await asset.load(.duration).seconds, size = try await track.load(.naturalSize)
         var w = max(16, Int(size.width) / 8 & ~1), h = max(16, Int(size.height) / 8 & ~1)
+        if let fast = try? decodeVT(asset, track, duration: duration, w: w, h: h, progress: progress) { return fast }
+        try Task.checkCancellation()   // VT setup or decode failed: fall back to AVAssetReader's scaling decode below
         let reader = try AVAssetReader(asset: asset)
         let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
@@ -88,6 +91,108 @@ enum ShotAnalysis {
         emit(upTo: .infinity)
         progress(1)
         return signals
+    }
+
+    /// Fast path (T-827): read compressed samples, skip droppable frames no 0.1 s tick shows, and decode GOP-aligned chunks in
+    /// parallel with VideoToolbox, alternating hardware and software sessions (the two engines run concurrently; either alone
+    /// is serial). Luma is box-averaged to w×h. ~3.5x faster than AVAssetReader's scaling decode.
+    // ponytail: all chunks cancel only at the end (no mid-decode cancel), and a decode reads every frame between ticks that other frames depend on.
+    private static func decodeVT(_ asset: AVURLAsset, _ track: AVAssetTrack, duration: Double, w: Int, h: Int,
+                                 progress: @escaping (Double) -> Void) throws -> [FrameSignal] {
+        func samples(_ range: CMTimeRange?, _ body: (CMSampleBuffer) -> Void) throws {
+            let reader = try AVAssetReader(asset: asset), out = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
+            if let range { reader.timeRange = range }
+            reader.add(out)
+            guard reader.startReading() else { throw reader.error ?? CocoaError(.fileReadUnknown) }
+            while let s = out.copyNextSampleBuffer() { if CMSampleBufferGetNumSamples(s) > 0 { body(s) } }
+            if reader.status == .failed { throw reader.error ?? CocoaError(.fileReadUnknown) }
+        }
+        func flag(_ s: CMSampleBuffer, _ key: CFString) -> Bool? {
+            ((CMSampleBufferGetSampleAttachmentsArray(s, createIfNecessary: false) as? [[CFString: Any]])?.first?[key]) as? Bool
+        }
+        var times: [CMTime] = [], syncs: [CMTime] = []
+        try samples(nil) { s in
+            let t = CMSampleBufferGetPresentationTimeStamp(s)
+            times.append(t); if flag(s, kCMSampleAttachmentKey_NotSync) != true { syncs.append(t) }
+        }
+        times.sort()
+        guard let first = times.first, !syncs.isEmpty else { throw CocoaError(.fileReadUnknown) }
+        // Each tick shows the latest frame at or before it; only those frames matter (nil before the first frame).
+        let ticks = max(1, Int((duration * fps).rounded(.down)))
+        var tickFrame: [CMTime?] = [], i = 0
+        for k in 0..<ticks {
+            while i + 1 < times.count, times[i + 1].seconds <= Double(k) / fps { i += 1 }
+            tickFrame.append(times[i].seconds <= Double(k) / fps ? times[i] : nil)
+        }
+        let needed = Set(tickFrame.compactMap { $0 })
+        // ~8 s chunks starting at sync samples
+        var starts = [first]
+        for s in syncs.sorted() where s.seconds - starts.last!.seconds >= 8 { starts.append(s) }
+        let ends = Array(starts.dropFirst()) + [CMTime(seconds: duration + 1, preferredTimescale: 600)]
+
+        struct Chunk { var frames: [(CMTime, [UInt8])] = []; var signals: [CMTime: FrameSignal] = [:] }
+        var chunks = [Chunk](repeating: Chunk(), count: starts.count), failure: Error?, done = 0
+        let lock = NSLock()
+        DispatchQueue.concurrentPerform(iterations: starts.count) { c in
+            do {
+                var sess: VTDecompressionSession?
+                let spec = [kVTVideoDecoderSpecification_EnableHardwareAcceleratedVideoDecoder: c % 2 == 1] as CFDictionary
+                let attrs = [kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange] as CFDictionary
+                var got: [CMTime: [UInt8]] = [:], formatted = false
+                try samples(CMTimeRange(start: starts[c], end: ends[c])) { s in
+                    if !formatted, let fd = CMSampleBufferGetFormatDescription(s) {
+                        formatted = true
+                        if VTDecompressionSessionCreate(allocator: nil, formatDescription: fd, decoderSpecification: spec, imageBufferAttributes: attrs,
+                                                        outputCallback: nil, decompressionSessionOut: &sess) != 0 { lock.lock(); failure = CocoaError(.fileReadUnknown); lock.unlock() }
+                    }
+                    guard let sess else { return }
+                    let t = CMSampleBufferGetPresentationTimeStamp(s)
+                    if !needed.contains(t) && flag(s, kCMSampleAttachmentKey_IsDependedOnByOthers) == false { return }
+                    let st = VTDecompressionSessionDecodeFrame(sess, sampleBuffer: s, flags: [._EnableAsynchronousDecompression], infoFlagsOut: nil) { st, _, buf, pts, _ in
+                        guard st == 0, let buf, needed.contains(pts), pts >= starts[c], pts < ends[c] else { return }   // a boundary frame belongs to one chunk only
+                        let f = lumaBox(buf, w: w, h: h); lock.lock(); got[pts] = f; lock.unlock()
+                    }
+                    if st != 0 { lock.lock(); failure = CocoaError(.fileReadUnknown); lock.unlock() }
+                }
+                if let sess { VTDecompressionSessionWaitForAsynchronousFrames(sess); VTDecompressionSessionInvalidate(sess) }
+                var chunk = Chunk(frames: got.sorted { $0.key < $1.key }.map { ($0.key, $0.value) })
+                for j in chunk.frames.indices.dropFirst() { chunk.signals[chunk.frames[j].0] = signal(chunk.frames[j].1, chunk.frames[j - 1].1, w: w, h: h) }
+                lock.lock(); chunks[c] = chunk; done += 1; progress(min(0.99, Double(done) / Double(starts.count))); lock.unlock()
+            } catch { lock.lock(); failure = error; lock.unlock() }
+        }
+        if let failure { throw failure }
+        var signals = chunks.reduce(into: [CMTime: FrameSignal]()) { $0.merge($1.signals) { a, _ in a } }
+        var previous: [UInt8]?
+        for chunk in chunks where !chunk.frames.isEmpty {   // stitch: first frame of a chunk vs last of the one before
+            if let previous { signals[chunk.frames[0].0] = signal(chunk.frames[0].1, previous, w: w, h: h) }
+            previous = chunk.frames.last!.1
+        }
+        guard chunks.reduce(0, { $0 + $1.frames.count }) == needed.count else { throw CocoaError(.fileReadUnknown) }
+        progress(1)
+        return (0..<ticks).map { k in
+            guard let t = tickFrame[k], k == 0 || tickFrame[k - 1] != t else { return FrameSignal(diff: 0, ssim: 1) }
+            return signals[t] ?? FrameSignal(diff: 0, ssim: 1)
+        }
+    }
+
+    /// w×h luma from a full-size 4:2:0 buffer: mean of every 2nd row × 8 columns per output pixel; the decode output
+    /// is full-res (the decoders ignore reduced-size requests for HEVC) and reading all rows costs more than the decode.
+    private static func lumaBox(_ buffer: CVPixelBuffer, w: Int, h: Int) -> [UInt8] {
+        CVPixelBufferLockBaseAddress(buffer, .readOnly); defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+        let stride = CVPixelBufferGetBytesPerRowOfPlane(buffer, 0), base = CVPixelBufferGetBaseAddressOfPlane(buffer, 0)!.assumingMemoryBound(to: UInt8.self)
+        let fx = CVPixelBufferGetWidthOfPlane(buffer, 0) / w, fy = CVPixelBufferGetHeightOfPlane(buffer, 0) / h
+        var frame = [UInt8](repeating: 0, count: w * h), acc = [Int32](repeating: 0, count: w)
+        for y in 0..<h {
+            acc.withUnsafeMutableBufferPointer { $0.update(repeating: 0) }
+            var n: Int32 = 0
+            for k in Swift.stride(from: 0, to: fy, by: 2) {
+                let row = base + (y * fy + k) * stride
+                for x in 0..<w { var s: Int32 = 0; for j in 0..<fx { s += Int32(row[x * fx + j]) }; acc[x] += s }
+                n += Int32(fx)
+            }
+            for x in 0..<w { frame[y * w + x] = UInt8(acc[x] / n) }
+        }
+        return frame
     }
 
     /// Luma buffers are tiny (≈240×135). SSIM is the mean over 8×8 windows; sums are exact integers.

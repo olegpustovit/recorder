@@ -709,10 +709,13 @@ acceptance undo, privacy (renders hide key overlays) and existing op semantics; 
   stable IDs, summary); app decodes 10 fps 1/8-scale luma with vImage, cached per media content hash. Verify:
   Core segmentation tests on synthetic signals; 100 s fixture analyses < 5 s.
   MEASURED 2026-11-17 (`--selftest shots-perf`, release, Golden Island 254.6 s, HEVC 2880×1800, 8798 frames):
-  first call 29.3 s (≈11.5 s per 100 s), cached call 0.02 s. Target < 5 s per 100 s NOT met: the hardware HEVC
-  decoder (~300 fps, unchanged by output scaling, zero-copy or parallel readers) is the bound; our signal code is
-  ≈0.7 s CPU. Upgrade path: decode-time frame skipping (only possible for non-reference frames) or analysing during
-  recording. F1 ≥ 0.8 on 5 hand-labelled recordings not measured (no labelled set exists).
+  AVAssetReader scaling decode 29.5 s (≈11.5 s per 100 s); shipped VideoToolbox path 8.9 s (≈3.5 s per 100 s, target
+  < 5 s met; Velvet Valley 41 s clip 0.83 s), cached call 0.01 s, shots 122 → 123. Path: compressed samples, skip
+  droppable frames no 0.1 s tick shows (≈50 % of frames), ~8 s sync-aligned chunks decoded in parallel with alternating
+  hardware/software VT sessions (each engine alone is serial; hw+sw together ≈ 3x), row-subsampled box luma. The decoders
+  ignore ReducedResolutionDecode/ReducedCoefficientDecode for HEVC (unsupported). Falls back to AVAssetReader on any failure.
+  Prior bound analysis (hardware decoder serial) was right for one engine only.
+  F1 ≥ 0.8 on 5 hand-labelled recordings not measured (no labelled set exists).
 - [x] **T-828 render.storyboard / strip / compare** — shot-anchored tiles (settled keyframe, id + duration label,
   ≤ 48 per page), filmstrip 4–8 fps, base|draft side by side. Verify: tile count = shots, legible at 320 px.
 - [x] **T-829 Edit report + render.lint** — `report` (duration/asl/hook/longestStatic/staticSec before/after, lint)
