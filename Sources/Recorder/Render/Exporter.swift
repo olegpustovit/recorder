@@ -687,7 +687,9 @@ enum ExporterSelfTest {
                 }
             }
         }
-        let orderedTimes = times.filter { $0 >= 0 && $0 < duration }.sorted()
+        // Both paths must sample the same instant: the preview seeks on a 1/600 s CMTime clock, so quantize here (an
+        // unquantized 1.286 vs the player's 1.28667 picked neighbouring frames of a variable-rate recording: maxDelta 4).
+        let orderedTimes = Set(times.map { ($0 * 600).rounded() / 600 }).filter { $0 >= 0 && $0 < duration }.sorted()
 
         guard let device = MTLCreateSystemDefaultDevice() else { throw SelfTestArgError.usage("no Metal device") }
         let compositor = try Compositor(device: device, package: packageURL)
