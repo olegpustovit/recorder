@@ -1,6 +1,7 @@
 # Agent recording — implementation guide (T-950…T-956)
 
-Status: paused at user request 2026-11-18 (T-950 and T-951 verified; resume at T-952) · tasks **T-950…T-956** in `docs/PLAN.md` · proposal: https://artifacts.microapps.space/a/d0rs3s43x727
+Status: T-950 through T-952 verified. Next is the T-953 live eval on the Mac mini. See `docs/PLAN.md` for progress.
+Proposal: https://artifacts.microapps.space/a/d0rs3s43x727
 
 This guide is for an implementing agent (Codex or any model). It says **what** to build, **where**, **with which existing
 code**, and **how to prove it**. Read §0–§4 once, then do the tasks in §5 strictly in order, one per session, following

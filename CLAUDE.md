@@ -62,6 +62,10 @@ make cert                  # one-time: create the self-signed "Recorder Dev" sig
 make clean
 build/Recorder.app/Contents/MacOS/Recorder --mcp                    # stdio MCP shim, auto-launches the app
 build/Recorder.app/Contents/MacOS/Recorder --selftest <name> [args]   # headless app checks (cases are added by plan tasks)
+build/Recorder.app/Contents/MacOS/Recorder --selftest record-agent
+build/Recorder.app/Contents/MacOS/Recorder --selftest record-agent-cap
+build/Recorder.app/Contents/MacOS/Recorder --selftest mcp-record [--native]
+scripts/mcp-record-demo.sh [Recorder binary]                         # real silent capture, prompts for approval
 scripts/freeze-dump.sh [pid]                                          # hung main thread: sample+ps into a new snapshot folder, path to clipboard
 ```
 

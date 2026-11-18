@@ -110,7 +110,7 @@ Transport: one JSON object per line, UTF-8, `\n` terminated, both directions. Im
   `outputSchema` (loose: known keys typed, none required, plus `project`/`revision`/`error`/`message`); results are
   always in `structuredContent`.
 - Limits live only in the tool `inputSchema`. `tools/call` validates arguments against it server-side (`type`, `enum`,
-  `minimum`, `maximum`, `minLength`, `maxItems`, nested objects/arrays; `oneOf` unions are checked by the op decoder, which
+  `minimum`, `maximum`, `minLength`, `maxLength`, `maxItems`, nested objects/arrays; `oneOf` unions are checked by the op decoder, which
   also validates each op against its own schema). Out-of-range or off-enum numbers return `OUT_OF_RANGE`, wrong shapes
   `INVALID_OP`. `render.frames at` takes up to 24 times, the same as the schema says. `MCPTools.handled` lists every
   `tool.action` with a handler; `--selftest mcp-schema` diffs it against `tools/list` and checks annotations,
@@ -120,6 +120,14 @@ Error codes (exact strings): `PERMISSION_DENIED`, `NO_PROJECT`, `STALE_REVISION`
 `OUT_OF_RANGE`, `INVALID_OP`, `INVARIANT`, `RENDER_BUSY`, `NEEDS_APPROVAL`, `DENIED`, `REVIEW_IN_PROGRESS`.
 Every message says what to do next (e.g. `STALE_REVISION: project is at 9f2c41ab03de, you sent 1a0b…; call timeline.get and retry`).
 
+| Recording error | Recovery |
+|---|---|
+| `PERMISSION_NEEDED` | Grant Recorder Screen Recording and Accessibility in System Settings and retry. |
+| `NO_TARGET` | Refresh `record.targets` and choose a current on-screen window or display. |
+| `RECORDING_BUSY` | Wait for the human or other session's take to end. |
+| `NOT_RECORDING` | Check `record.status` and start a take with this session. |
+| `RECORDING_FAILED` | Check Recorder for a recoverable take before retrying. |
+
 ## 5. Tool surface (server name `recorder`)
 
 ### 5.0 `instructions` text (send verbatim in `initialize`)
@@ -128,12 +136,15 @@ Every message says what to do next (e.g. `STALE_REVISION: project is at 9f2c41ab
 > project.open → timeline.get + transcript.get → analyze → edit.apply (lands in a draft) → render.frames / render.sheet
 > to check → fix → draft.submit for the human to review. Pass ifRevision from the latest result. Renders go to a cache
 > folder; final exports need the user's approval. Key presses are never shared.
+> To make a demo yourself: record.targets → record.start {window} → drive the app with your own computer-use tool,
+> calling record.mark {label} when each step begins → record.stop (opens the project) → edit as usual: cut from a
+> step's settled end to the next step's mark, label steps with text, pace demo, render.lint demo, then draft.submit.
 
 ### 5.1 Tools
 
-Nine tools, each with an `action` string (Resolve's MCP shows that grouping keeps context small).
+Ten tools, each with an `action` string (Resolve's MCP shows that grouping keeps context small).
 
-| Tool | Actions → result (all results include `project` id and `revision`) |
+| Tool | Actions → result (project-scoped results include `project` id and `revision`) |
 |------|---------------------------------------------------------------------|
 | `project` | `list` → `[{id,title,path,duration,modified,hasMic}]` · `open {id\|path}` → opens the editor window, returns `info` plus `draft:{id,status:"drafting"\|"submitted"\|"stale",base,revision,changes}` when a pending draft was re-adopted (or `draft:{status:"unrecoverable",error}` when the file could not be read or replayed; it is then kept as
 `agent-draft.failed.json` and never overwritten). The draft attaches only to its own project. Takeover rule: a reconnecting
@@ -147,6 +158,7 @@ client takes over a disconnected session's in-memory draft of this project, pref
 | `render` | `frames {at:[t…] ≤24, draft=true, longEdge=640, grid=false}` (grid: 0.1-step magenta overlay labelled 0–1, origin top-left, the coordinates zoom `center` and text `position` use) → images + links · `sheet {count=12 ≤24 \| at:[…], from?, to?, draft=true}` (from/to: sample only that range) → 1 JPEG + link · `clip {from,to, draft=true}` → job, then link (async, progress) · `storyboard {shots?:[id], page=1, draft=true}` → 1 JPEG, one 320 px tile per shot at its settled keyframe (just before `to`), labelled `id duration`, ≤48 per page (`page`/`pages` returned), shots the draft dropped are skipped; needs `analyze.shots` (else `NO_STORYBOARD`) · `strip {from,to,fps=6 (4–8)}` → 1 filmstrip JPEG, ≤48 tiles · `compare {at:[t…] ≤6}` → 1 JPEG, one row per draft time, live base left at the **same source moment** (clamped when the base lacks it), draft right; labels carry base/draft/source time · `lint {profile="reel", draft=true}` → `{revision, profile, report}` (needs a storyboard) · `cancel` |
 | `export` | `final {destination?, shortEdge?, fps?, srt=false, from?, to?}` (from/to: export only that output range; not with srt) → waits for approval → `{path, seconds, bytes}` or `DENIED` |
 | `ui` | `show {at, select?:[id]}` → moves the playhead / selection in the editor |
+| `record` | `targets` → windows and displays · `start {window\|display, area?, width?, height?, exclude?, title?, maxDuration?}` → recorded target and duration cap · `status` → state, time, marker count and owner · `mark {label}` → marker ID and time · `pause` / `resume` → state and time · `stop {discard=false}` → opens the saved project and returns its metadata, path and markers, or returns `{discarded:true}` |
 
 Optional shot captions (T-832): `AgentCaptions.captionShots(storyboard, model:)` fills `Shot.caption` (6–10 words, Vision OCR on the shot's focus crop, classifier label fallback, shaped by Core `ShotCaption.shape`); `null` on any failure. New recordings write the `analyze.shots` signal cache while recording (`ShotAnalysis.Live`, 4:2:0 or BGRA window capture; older recordings decode once on first call). Opt-in with `captions:true` on `analyze.shots`; captions are kept in the package as `shots-captions.json` (id → caption, removed when the thresholds change) so `protect:["caption~regex"]` works in later edits; typing shots are never captioned.
 
@@ -854,3 +866,11 @@ scripts/agent-eval.py --selftest                         # asserts metrics on bu
 Metrics: `ops` = ops of `edit.apply` calls with `dryRun` false that succeeded; `images` = image items of `render.*`
 responses, counting `at` length or `count` from the args; lint pass = the last `lint` array in a response's
 `structuredContent` has no `error`/`warn` item; the summary lint rate is passes over transcripts.
+
+## 11. Agent recording
+
+Use one window and demo data. Mark each step before the action, use `retake: <step>` for retries and mark `result`
+once the final state is visible. Stop the take before editing. See the [recording guide](RECORDING-AGENT.md) for the
+action arguments, consent rules and demo script. For an eval, wrap the shim with
+`scripts/mcp-log.py <out.jsonl> -- <Recorder binary> --mcp`. The local transcript can contain window titles,
+project paths and rendered images. Inspect it before sharing.

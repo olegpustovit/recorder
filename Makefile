@@ -42,9 +42,9 @@ mcp-smoke: app
 	responses = {r["id"]:r for line in reply.stdout.splitlines() if "id" in (r := json.loads(line))}; \
 	assert responses[1]["jsonrpc"] == responses[2]["jsonrpc"] == "2.0", responses; \
 	assert responses[1]["result"]["protocolVersion"] == "2025-06-18", responses; \
-	assert len(responses[2]["result"]["tools"]) == 9, responses; \
-	assert {t["name"] for t in responses[2]["result"]["tools"]} == {"project", "timeline", "transcript", "analyze", "edit", "draft", "render", "export", "ui"}, responses; \
-	print("MCP smoke passed: initialize + all nine tools (including edit)")' "$(APP)/Contents/MacOS/Recorder"
+	assert len(responses[2]["result"]["tools"]) == 10, responses; \
+	assert {t["name"] for t in responses[2]["result"]["tools"]} == {"project", "timeline", "transcript", "analyze", "edit", "draft", "render", "export", "ui", "record"}, responses; \
+	print("MCP smoke passed: initialize + all ten tools")' "$(APP)/Contents/MacOS/Recorder"
 
 run: app
 	open $(APP)

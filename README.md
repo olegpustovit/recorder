@@ -55,10 +55,11 @@ Ask Claude to open a recording, find pauses/fillers, propose cuts and captions, 
 Access defaults to **Draft**: inspect changes in the **Claude** tab, untick any you do not want, then Accept or Discard.
 Accept is one undo step. **Off**, **Read** and **Live** access are available per project.
 Final MP4 exports require a native approval sheet and can include an SRT sidecar.
+An agent with its own computer-use tool can capture a silent demo with `record`, mark steps and submit an edited draft.
 
 Tools never return key characters; agent previews hide key overlays. Render files expire from the agent cache after
 seven days. Drafts live in memory and are lost when Recorder quits. See [Agents](docs/SPEC.md#10-agents-mcp)
-and the [tool reference](docs/MCP.md). Run `make mcp-smoke` to build the app and check initialization and all nine tools;
+and the [tool reference](docs/MCP.md). Run `make mcp-smoke` to build the app and check initialization and all ten tools;
 quit a running source-build app before rebuilding its bundle.
 
 ## Help and development

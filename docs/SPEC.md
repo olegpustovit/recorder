@@ -1132,9 +1132,13 @@ PLAN T-640…T-650.
   installed by the system on first use per language); macOS 15 uses `SFSpeechRecognizer` with on-device required.
 
 
+### Agent recording open question
+
+Does macOS 27 still prompt periodically to reconfirm ScreenCaptureKit access? Record the T-953 observations here.
+
 ## 10. Agents (MCP)
 
-Recorder exposes the nine tools below to a local MCP client through the same binary, `Recorder --mcp`.
+Recorder exposes the ten tools below to a local MCP client through the same binary, `Recorder --mcp`.
 The stdio shim launches Recorder when needed and connects to its same-user Unix socket at
 `~/Library/Application Support/Recorder/mcp.sock`. Projects stay open in ordinary editor windows;
 all edits use `EditorModel`, the existing timeline operations, compositor, autosave and undo.
@@ -1215,6 +1219,25 @@ range/preset and destination. Deny, timeout and cancellation write no final outp
 overwritten. Accepted final exports use the native saved settings (including configured visual effects), with an
 optional output-time SRT sidecar; the default destination is a unique name in `~/Movies/Recorder/Exports/`.
 
+### Agent recording
+
+Recorder captures the target and saves step markers. The agent uses its own computer-use tool to click and type.
+Agent takes are silent video without a countdown. They use temporary capture settings and leave the toolbar
+settings intact. Prefer a single window, optionally resized before capture. Display and area targets can exclude apps
+by bundle ID.
+
+The first start in each MCP session requires a native approval with a ten-minute timeout. **Settings ▸ Agents ▸ Let
+agents start recordings without asking** skips the approval and is off by default. Screen Recording and Accessibility
+grants remain required. One take can run at a time. Only the session that starts it can mark, pause, resume or stop it
+through MCP. The recording widget and highlight stay visible, and the human can pause, finish, restart or delete a
+take with the normal controls.
+
+Disconnecting or reaching the duration cap saves the take. The cap defaults to 600 seconds and accepts 10–1800
+seconds. If the human finishes the take, its session can still retrieve the project. A successful stop opens the
+ordinary editor. Markers are stored in source seconds with paused time removed, ready to anchor edits on the fresh
+timeline. Capture failures return tool errors and preserve recoverable media wherever the human capture path does.
+Key events remain in the local package and agent previews hide key overlays.
+
 ### Protocol and tools
 
 Transport is newline-delimited UTF-8 JSON-RPC 2.0, MCP `2025-06-18`: `initialize`, `notifications/initialized`,
@@ -1234,6 +1257,7 @@ notifications when the client supplies a progress token. The shim exits if the a
 | `render` | `frames` (up to 24 PNGs, at most 640px), `sheet` (up to 24 tiles), `clip` (540p MP4), `cancel` |
 | `export` | `final`, with native approval and optional SRT |
 | `ui` | `show` a playhead time and optional selected IDs |
+| `record` | `targets`, `start`, `status`, `mark`, `pause`, `resume`, `stop` |
 
 All tool times are **output seconds** at the supplied `ifRevision`; Core converts to source time before mutation.
 Editing core v2 (2026-11-17, `docs/EDITING-CORE.md`): one item view (`items`) behind timeline.get/assets/lint; `set` is the
