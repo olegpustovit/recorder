@@ -320,8 +320,8 @@ private final class MCPConnection: @unchecked Sendable {
         }
     }
     func shutdown() { lifecycle.withLock { if !isClosed { Darwin.shutdown(fd, SHUT_RDWR) } } }
-    func readLines(_ handle: (Data) -> Void) {
-        defer { pending.wait(); writer.sync {}; lifecycle.withLock { isClosed = true; close(fd) } }
+    func readLines(_ handle: (Data) -> Void, onEnd: () -> Void) {
+        defer { onEnd(); pending.wait(); writer.sync {}; lifecycle.withLock { isClosed = true; close(fd) } }
         var pending = Data(), buffer = [UInt8](repeating: 0, count: 16_384)
         while true {
             let count = Darwin.read(fd, &buffer, buffer.count)
@@ -442,12 +442,16 @@ enum AgentAccess: String, CaseIterable {
                     if let response { connection.send(response, completed: { connection.pending.leave() }) }
                     else { connection.pending.leave() }
                 }
+            } onEnd: {
+                Task { @MainActor in self.sessionEnded(session) }
             }
-            Task { @MainActor in
-                session.connected = false
-                self.removeFinishedSessions()
-            }
+            Task { @MainActor in self.removeFinishedSessions() }
         }
+    }
+    func sessionEnded(_ session: MCPSession) {
+        session.connected = false
+        session.recordingApprovalTask?.cancel()
+        if RecordingController.shared.agentOwner == session.id { RecordingController.shared.finish() }
     }
     func register(_ session: MCPSession) {
         if !sessions.contains(where: { $0 === session }) { sessions.append(session) }
@@ -585,6 +589,8 @@ enum AgentAccess: String, CaseIterable {
     let id = UUID().uuidString
     let connectedSince = Date()
     var connected = true
+    var recordingApproved = false
+    @ObservationIgnored var recordingApprovalTask: Task<Bool, Error>?
     var reviewError: String?
     var agentName = "MCP client"
     var projectURL: URL?

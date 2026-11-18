@@ -6,7 +6,7 @@ public struct SchemaViolation: Equatable, Sendable {
     public var range = false
 }
 
-/// Checks `value` against the JSON-Schema subset the MCP tools declare (type, enum, minimum, maximum, minLength, maxItems,
+/// Checks `value` against the JSON-Schema subset the MCP tools declare (type, enum, minimum, maximum, minLength, maxLength, maxItems,
 /// items, properties, required, additionalProperties), so the schema is the one source of limits. `oneOf` is skipped:
 /// op and time unions are checked by the op decoder.
 public func schemaViolation(_ value: Any, _ schema: [String: Any], path: String = "arguments") -> SchemaViolation? {
@@ -17,6 +17,7 @@ public func schemaViolation(_ value: Any, _ schema: [String: Any], path: String 
     case "string":
         guard let text = value as? String else { return .init(message: "\(path) must be a string") }
         if let minimum = schema["minLength"] as? Int, text.count < minimum { return .init(message: "\(path) must not be empty", range: true) }
+        if let maximum = schema["maxLength"] as? Int, text.count > maximum { return .init(message: "\(path) takes at most \(maximum) characters", range: true) }
     case "boolean":
         guard (value as? NSNumber).map({ CFGetTypeID($0) == CFBooleanGetTypeID() }) == true else { return .init(message: "\(path) must be a boolean") }
     case "number", "integer":

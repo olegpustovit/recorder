@@ -79,6 +79,13 @@ import Testing
     }
 
     @Test func schemaViolationEnforcesLimitsFromTheSchema() {
+        let label: [String: Any] = ["type": "string", "maxLength": 80]
+        #expect(schemaViolation(String(repeating: "é", count: 80), label) == nil)
+        #expect(schemaViolation(String(repeating: "é", count: 81), label)?.range == true)
+        let area: [String: Any] = ["type": "object", "properties": ["width": ["type": "number", "minimum": 0]], "required": ["width"], "additionalProperties": false]
+        #expect(schemaViolation(["width": 400], area) == nil)
+        #expect(schemaViolation(["width": 400, "widht": 400], area)?.range == false)
+        #expect(schemaViolation([:], area)?.message.contains("required") == true)
         let schema: [String: Any] = ["type": "object", "additionalProperties": false, "required": ["action"], "properties": [
             "action": ["type": "string", "enum": ["frames"]],
             "at": ["type": "array", "maxItems": 24, "items": ["type": "number", "minimum": 0]],

@@ -44,6 +44,8 @@ enum SelfTest {
         "mcp-live-client": { args in try await checkMCPLiveClient(args) },
         "mcp-panel-motion": { args in try await UIKitGallery.checkAgentStudy(to: URL(fileURLWithPath: args.first ?? "/tmp/recorder-t814-motion")) },
         "mcp-export": { args in try await checkMCPExport(args) },
+        "mcp-record": { args in try await checkMCPRecord(args) },
+        "record-agent-cap": { args in try await checkAgentRecordingCap(args) },
         "mcp-schema": { _ in try await checkMCPSchema() },
         "motion-text": { _ in try await Compositor.runMotionTextSelfTest() },
         "layers": { args in try await SelfTest.cases["make-layers-fixture"]!(args) },
@@ -200,9 +202,12 @@ enum SelfTest {
             defer { session.connected = false; MCPServer.shared.removeFinishedSessions() }
             do {
                 let size = args.contains("agents") ? NSSize(width: 880, height: 620) : NSSize(width: 520, height: 640)
-                let content = args.contains("agents")
-                    ? AnyView(AgentsView(initial: args.dropFirst().first { $0.hasPrefix("pane=") }.map { String($0.dropFirst(5)) }).frame(width: size.width, height: size.height))
-                    : AnyView(SettingsView().frame(width: size.width, height: size.height))
+                let content: AnyView
+                if args.contains("agents"), !args.contains(where: { $0.hasPrefix("pane=") }) {
+                    content = AnyView(AgentsPane().padding(24).frame(width: size.width, height: size.height, alignment: .topLeading).toggleStyle(TechToggleStyle()).signalWindow())
+                } else if args.contains("agents") {
+                    content = AnyView(AgentsView(initial: args.dropFirst().first { $0.hasPrefix("pane=") }.map { String($0.dropFirst(5)) }).frame(width: size.width, height: size.height))
+                } else { content = AnyView(SettingsView().frame(width: size.width, height: size.height)) }
                 let hosting = NSHostingView(rootView: content)
                 hosting.frame = NSRect(origin: .zero, size: size)
                 hosting.appearance = NSAppearance(named: .darkAqua)
@@ -4469,6 +4474,234 @@ private final class MCPTestClient {
     }
 }
 
+@MainActor private func checkMCPRecord(_ args: [String]) async throws {
+    guard Permissions.allGranted else { print("SKIP: needs Screen Recording + Accessibility"); return }
+    NSApplication.shared.setActivationPolicy(.accessory); NSApplication.shared.finishLaunching()
+    let rc = RecordingController.shared, server = MCPServer.shared, defaults = UserDefaults.standard
+    let preference = "agentRecording.allowWithoutAsking", savedPreference = defaults.object(forKey: "agentRecording.allowWithoutAsking")
+    defaults.set(false, forKey: preference)
+    let owner = MCPSession(), other = MCPSession()
+    owner.agentName = "mcp-record selftest"
+    var packages: Set<URL> = [], sessions = [owner, other], approvals = 0
+    defer {
+        rc.cancel()
+        for controller in EditorWindowController.allOpen where packages.contains(controller.model.packageURL) { controller.close() }
+        for package in packages { try? FileManager.default.trashItem(at: package, resultingItemURL: nil) }
+        for session in sessions { session.draft = nil; server.sessionEnded(session) }
+        server.removeFinishedSessions()
+        defaults.set(savedPreference, forKey: preference)
+    }
+    func check(_ condition: Bool, _ message: String) throws { if !condition { throw MCPTestFailure(description: "mcp-record: " + message) } }
+    func tool(_ action: String, _ fields: [String: Any] = [:], session: MCPSession? = nil, error: String? = nil,
+              timeout: Duration = .seconds(600), approve: (@MainActor (AgentRecordingRequest) async throws -> Bool)? = nil) async throws -> [String: Any] {
+        let session = session ?? owner
+        let injected = approve ?? { request in
+            approvals += 1
+            try check(request.client == owner.agentName && request.target.contains("400x300") && request.maxDuration == 10, "wrong approval request")
+            return true
+        }
+        let result = await MCPTools.call("record", fields.merging(["action": action]) { _, last in last }, session: session,
+            approveRecording: args.contains("--native") ? nil : injected, approvalTimeout: timeout)
+        let payload = result["structuredContent"] as? [String: Any] ?? [:]
+        if let error { try check(result["isError"] as? Bool == true && payload["error"] as? String == error, "expected \(error), got \(payload)") }
+        else { try check(result["isError"] as? Bool == false, "\(action) failed: \(payload)") }
+        return payload
+    }
+    func waitForIdle() async throws {
+        for _ in 0..<100 where rc.state != .idle { try await Task.sleep(for: .milliseconds(50)) }
+        try check(rc.state == .idle, "capture did not finish")
+    }
+    func remember(_ payload: [String: Any]) throws {
+        guard let path = payload["path"] as? String else { throw MCPTestFailure(description: "mcp-record: no package path") }
+        packages.insert(URL(fileURLWithPath: path).standardizedFileURL)
+    }
+    let targets = try await tool("targets")
+    let displays = targets["displays"] as? [[String: Any]] ?? []
+    let windows = targets["windows"] as? [[String: Any]] ?? []
+    guard let main = displays.first(where: { $0["main"] as? Bool == true }), let display = main["id"] else { throw MCPTestFailure(description: "mcp-record: no main display") }
+    try check(windows.allSatisfy { $0["bundleId"] as? String != AppIdentity.bundleID }, "Recorder listed among capture windows")
+    let start: [String: Any] = ["display": display, "area": ["x": 0, "y": 0, "width": 400, "height": 300], "title": "mcp-record", "maxDuration": 10]
+    if args.contains("--native") {
+        _ = try await tool("start", start, error: "NEEDS_APPROVAL", timeout: .milliseconds(250))
+        try check(NSApp.modalWindow == nil && rc.state == .idle, "native timeout left a modal alert or recording")
+        func consentButton(_ title: String) async throws -> NSButton {
+            for _ in 0..<100 where NSApp.modalWindow == nil { try await Task.sleep(for: .milliseconds(10)) }
+            guard let view = NSApp.modalWindow?.contentView else { throw MCPTestFailure(description: "Native alert did not appear") }
+            func buttons(_ view: NSView) -> [NSButton] { (view as? NSButton).map { [$0] } ?? view.subviews.flatMap(buttons) }
+            guard let button = buttons(view).first(where: { $0.title == title }) else { throw MCPTestFailure(description: "Native consent button missing") }
+            return button
+        }
+        let denial = Task { @MainActor in
+            let button = try await consentButton("Don't Allow")
+            guard let window = button.window else { throw MCPTestFailure(description: "No native alert window") }
+            try await Task.sleep(for: .milliseconds(100))
+            let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
+            guard let target = content.windows.first(where: { Int($0.windowID) == window.windowNumber }) else { throw MCPTestFailure(description: "Consent window not on screen") }
+            let config = SCStreamConfiguration()
+            config.width = Int(target.frame.width * 2); config.height = Int(target.frame.height * 2)
+            config.ignoreShadowsSingleWindow = true
+            let image = try await SCScreenshotManager.captureImage(contentFilter: SCContentFilter(desktopIndependentWindow: target), configuration: config)
+            guard let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else { throw MCPTestFailure(description: "Consent PNG failed") }
+            try png.write(to: URL(fileURLWithPath: "/tmp/recorder-t951-consent.png"))
+            button.performClick(nil)
+        }
+        _ = try await tool("start", start, error: "DENIED", timeout: .seconds(3))
+        try await denial.value
+        try check(NSApp.modalWindow == nil && rc.state == .idle && !owner.recordingApproved, "native denial left consent or capture active")
+        let pending = MCPSession(); sessions.append(pending)
+        let job = Task { try await tool("start", start, session: pending, error: "DENIED", timeout: .seconds(3)) }
+        for _ in 0..<100 where NSApp.modalWindow == nil { try await Task.sleep(for: .milliseconds(10)) }
+        try check(NSApp.modalWindow != nil, "native disconnect check never showed consent")
+        _ = try await tool("status")
+        server.sessionEnded(pending)
+        _ = try await job.value
+        try check(NSApp.modalWindow == nil && rc.state == .idle, "disconnect left a native consent alert or recording")
+        let allowance = Task { @MainActor in try await consentButton("Allow for This Session").performClick(nil) }
+        _ = try await tool("start", start, timeout: .seconds(3))
+        try await allowance.value
+        try check(owner.recordingApproved && rc.state == .recording, "native Allow did not start the approved recording")
+        _ = try await tool("stop", ["discard": true])
+        try check(NSApp.modalWindow == nil && rc.state == .idle && rc.lastAgentPackage == nil, "native approved test take was not discarded")
+        print("Native consent: timeout, Don't Allow, responsive status, disconnect cancellation, Allow and discarded silent capture verified")
+        return
+    }
+    _ = try await tool("start", ["window": 0, "display": display], error: "INVALID_OP")
+    _ = try await tool("start", ["display": display, "width": 400, "height": 300], error: "INVALID_OP")
+    _ = try await tool("start", ["window": 0, "width": 400], error: "INVALID_OP")
+    _ = try await tool("start", ["display": display, "area": ["x": 0, "y": 0, "width": 400, "height": 300, "widht": 400]], error: "INVALID_OP")
+    _ = try await tool("start", ["display": display, "area": ["x": 0, "y": 0, "width": 400]], error: "INVALID_OP")
+    _ = try await tool("start", ["display": display, "area": ["x": 0, "y": 0, "width": 0, "height": 300]], error: "OUT_OF_RANGE")
+    _ = try await tool("start", ["display": display, "area": ["x": 100000, "y": 0, "width": 400, "height": 300]], error: "OUT_OF_RANGE")
+    _ = try await tool("start", ["window": 0], error: "NO_TARGET")
+    _ = try await tool("start", start)
+    try check(approvals == 1 && owner.recordingApproved, "first start did not approve once")
+    let status = try await tool("status")
+    try check(status["owner"] as? String == "you" && status["maxDuration"] as? Double == 10, "wrong owner or cap")
+    let foreign = try await tool("status", session: other)
+    try check(foreign["owner"] as? String == "other" && foreign["project"] is NSNull, "other session saw a project")
+    for action in ["mark", "pause", "resume", "stop"] {
+        _ = try await tool(action, action == "mark" ? ["label": "other"] : [:], session: other, error: "RECORDING_BUSY")
+    }
+    _ = try await tool("start", start, error: "RECORDING_BUSY")
+    _ = try await tool("mark", ["label": ""], error: "INVALID_OP")
+    _ = try await tool("mark", ["label": "  \n"], error: "INVALID_OP")
+    _ = try await tool("mark", ["label": String(repeating: "a", count: 81)], error: "OUT_OF_RANGE")
+    try await Task.sleep(for: .milliseconds(150))
+    _ = try await tool("mark", ["label": "one"])
+    let paused = try await tool("pause")
+    try await Task.sleep(for: .milliseconds(250))
+    let stillPaused = try await tool("status")
+    try check(stillPaused["state"] as? String == "paused" && abs((stillPaused["at"] as? Double ?? -1) - (paused["at"] as? Double ?? 0)) < 0.02, "paused clock moved")
+    _ = try await tool("resume")
+    try await Task.sleep(for: .milliseconds(500))
+    _ = try await tool("mark", ["label": "two"])
+    try await Task.sleep(for: .milliseconds(200))
+    let stopped = try await tool("stop")
+    try remember(stopped)
+    try check(stopped["project"] is String && stopped["revision"] is String && (stopped["duration"] as? Double ?? 0) > 0,
+              "stop did not open a project")
+    try check((stopped["markers"] as? [[String: Any]])?.compactMap { $0["label"] as? String } == ["one", "two"], "saved markers differ")
+    let timeline = await MCPTools.call("timeline", ["action": "get"], session: owner)
+    try check(((timeline["structuredContent"] as? [String: Any])?["markers"] as? [Any])?.count == 2, "timeline lost markers")
+    let cut = await MCPTools.call("edit", ["action": "apply", "ifRevision": stopped["revision"]!, "dryRun": true,
+        "ops": [["op": "cut", "from": ["marker": "one"], "to": ["marker": "two"]]]], session: owner)
+    try check(cut["isError"] as? Bool == false, "marker-anchored dry run failed: \(cut["structuredContent"] ?? [:])")
+    let repeated = try await tool("stop")
+    try check(repeated["project"] as? String == stopped["project"] as? String, "stop is not idempotent")
+    for controller in EditorWindowController.allOpen where packages.contains(controller.model.packageURL) { controller.close() }
+    let closed = try await tool("status")
+    try check(closed["project"] as? String == stopped["project"] as? String, "status needs the finished editor open")
+    let folder = RecordingSettings.shared.projectsFolder
+    let beforeDiscard = Set(try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil))
+    _ = try await tool("start", start)
+    try check(approvals == 1, "session was asked twice")
+    _ = try await tool("pause")
+    let marker = try await tool("mark", ["label": "paused"])
+    let frozen = try await tool("status")
+    try check(marker["at"] as? Double == frozen["at"] as? Double, "paused marker uses another clock")
+    for _ in 1..<500 { _ = rc.addMarker(label: "limit") }
+    _ = try await tool("mark", ["label": "overflow"], error: "OUT_OF_RANGE")
+    let discarded = try await tool("stop", ["discard": true])
+    try check(discarded["discarded"] as? Bool == true && rc.lastAgentPackage == nil, "discard retained a package")
+    try check(Set(try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) == beforeDiscard, "discard left a new package")
+    let idle = try await tool("status")
+    try check(idle["state"] as? String == "idle" && idle["owner"] is NSNull && idle["project"] is NSNull, "idle status leaked the previous project")
+    _ = try await tool("stop", error: "NOT_RECORDING")
+    let denied = MCPSession(); sessions.append(denied)
+    _ = try await tool("start", start, session: denied, error: "DENIED", approve: { _ in false })
+    _ = try await tool("start", start, session: denied, error: "NEEDS_APPROVAL", timeout: .milliseconds(200), approve: { _ in
+        try await Task.sleep(for: .seconds(5)); return true
+    })
+    try check(!denied.recordingApproved && denied.recordingApprovalTask == nil && rc.state == .idle, "failed approval started capture or stayed pending")
+    let pending = MCPSession(); sessions.append(pending)
+    var asked = false
+    let pendingStart = Task { try await tool("start", start, session: pending, error: "DENIED", approve: { _ in
+        asked = true; try await Task.sleep(for: .seconds(5)); return true
+    }) }
+    for _ in 0..<100 where !asked { try await Task.sleep(for: .milliseconds(10)) }
+    try check(asked, "approval never began")
+    server.sessionEnded(pending)
+    _ = try await pendingStart.value
+    try check(rc.state == .idle, "disconnected approval started capture")
+    _ = try await tool("start", start, session: pending, error: "DENIED", approve: { _ in throw MCPTestFailure(description: "disconnected session still prompted") })
+    defaults.set(true, forKey: preference)
+    _ = try await tool("start", start, session: denied, approve: { _ in throw MCPTestFailure(description: "opt-in still prompted") })
+    _ = try await tool("stop", ["discard": true], session: denied)
+    defaults.set(false, forKey: preference)
+    _ = try await tool("start", start, session: denied, approve: { _ in throw MCPTestFailure(description: "approved session lost approval when toggle changed") })
+    _ = try await tool("stop", ["discard": true], session: denied)
+    _ = try await tool("start", start)
+    try await Task.sleep(for: .milliseconds(200))
+    rc.finish() // Same path as the widget's Finish.
+    try await waitForIdle()
+    let humanFinished = try await tool("status")
+    let humanStop = try await tool("stop")
+    try remember(humanStop)
+    try check(humanFinished["project"] as? String == humanStop["project"] as? String, "human Finish was not returned to its owner")
+    let disconnected = MCPSession(); sessions.append(disconnected); disconnected.recordingApproved = true
+    _ = try await tool("start", start, session: disconnected)
+    server.sessionEnded(disconnected)
+    try await waitForIdle()
+    try check(rc.lastAgentPackage?.owner == disconnected.id, "disconnect lost the take")
+    if let package = rc.lastAgentPackage?.url { packages.insert(package); _ = try Project.load(from: package.appendingPathComponent("project.json")) }
+    let starting = MCPSession(); sessions.append(starting); starting.recordingApproved = true
+    let startingTask = Task { try await tool("start", start, session: starting, error: "DENIED") }
+    for _ in 0..<100 where rc.agentOwner != starting.id { try await Task.sleep(for: .milliseconds(10)) }
+    try check(rc.agentOwner == starting.id, "start never reserved capture")
+    server.sessionEnded(starting)
+    _ = try await startingTask.value
+    try await waitForIdle()
+    try check(rc.lastAgentPackage?.owner == starting.id, "disconnect during startup lost the take")
+    if let package = rc.lastAgentPackage?.url { packages.insert(package) }
+    // Await opening editors before trashing their media.
+    for package in packages { _ = await EditorWindowController.open(package: package).value }
+    try check(AgentActivity.shared.rows.filter { $0.sessionID == owner.id && $0.tool == "record.mark" }.allSatisfy { $0.intent == "Marking step" }, "marker labels entered activity")
+    print("MCP recording: targets, validation, consent once/deny/timeout/opt-in, ownership, paused markers, edit anchors, discard, human Finish and disconnect (approval/start/recording) verified")
+}
+
+@MainActor private func checkAgentRecordingCap(_ args: [String]) async throws {
+    guard Permissions.allGranted else { print("SKIP: needs Screen Recording + Accessibility"); return }
+    NSApplication.shared.setActivationPolicy(.accessory); NSApplication.shared.finishLaunching()
+    let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
+    guard let display = content.displays.first(where: { $0.displayID == CGMainDisplayID() }) else { throw MCPTestFailure(description: "No main display") }
+    let rc = RecordingController.shared
+    let settings = RecordingSettings(agentCopyOf: .shared, excludedBundleIDs: [])
+    try await rc.beginForAgent(target: .area(display, CGRect(x: 0, y: 0, width: 400, height: 300)), settings: settings,
+                               owner: "cap-selftest", title: "record-agent-cap", maxDuration: 10)
+    let started = Date()
+    try await Task.sleep(for: .milliseconds(200)); rc.pause()
+    for _ in 0..<300 where rc.state != .idle { try await Task.sleep(for: .milliseconds(50)) }
+    guard rc.state == .idle, let saved = rc.lastAgentPackage, saved.owner == "cap-selftest",
+          Date().timeIntervalSince(started) >= 9.5, Date().timeIntervalSince(started) < 15 else {
+        rc.cancel(); throw MCPTestFailure(description: "Wall-time cap did not save the paused recording")
+    }
+    let controller = await EditorWindowController.open(package: saved.url).value
+    defer { controller?.close(); try? FileManager.default.trashItem(at: saved.url, resultingItemURL: nil) }
+    let project = try Project.load(from: saved.url.appendingPathComponent("project.json"))
+    guard project.source.duration > 0 && project.source.duration < 2 else { throw MCPTestFailure(description: "Paused time entered the capped take") }
+    print("Wall-time cap saved a paused take after \(Date().timeIntervalSince(started)) s")
+}
+
 @MainActor private func checkMCPExport(_ args: [String]) async throws {
     guard let path = args.first else { throw MCPTestFailure(description: "usage: mcp-export <fixture.recorder>") }
     let fm = FileManager.default, root = fm.temporaryDirectory.appendingPathComponent("recorder-mcp-export-\(UUID().uuidString)").resolvingSymlinksInPath()
@@ -5477,7 +5710,7 @@ private final class MCPTestClient {
         _ = MCPSocket.write(Data("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n".utf8), to: client.fd)
         _ = try client.request("ping")
         let tools = try client.request("tools/list")
-        guard ((tools["result"] as? [String: Any])?["tools"] as? [Any])?.count == 9 else { throw MCPTestFailure(description: "MCP needs nine tools") }
+        guard ((tools["result"] as? [String: Any])?["tools"] as? [Any])?.count == 10 else { throw MCPTestFailure(description: "MCP needs ten tools") }
         let unknown = try client.request("not-a-method")
         guard (unknown["error"] as? [String: Any])?["code"] as? Int == -32601 else { throw MCPTestFailure(description: "MCP unknown method") }
         _ = MCPSocket.write(Data("{broken}\n".utf8), to: client.fd)
@@ -5540,7 +5773,7 @@ private final class MCPTestClient {
     }.value
     guard AgentActivity.shared.rows.contains(where: { $0.tool == "analyze.pauses" && !$0.isError }),
           AgentActivity.shared.rows.contains(where: { $0.isError }), AgentActivity.shared.rows.count <= 200 else { throw MCPTestFailure(description: "MCP activity feed") }
-    print("MCP: socket permissions, JSON-RPC, nine tools, library/open/close, revisions, transcript cap, pauses, fillers, activity, access and key privacy verified")
+    print("MCP: socket permissions, JSON-RPC, ten tools, library/open/close, revisions, transcript cap, pauses, fillers, activity, access and key privacy verified")
 }
 
 private func synthesizeSineM4A(at url: URL, duration: Double, sampleRate: Double = 44_100, silence: ClosedRange<Double>? = nil) throws {

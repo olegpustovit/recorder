@@ -1,6 +1,6 @@
 # Agent recording — implementation guide (T-950…T-956)
 
-Status: in progress 2026-11-18 (T-950 verified) · tasks **T-950…T-956** in `docs/PLAN.md` · proposal: https://artifacts.microapps.space/a/d0rs3s43x727
+Status: paused at user request 2026-11-18 (T-950 and T-951 verified; resume at T-952) · tasks **T-950…T-956** in `docs/PLAN.md` · proposal: https://artifacts.microapps.space/a/d0rs3s43x727
 
 This guide is for an implementing agent (Codex or any model). It says **what** to build, **where**, **with which existing
 code**, and **how to prove it**. Read §0–§4 once, then do the tasks in §5 strictly in order, one per session, following
@@ -287,15 +287,20 @@ Files: `Agent/MCPTools.swift`, `Agent/MCPServer.swift`, `Recording/RecordingCont
    ```
 
    Body: build an `NSAlert` with messageText `"\(client) wants to record your screen"` and informativeText
-   `"Target: \(target). Video only, up to \(Int(maxDuration/60)) min. You can stop it from the recording widget at any time."`,
-   and buttons "Allow for This Session" (first) and "Don't Allow". `NSApp.activate()` and `runModal()` inside
-   `withTaskCancellationHandler`; on cancel, call `NSApp.abortModal()` on main if `alert.window.isVisible`. `.abort` →
-   throw `CancellationError` (the timeout branch wins and maps to `NEEDS_APPROVAL`). Add a comment that the modal loop
-   services other main-actor MCP calls re-entrantly, which is acceptable because each call re-validates state.
-5. Disconnect (R6): in `MCPServer.swift`, inside the existing `Task { @MainActor in session.connected = false; self.removeFinishedSessions() }`
-   at the end of the connection's read loop, add
-   `if RecordingController.shared.agentOwner == session.id { RecordingController.shared.finish() }`. Factor it as
-   `func sessionEnded(_ session: MCPSession)` so the selftest can call the same hook.
+   `"Target: \(target). Video only, up to \(Int(ceil(maxDuration/60))) min. You can stop it from the recording widget at any time."`,
+   and buttons "Allow for This Session" (first) and "Don't Allow". `NSApp.activate()`, `alert.layout()`, then
+   `NSApp.beginModalSession(for: alert.window)`; run `NSApp.runModalSession` passes with an awaited 20 ms sleep between
+   them. Always end the session and order out the window in `defer`. Check cancellation between passes; `.abort` →
+   `CancellationError`. This keeps native app-modal behavior while letting MCP calls, the approval timeout and
+   disconnect cancellation run. **Verified correction to the original guide:** `runModal()` inside a main-actor Task
+   blocked a real socket `ping` after disconnect; the yielding modal session passes the native timeout, Don't Allow,
+   status and disconnect checks. [AppKit modal sessions](https://developer.apple.com/documentation/appkit/nsapplication/runmodalsession(_:))
+   explicitly support work between event passes. No hidden parent window or custom dialog is needed.
+5. Disconnect (R6): factor `func sessionEnded(_ session: MCPSession)` in `MCPServer.swift`. Set `connected = false`,
+   cancel `recordingApprovalTask`, and, when this session owns capture, call `RecordingController.shared.finish()`.
+   Invoke it from the connection reader's EOF callback **before** waiting for pending replies, so a slow request cannot
+   delay the safety stop. Remove finished sessions after pending replies drain. The controller remembers a finish
+   requested during startup/restart; the selftest calls the same hook in approval, startup and recording states.
 6. Settings ▸ Agents (`AgentsPane`): one `Toggle("Let agents start recordings without asking", isOn: …)` bound to the
    `UserDefaults` key through `@AppStorage("agentRecording.allowWithoutAsking")`, with the footnote
    `"Agents still can't hear audio or read your keystrokes. The recording widget stays visible."`.
@@ -321,9 +326,13 @@ Files: `Agent/MCPTools.swift`, `Agent/MCPServer.swift`, `Recording/RecordingCont
      package exists. Keep this separate because it's slow.
 
 **Verify:** `make app`; `--selftest mcp-record`, `--selftest record-agent-cap`, `--selftest mcp-schema`,
-`--selftest mcp-export` (approval pattern untouched), `--selftest mcp-roundtrip <fixture>`; `make test`. Render
+`--selftest mcp-export` (approval pattern untouched), `--selftest mcp-roundtrip <fixture>`; `make test`.
+Also run `--selftest mcp-record --native` (real native timeout, Don't Allow, responsive status, disconnect cancellation,
+and Allow followed by a silent capture that is immediately discarded) and inspect its own-window
+`/tmp/recorder-t951-consent.png`. Render
 `--selftest settings-png <out> agents` and inspect the toggle. HUMAN (waivable): see the real consent alert once by
-running `scripts/mcp-record-demo.sh`, defined in T-952.
+running `scripts/mcp-record-demo.sh`, defined in T-952. The user waived this remaining visual check on
+2026-11-18 after the native functional checks passed; no further consent-visual sign-off is pending for T-951.
 
 ### T-952 Docs, smoke, demo script
 

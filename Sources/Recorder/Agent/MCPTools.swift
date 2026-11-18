@@ -2,10 +2,17 @@ import AVFoundation
 import CryptoKit
 import Foundation
 import RecorderCore
+import ScreenCaptureKit
 
 struct MCPFailure: Error {
     let code: String
     let message: String
+}
+
+struct AgentRecordingRequest {
+    let client: String
+    let target: String
+    let maxDuration: Double
 }
 
 enum MCPTools {
@@ -14,6 +21,9 @@ enum MCPTools {
     project.open → timeline.get + transcript.get → analyze → edit.apply (lands in a draft) → render.frames / render.sheet
     to check → fix → draft.submit for the human to review. Pass ifRevision from the latest result. Renders go to a cache
     folder; final exports need the user's approval. Key presses are never shared.
+    To make a demo yourself: record.targets → record.start {window} → drive the app with your own computer-use tool,
+    calling record.mark {label} when each step begins → record.stop (opens the project) → edit as usual: cut from a
+    step's settled end to the next step's mark, label steps with text, pace demo, render.lint demo, then draft.submit.
     """
     static let operationSchemas: [[String: Any]] = {
         let number: [String: Any] = ["type": "number", "minimum": 0]
@@ -97,6 +107,10 @@ enum MCPTools {
         return [
             "project": ["projects": array, "title": string, "duration": number, "size": object, "clips": ["type": "integer"], "lanes": object, "hasMic": boolean,
                         "hasCamera": boolean, "transcribed": boolean, "access": string, "layers": array, "library": array, "paths": string, "draft": object, "templates": array],
+            "record": ["displays": array, "windows": array, "state": string, "at": number, "target": string,
+                       "maxDuration": number, "owner": ["type": ["string", "null"]], "marker": string,
+                       "markers": ["type": ["array", "integer"]], "discarded": boolean, "size": object,
+                       "title": string, "duration": number, "path": string],
             "timeline": ["duration": number, "clips": array, "blocks": array, "markers": array],
             "transcript": ["transcript": string, "words": array, "phrases": array, "truncated": boolean, "from": number],
             "analyze": ["pauses": array, "fillers": array, "idle": array, "typing": array, "clicks": array, "transcript": string, "words": ["type": "integer"]],
@@ -128,6 +142,7 @@ enum MCPTools {
     }()
     /// `tool.action` pairs with a handler in `call`; the `mcp-schema` self-test diffs this against `tools/list`.
     static let handled: Set<String> = [
+        "record.targets", "record.start", "record.status", "record.mark", "record.pause", "record.resume", "record.stop",
         "project.list", "project.open", "project.info", "project.assets", "project.templates", "timeline.get", "transcript.get",
         "analyze.transcribe", "analyze.pauses", "analyze.fillers", "analyze.activity", "analyze.shots", "edit.apply", "edit.undo",
         "draft.status", "draft.submit", "draft.discard", "render.frames", "render.sheet", "render.clip", "render.storyboard", "render.strip", "render.compare", "render.lint", "render.cancel", "export.final", "ui.show"]
@@ -149,6 +164,17 @@ enum MCPTools {
                     "outputSchema": ["type": "object", "properties": output]]
         }
         return [
+            tool("record", ["targets", "start", "status", "mark", "pause", "resume", "stop"],
+                 "Record the screen while your own computer-use tool performs a demo (Recorder never clicks or types). targets lists displays and windows; start needs exactly one of window or display (area needs display) and asks the user once per session; mark labels the current moment (use the returned marker id as an edit anchor later); stop finishes, opens the project and returns what project.open returns. Video only: no mic, camera or system audio. Area coordinates are points relative to the display, top-left origin; width/height resize window targets only. maxDuration defaults to 600 seconds, including pauses. Use step labels before actions, retake: <step> for retries, result for the final state. Use demo accounts; anything on screen is recorded.",
+                 ["window": ["type": "integer", "minimum": 0], "display": ["type": "integer", "minimum": 0],
+                  "area": ["type": "object", "properties": ["x": number, "y": number, "width": number, "height": number],
+                           "required": ["x", "y", "width", "height"], "additionalProperties": false],
+                  "width": ["type": "integer", "minimum": 320, "maximum": 7680],
+                  "height": ["type": "integer", "minimum": 240, "maximum": 4320],
+                  "exclude": ["type": "array", "items": string, "maxItems": 20],
+                  "title": ["type": "string", "maxLength": 80],
+                  "maxDuration": ["type": "number", "minimum": 10, "maximum": 1800],
+                  "label": ["type": "string", "minLength": 1, "maxLength": 80], "discard": boolean]),
             tool("project", ["list", "open", "info", "assets", "templates"], "List recordings, open one by id or package path, read its summary and revision, list the media a layer op can use (assets), or the motion-graphic templates a graphic op can use (templates).", ["id": string, "path": string], read: true),
             tool("timeline", ["get"], "Read clips, effect blocks and markers in output seconds.", range, read: true),
             tool("transcript", ["get"], "Read up to 2000 spoken words with stable wN ids, or timestamped phrases. Key presses are never returned.", range.merging(["format": ["type": "string", "enum": ["words", "phrases"]]], uniquingKeysWith: { _, b in b }), read: true),
@@ -550,6 +576,7 @@ enum MCPTools {
     }
     @MainActor static func call(_ name: String, _ args: [String: Any], session: MCPSession, progress: @escaping (Double) -> Void = { _ in },
                                 approveExport: (@MainActor (AgentExportRequest) async throws -> Bool)? = nil,
+                                approveRecording: (@MainActor (AgentRecordingRequest) async throws -> Bool)? = nil,
                                 approvalTimeout: Duration = .seconds(600)) async -> [String: Any] {
         let began = Date()
         let definition = list.first { $0["name"] as? String == name }
@@ -562,7 +589,7 @@ enum MCPTools {
             sessionID: session.id))
         var errorCode: String?, outcome = "Completed"
         defer {
-            if ["project", "edit", "draft"].contains(loggedName) { session.persistDraft() }
+            if ["project", "edit", "draft"].contains(loggedName) || (loggedName == "record" && action == "stop") { session.persistDraft() }
             let projectID = (try? model(for: session))?.liveProject.id ?? session.draft?.baseProject.id
             AgentActivity.shared.finish(activityID, result: errorCode ?? outcome, isError: errorCode != nil, projectID: projectID)
         }
@@ -570,12 +597,16 @@ enum MCPTools {
             guard definition != nil, action != "invalid", Set(args.keys).isSubset(of: Set(properties.keys)) else {
                 throw MCPFailure(code: "INVALID_OP", message: "Use a tool/action and arguments from tools/list, then retry")
             }
+            if name == "record", action == "mark", let label = args["label"] as? String,
+               label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                throw MCPFailure(code: "INVALID_OP", message: "mark needs a nonempty label")
+            }
             for (key, value) in args.sorted(by: { $0.key < $1.key }) {
                 if let schema = properties[key] as? [String: Any], let problem = schemaViolation(value, schema, path: key) {
                     throw MCPFailure(code: problem.range ? "OUT_OF_RANGE" : "INVALID_OP", message: "\(problem.message); revise it using tools/list and retry")
                 }
             }
-            if session.projectURL != nil {
+            if name != "record", session.projectURL != nil {
                 if let current = try? model(for: session) { try requireAccess(current.liveProject, tool: name) }
                 else if name == "project", ["open", "list"].contains(action) { session.projectURL = nil }
                 else { _ = try model(for: session) }
@@ -597,19 +628,9 @@ enum MCPTools {
                     else if let item = await libraryItems().first(where: { $0.projectID == id }) { url = item.id.resolvingSymlinksInPath().standardizedFileURL }
                     else { throw MCPFailure(code: "NO_PROJECT", message: "No project with this id; call project.list or supply its .recorder path") }
                 } else { throw MCPFailure(code: "INVALID_OP", message: "project.open needs id or path; call project.list first") }
-                guard url.pathExtension == "recorder" else { throw MCPFailure(code: "NO_PROJECT", message: "Supply a .recorder package directory, then retry project.open") }
-                let project = try await Task.detached { try Project.load(from: url.appendingPathComponent("project.json")) }.value
-                try requireAccess(project, tool: name)
-                guard let controller = await EditorWindowController.open(package: url).value else {
-                    throw MCPFailure(code: "NO_PROJECT", message: "Recorder could not open this package; check its media in Recorder and retry project.open")
-                }
-                session.projectURL = controller.model.packageURL.standardizedFileURL
-                try adoptDraft(session, model: controller.model)
-                let viewed = try viewedProject(controller.model, session: session)
-                payload = info(controller.model, project: viewed)
-                payload["revision"] = try revision(viewed)
-                if let draft = session.draft, draft.verdict == nil, draft.baseProject.id == controller.model.liveProject.id { payload["draft"] = try draftSummary(draft, live: controller.model.liveProject) }
-                else if let failure = session.draftRestoreError { payload["draft"] = ["status": "unrecoverable", "error": failure] }
+                payload = try await openProject(url: url, session: session)
+            } else if name == "record" {
+                payload = try await record(action, args, session: session, approve: approveRecording, approvalTimeout: approvalTimeout)
             } else {
                 let model = try model(for: session)
                 let viewed = try viewedProject(model, session: session)
@@ -733,12 +754,15 @@ enum MCPTools {
                 }
                 if ["project", "timeline", "transcript", "analyze"].contains(name) { payload["revision"] = try revision(viewed) }
             }
-            if session.projectURL != nil {
+            if session.projectURL != nil, name != "record" || (action == "stop" && payload["discarded"] as? Bool != true) {
                 let current = try model(for: session)
                 try requireAccess(current.liveProject, tool: name)
                 if payload["project"] == nil { payload["project"] = current.liveProject.id }
                 if payload["revision"] == nil { payload["revision"] = try revision(viewedProject(current, session: session)) }
-            } else { payload["project"] = NSNull(); payload["revision"] = NSNull() }
+            } else {
+                if payload["project"] == nil { payload["project"] = NSNull() }
+                if payload["revision"] == nil { payload["revision"] = NSNull() }
+            }
             outcome = activityResult(name, action, payload)
             var reply = result(payload)
             reply["content"] = (reply["content"] as? [[String: Any]] ?? []) + extraContent
@@ -749,12 +773,12 @@ enum MCPTools {
                 let code: String
                 switch editError { case .invalidOp: code = "INVALID_OP"; case .outOfRange: code = "OUT_OF_RANGE"; case .transcriptChanged: code = "TRANSCRIPT_CHANGED"; case .invariant: code = "INVARIANT" }
                 failure = MCPFailure(code: code, message: String(editError.description.dropFirst(code.count + 2)))
-            } else { failure = error as? MCPFailure ?? MCPFailure(code: "INVALID_OP", message: "\(error.localizedDescription); check the project in Recorder and retry") }
+            } else { failure = error as? MCPFailure ?? MCPFailure(code: name == "record" ? "RECORDING_FAILED" : "INVALID_OP", message: "\(error.localizedDescription); check Recorder and retry") }
             errorCode = failure.code
             // R7: every error says how to fix the call and where the project stands now.
             var fix: [String: Any] = ["hint": hints[failure.code] ?? "Revise the call using tools/list and retry"]
             var current: Any = NSNull()
-            if let model = try? model(for: session), let viewed = try? viewedProject(model, session: session) {
+            if name != "record", let model = try? model(for: session), let viewed = try? viewedProject(model, session: session) {
                 var state: [String: Any] = ["revision": (try? revision(viewed)) ?? "", "duration": viewed.exportDuration]
                 if failure.code == "OUT_OF_RANGE" || failure.message.contains("clip edge") {
                     // Only the ~20 clips nearest the failing time, so a long project does not flood the error.
@@ -773,7 +797,208 @@ enum MCPTools {
         }
     }
 
+    @MainActor private static func recordingWindows(_ content: SCShareableContent) -> [SCWindow] {
+        content.windows.filter {
+            $0.windowLayer == 0 && $0.frame.width >= 120 && $0.frame.height >= 80
+                && $0.owningApplication?.processID != ProcessInfo.processInfo.processIdentifier
+                && $0.owningApplication?.bundleIdentifier != AppIdentity.bundleID
+        }.sorted {
+            let lhs = ($0.owningApplication?.applicationName ?? "") + "\n" + ($0.title ?? "")
+            let rhs = ($1.owningApplication?.applicationName ?? "") + "\n" + ($1.title ?? "")
+            return lhs == rhs ? $0.windowID < $1.windowID : lhs.localizedStandardCompare(rhs) == .orderedAscending
+        }
+    }
+
+    @MainActor private static func record(_ action: String, _ args: [String: Any], session: MCPSession,
+            approve: (@MainActor (AgentRecordingRequest) async throws -> Bool)?, approvalTimeout: Duration) async throws -> [String: Any] {
+        let rc = RecordingController.shared
+        let fields: Set<String>
+        switch action {
+        case "start": fields = ["window", "display", "area", "width", "height", "exclude", "title", "maxDuration"]
+        case "mark": fields = ["label"]
+        case "stop": fields = ["discard"]
+        default: fields = []
+        }
+        guard Set(args.keys).subtracting(["action"]).isSubset(of: fields) else {
+            throw MCPFailure(code: "INVALID_OP", message: "Use only the arguments for record.\(action)")
+        }
+        if action == "targets" {
+            guard Permissions.screen else { throw MCPFailure(code: "PERMISSION_NEEDED", message: "Screen Recording access is required to list targets") }
+            let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
+            return ["displays": content.displays.map {
+                ["id": $0.displayID, "width": $0.frame.width, "height": $0.frame.height, "main": $0.frame.origin == .zero] as [String: Any]
+            }, "windows": recordingWindows(content).prefix(100).map { window in
+                let frame = window.frame
+                let display = content.displays.first { $0.frame.contains(CGPoint(x: frame.midX, y: frame.midY)) }
+                return ["id": window.windowID, "app": window.owningApplication?.applicationName ?? "",
+                        "bundleId": window.owningApplication?.bundleIdentifier ?? "", "title": window.title ?? "",
+                        "x": frame.minX, "y": frame.minY, "width": frame.width, "height": frame.height,
+                        "display": display.map { $0.displayID as Any } ?? NSNull()] as [String: Any]
+            }]
+        }
+        if action == "status" {
+            if rc.state == .idle, let failure = rc.lastAgentFailure, failure.owner == session.id {
+                throw MCPFailure(code: "RECORDING_FAILED", message: failure.message)
+            }
+            let owner: Any = rc.state == .idle ? NSNull() : rc.agentOwner.map { $0 == session.id ? "you" : "other" } ?? "user"
+            var result: [String: Any] = ["state": String(describing: rc.state), "at": rc.elapsed, "markers": rc.markers.count, "owner": owner]
+            if let cap = rc.maxDuration { result["maxDuration"] = cap }
+            if rc.state == .idle, let saved = rc.lastAgentPackage, saved.owner == session.id,
+               let project = try? Project.load(from: saved.url.appendingPathComponent("project.json")) {
+                result["project"] = project.id; result["at"] = project.source.duration; result["markers"] = project.markers.count
+            }
+            return result
+        }
+        if action == "start" {
+            let windowID = (args["window"] as? NSNumber)?.doubleValue, displayID = (args["display"] as? NSNumber)?.doubleValue
+            guard (windowID == nil) != (displayID == nil),
+                  windowID == nil || (args["area"] == nil && args["exclude"] == nil),
+                  (args["width"] == nil) == (args["height"] == nil),
+                  args["width"] == nil || windowID != nil else {
+                throw MCPFailure(code: "INVALID_OP", message: "start needs window OR display (+ optional area); width and height must both be given, for a window only; exclude is for display/area only")
+            }
+            guard session.connected else { throw MCPFailure(code: "DENIED", message: "The recording session disconnected") }
+            guard Permissions.allGranted else { throw MCPFailure(code: "PERMISSION_NEEDED", message: "Screen Recording and Accessibility access are required") }
+            guard rc.state == .idle, session.recordingApprovalTask == nil else { throw MCPFailure(code: "RECORDING_BUSY", message: "Another recording or approval is running") }
+            func resolve(_ content: SCShareableContent) throws -> CaptureTarget {
+                if let windowID {
+                    guard let window = recordingWindows(content).first(where: { Double($0.windowID) == windowID }) else {
+                        throw MCPFailure(code: "NO_TARGET", message: "The window is no longer on screen")
+                    }
+                    return .windows([window])
+                }
+                guard let display = content.displays.first(where: { Double($0.displayID) == displayID }) else {
+                    throw MCPFailure(code: "NO_TARGET", message: "The display is no longer available")
+                }
+                if let area = args["area"] as? [String: Any] {
+                    let rect = CGRect(x: try number(area, "x", default: 0), y: try number(area, "y", default: 0),
+                                      width: try number(area, "width", default: 0), height: try number(area, "height", default: 0))
+                    guard rect.width > 0, rect.height > 0, CGRect(origin: .zero, size: display.frame.size).contains(rect) else {
+                        throw MCPFailure(code: "OUT_OF_RANGE", message: "area must lie inside the display, in points relative to its top-left")
+                    }
+                    return .area(display, rect)
+                }
+                return .display(display)
+            }
+            let cap = try number(args, "maxDuration", default: 600)
+            var target = try resolve(await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true))
+            if !session.recordingApproved {
+                if !UserDefaults.standard.bool(forKey: "agentRecording.allowWithoutAsking") {
+                    let request = AgentRecordingRequest(client: session.agentName, target: target.targetDescription, maxDuration: cap)
+                    let approval = Task { @MainActor in
+                        try await withThrowingTaskGroup(of: Bool.self) { group in
+                            group.addTask { @MainActor in
+                                if let approve { return try await approve(request) }
+                                return try await RecordingController.approveAgentRecording(request)
+                            }
+                            group.addTask {
+                                try await Task.sleep(for: approvalTimeout)
+                                throw MCPFailure(code: "NEEDS_APPROVAL", message: "Recording approval timed out; request it again when the user is ready")
+                            }
+                            defer { group.cancelAll() }
+                            return try await group.next() ?? false
+                        }
+                    }
+                    session.recordingApprovalTask = approval
+                    defer { session.recordingApprovalTask = nil }
+                    let granted: Bool
+                    do { granted = try await approval.value }
+                    catch is CancellationError { throw MCPFailure(code: "DENIED", message: "Recording approval was cancelled") }
+                    guard granted else { throw MCPFailure(code: "DENIED", message: "The user denied this recording; ask them before requesting it again") }
+                }
+                session.recordingApproved = true
+            }
+            guard session.connected else { throw MCPFailure(code: "DENIED", message: "The recording session disconnected during approval") }
+            guard rc.state == .idle else { throw MCPFailure(code: "RECORDING_BUSY", message: "Another recording started during approval") }
+            // Consent can outlive a window; never capture the stale target snapshot.
+            target = try resolve(await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true))
+            guard rc.state == .idle else { throw MCPFailure(code: "RECORDING_BUSY", message: "Another recording started while resolving the target") }
+            var size: [String: Any]?
+            if case .windows(let windows) = target, let width = (args["width"] as? NSNumber)?.doubleValue, let height = (args["height"] as? NSNumber)?.doubleValue {
+                if let pid = windows[0].owningApplication?.processID {
+                    WindowResizer.focus(pid: pid, windowTitle: windows[0].title, frame: windows[0].frame)
+                    WindowResizer.resize(pid: pid, windowTitle: windows[0].title, to: CGSize(width: width, height: height))
+                    try await Task.sleep(for: .milliseconds(300))
+                    target = try resolve(await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true))
+                }
+                if abs(target.frameInScreenPoints.width - Double(width)) > 2 || abs(target.frameInScreenPoints.height - Double(height)) > 2 {
+                    size = ["width": target.frameInScreenPoints.width, "height": target.frameInScreenPoints.height]
+                }
+            }
+            guard session.connected else { throw MCPFailure(code: "DENIED", message: "The recording session disconnected") }
+            let settings = RecordingSettings(agentCopyOf: .shared, excludedBundleIDs: args["exclude"] as? [String] ?? [])
+            try await rc.beginForAgent(target: target, settings: settings, owner: session.id, title: args["title"] as? String, maxDuration: cap)
+            if !session.connected { rc.finish(); throw MCPFailure(code: "DENIED", message: "The recording session disconnected; its take is being saved") }
+            var result: [String: Any] = ["state": String(describing: rc.state), "target": target.targetDescription, "maxDuration": cap, "at": 0]
+            if let size { result["size"] = size }
+            return result
+        }
+        if rc.state != .idle {
+            guard rc.agentOwner == session.id else { throw MCPFailure(code: "RECORDING_BUSY", message: "This recording belongs to another session or the user") }
+        } else if let failure = rc.lastAgentFailure, failure.owner == session.id {
+            throw MCPFailure(code: "RECORDING_FAILED", message: failure.message)
+        }
+        if action == "stop" {
+            guard rc.agentOwner == session.id || (rc.state == .idle && rc.lastAgentPackage?.owner == session.id) else {
+                throw MCPFailure(code: "NOT_RECORDING", message: "This session has no recording to stop")
+            }
+            if args["discard"] as? Bool == true {
+                guard [.countdown, .recording, .paused].contains(rc.state) else {
+                    throw MCPFailure(code: "NOT_RECORDING", message: "This take has already finished; it was kept")
+                }
+                rc.cancel()
+                for _ in 0..<60 where rc.agentOwner == session.id { try await Task.sleep(for: .milliseconds(50)) }
+                guard rc.agentOwner != session.id else { throw MCPFailure(code: "RECORDING_FAILED", message: "Discard did not finish within three seconds") }
+                return ["discarded": true]
+            }
+            let url = try await rc.finishForAgent()
+            var result = try await openProject(url: url, session: session)
+            let project = try Project.load(from: url.appendingPathComponent("project.json"))
+            result["markers"] = project.markers.map { ["id": $0.id, "at": $0.time, "label": $0.label] as [String: Any] }
+            result["path"] = url.path
+            return result
+        }
+        guard rc.agentOwner == session.id, rc.state == .recording || rc.state == .paused else {
+            throw MCPFailure(code: "NOT_RECORDING", message: "This session is not recording")
+        }
+        switch action {
+        case "mark":
+            guard let text = args["label"] as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw MCPFailure(code: "INVALID_OP", message: "mark needs a nonempty label")
+            }
+            guard rc.markers.count < 500 else { throw MCPFailure(code: "OUT_OF_RANGE", message: "A recording takes at most 500 markers") }
+            let marker = rc.addMarker(label: String(text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80)))
+            return ["marker": marker.id, "at": marker.time]
+        case "pause": rc.pause()
+        case "resume": rc.resume()
+        default: throw MCPFailure(code: "INVALID_OP", message: "Unknown recording action")
+        }
+        return ["state": String(describing: rc.state), "at": rc.elapsed]
+    }
+
+    @MainActor private static func openProject(url: URL, session: MCPSession) async throws -> [String: Any] {
+        guard url.pathExtension == "recorder" else { throw MCPFailure(code: "NO_PROJECT", message: "Supply a .recorder package directory, then retry project.open") }
+        let project = try await Task.detached { try Project.load(from: url.appendingPathComponent("project.json")) }.value
+        try requireAccess(project, tool: "project")
+        guard let controller = await EditorWindowController.open(package: url).value else {
+            throw MCPFailure(code: "NO_PROJECT", message: "Recorder could not open this package; check its media in Recorder and retry project.open")
+        }
+        session.projectURL = controller.model.packageURL.standardizedFileURL
+        try adoptDraft(session, model: controller.model)
+        let viewed = try viewedProject(controller.model, session: session)
+        var payload = info(controller.model, project: viewed)
+        payload["revision"] = try revision(viewed)
+        if let draft = session.draft, draft.verdict == nil, draft.baseProject.id == controller.model.liveProject.id { payload["draft"] = try draftSummary(draft, live: controller.model.liveProject) }
+        else if let failure = session.draftRestoreError { payload["draft"] = ["status": "unrecoverable", "error": failure] }
+        return payload
+    }
+
     private static let hints = [
+        "PERMISSION_NEEDED": "Ask the user to grant Recorder Screen Recording and Accessibility in System Settings ▸ Privacy & Security, then retry",
+        "NO_TARGET": "Call record.targets again and use a current window or display id; the window must be on screen",
+        "RECORDING_BUSY": "Another recording is running (the user's or another session's); wait for it to end or ask the user",
+        "NOT_RECORDING": "Call record.start first; record.status shows the current state",
+        "RECORDING_FAILED": "Recording could not start or finish; the user can recover the package from Recorder; tell them before retrying",
         "STALE_REVISION": "Retry edit.apply with ifRevision set to current.revision; re-read timeline.get first if times may have moved",
         "OUT_OF_RANGE": "Use times inside 0–current.duration; clip edges are in current.clips",
         "INVALID_OP": "Revise the op against tools/list (fields, ranges, enums) and retry",
@@ -783,11 +1008,18 @@ enum MCPTools {
         "PERMISSION_DENIED": "Ask the user to change this project's access in the Claude tab",
         "REVIEW_IN_PROGRESS": "Finish or discard the current review/draft, then retry",
         "RENDER_BUSY": "Wait for the running render or call render.cancel",
-        "NEEDS_APPROVAL": "Request the export again when the user is ready",
+        "NEEDS_APPROVAL": "Request approval again when the user is ready",
         "DENIED": "Ask the user before requesting this again"]
     // Only fixed tool/kind names and aggregate numbers enter activity, never argument or response text.
     static func activityIntent(_ name: String, _ action: String, _ args: [String: Any]) -> String {
         switch (name, action) {
+        case ("record", "targets"): return "Listing capture targets"
+        case ("record", "start"): return "Starting recording"
+        case ("record", "status"): return "Checking recording"
+        case ("record", "mark"): return "Marking step"
+        case ("record", "pause"): return "Pausing recording"
+        case ("record", "resume"): return "Resuming recording"
+        case ("record", "stop"): return "Stopping recording"
         case ("edit", "apply"):
             guard let ops = try? decodeOps(args["ops"]) else { return "Applying edits" }
             var kinds: [String] = []
@@ -839,6 +1071,13 @@ enum MCPTools {
     }
     static func activityResult(_ name: String, _ action: String, _ payload: [String: Any]) -> String {
         switch (name, action) {
+        case ("record", "targets"): return "\((payload["windows"] as? [Any])?.count ?? 0) windows"
+        case ("record", "start"), ("record", "resume"): return "Recording"
+        case ("record", "pause"): return "Paused"
+        case ("record", "mark"): return "Marker added"
+        case ("record", "stop"):
+            return payload["discarded"] as? Bool == true ? "Discarded" : String(format: "%.1f s, %d markers", payload["duration"] as? Double ?? 0, (payload["markers"] as? [Any])?.count ?? 0)
+        case ("record", "status"): return "Recording status checked"
         case ("edit", "apply"):
             let count = (payload["changes"] as? [Any])?.count ?? 0
             let duration = payload["duration"] as? [String: Double] ?? [:]

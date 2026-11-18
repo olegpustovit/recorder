@@ -1,0 +1,5 @@
+export-gif frames=14 expected≈14 lastFrameCallback=14 elapsed=0.65s
+export-gif loopCount=0
+export-gif delay=0.07s expected≈0.06666666666666667s
+export-gif size=960x540 longEdge=960
+SELFTEST export-gif OK

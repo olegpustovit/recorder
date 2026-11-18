@@ -134,8 +134,13 @@ struct SettingsView: View {
 
 /// Settings ▸ Agents: who's live, and the way into the Connect an Agent window (SPEC §10.1).
 struct AgentsPane: View {
+    @AppStorage("agentRecording.allowWithoutAsking") private var allowRecording = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            Toggle("Let agents start recordings without asking", isOn: $allowRecording)
+            Text("Agents still can't hear audio or read your keystrokes. The recording widget stays visible.")
+                .font(Font(Theme.captionFont)).foregroundStyle(Theme.textSecondaryColor).fixedSize(horizontal: false, vertical: true)
             HStack {
                 Text("Claude Code, Codex, Cursor, agentpack and other MCP clients, with commands and a guide.")
                     .font(Font(Theme.captionFont)).foregroundStyle(Theme.textSecondaryColor).fixedSize(horizontal: false, vertical: true)

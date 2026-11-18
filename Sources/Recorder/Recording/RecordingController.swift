@@ -4,8 +4,7 @@ import CoreMedia
 import Foundation
 import RecorderCore
 
-/// Turns a chosen `CaptureTarget` into a recorded `.recorder` package (SPEC §4.7–§4.8, §5). The one
-/// caller is `SourcePickerOverlay.startRecording(target:)` (also used by `AreaSelectionOverlay.start`);
+/// Turns a target from the pickers or an MCP agent into a recorded `.recorder` package (SPEC §4.7–§5);
 /// `finish`/`pause`/`resume`/`restart`/`delete` are called by the recording widget
 /// (`RecordingWidgetPanel`) and the status-item menu (T-207b).
 @MainActor final class RecordingController {
@@ -30,6 +29,7 @@ import RecorderCore
     private var recordingToken = UUID()
     private var currentSettings: RecordingSettings?
     private var agentTitle: String?
+    private var finishRequested = false
 
     private init() {}
 
@@ -52,8 +52,11 @@ import RecorderCore
         do {
             try await capture(target: target, settings: settings, camera: nil)
         } catch {
-            reset()
-            throw MCPFailure(code: "RECORDING_FAILED", message: error.localizedDescription)
+            if recordingToken == token {
+                lastAgentFailure = (owner, (error as? MCPFailure)?.message ?? error.localizedDescription)
+                reset()
+            }
+            throw MCPFailure(code: "RECORDING_FAILED", message: (error as? MCPFailure)?.message ?? error.localizedDescription)
         }
         // The safety cap uses wall time, including pauses, so a paused agent cannot capture forever.
         Task { [weak self] in
@@ -70,19 +73,45 @@ import RecorderCore
     }
 
     func finishForAgent() async throws -> URL {
+        let owner = agentOwner ?? lastAgentPackage?.owner
         // A stop can arrive while start or the human's Finish is still completing.
         for _ in 0..<60 where state == .countdown || state == .finishing {
             try await Task.sleep(for: .milliseconds(50))
+            if agentOwner != nil && agentOwner != owner { throw MCPFailure(code: "RECORDING_BUSY", message: "Another recording has started") }
         }
-        if state == .idle, let lastAgentPackage { return lastAgentPackage.url }
-        guard state == .recording || state == .paused else {
-            throw MCPFailure(code: "RECORDING_FAILED", message: "The recording did not become ready")
+        if state == .idle, let lastAgentPackage, lastAgentPackage.owner == owner { return lastAgentPackage.url }
+        if state == .countdown, agentOwner == owner { cancel() }
+        guard agentOwner == owner, owner != nil, state == .recording || state == .paused else {
+            throw MCPFailure(code: "RECORDING_FAILED", message: "The recording did not become ready; any failed-finish package is kept for recovery")
         }
         state = .finishing
         guard let url = try await finishCapture(presentErrors: false) else {
             throw MCPFailure(code: "RECORDING_FAILED", message: "No recording was saved")
         }
         return url
+    }
+
+    static func approveAgentRecording(_ request: AgentRecordingRequest) async throws -> Bool {
+        try Task.checkCancellation()
+        guard NSApp.modalWindow == nil else { throw MCPFailure(code: "RECORDING_BUSY", message: "Close the current approval dialog before recording") }
+        let alert = NSAlert()
+        alert.messageText = "\(request.client) wants to record your screen"
+        alert.informativeText = "Target: \(request.target). Video only, up to \(Int(ceil(request.maxDuration / 60))) min. You can stop it from the recording widget at any time."
+        alert.addButton(withTitle: "Allow for This Session")
+        alert.addButton(withTitle: "Don't Allow").keyEquivalent = "\u{1b}"
+        NSApp.activate()
+        alert.layout()
+        let modal = NSApp.beginModalSession(for: alert.window)
+        defer { NSApp.endModalSession(modal); alert.window.orderOut(nil) }
+        // Yield between native event passes so MCP timeouts and disconnects can cancel consent.
+        var response = NSApplication.ModalResponse.continue
+        while response == .continue {
+            try Task.checkCancellation()
+            response = NSApp.runModalSession(modal)
+            if response == .continue { try await Task.sleep(for: .milliseconds(20)) }
+        }
+        if response == .abort { throw CancellationError() }
+        return response == .alertFirstButtonReturn
     }
 
     /// Elapsed output-clock seconds of the current recording, for the status item (SPEC §4.7).
@@ -148,6 +177,8 @@ import RecorderCore
     }
 
     private func capture(target: CaptureTarget, settings: RecordingSettings, camera: CameraCapture?) async throws {
+        let token = recordingToken
+        var capturing: CaptureSession?
         let packageURL = ProjectStore.newProjectURL(in: settings.projectsFolder)
         currentSettings = settings
         // Create excluded surfaces before CaptureSession snapshots the content filter.
@@ -155,6 +186,8 @@ import RecorderCore
         RecordingWidgetPanel.show()
         do {
             let session = try await CaptureSession(target: target, settings: settings, packageURL: packageURL)
+            capturing = session
+            guard recordingToken == token else { throw CancellationError() }
             if let camera {
                 session.hasCamera = true
                 camera.startWriting(packageURL: packageURL, clock: session)
@@ -174,6 +207,7 @@ import RecorderCore
                 for _ in 0..<60 where session.t0 == nil { try await Task.sleep(for: .milliseconds(50)) }
                 guard session.t0 != nil else { throw MCPFailure(code: "RECORDING_FAILED", message: "No screen frame arrived within three seconds") }
             }
+            guard recordingToken == token else { throw CancellationError() }
             if let error = session.captureError { throw error }
             state = .recording
             applyDockIconPolicy(hiddenWhileRecording: true)
@@ -182,11 +216,11 @@ import RecorderCore
                     if let pid = window.owningApplication?.processID { WindowResizer.focus(pid: pid, windowTitle: window.title, frame: window.frame) }
                 }
             }
+            if finishRequested { finish() }
         } catch {
-            await session?.cancel()
+            await capturing?.cancel()
             try? FileManager.default.removeItem(at: packageURL)
-            hideHighlight()
-            RecordingWidgetPanel.hide()
+            if recordingToken == token { hideHighlight(); RecordingWidgetPanel.hide() }
             throw error
         }
     }
@@ -195,6 +229,7 @@ import RecorderCore
     /// → open the editor (SPEC §4.7 "Finish → … → open editor", AC-REC-4). Editor hand-off: see the
     /// marked call site below.
     func finish() {
+        if agentOwner != nil, state == .countdown || state == .finishing { finishRequested = true; return }
         guard state == .recording || state == .paused else { return }
         state = .finishing
         Task { _ = try? await finishCapture(presentErrors: agentOwner == nil) }
@@ -241,7 +276,7 @@ import RecorderCore
     }
 
     func cancel() {
-        guard state == .recording || state == .paused else { return }
+        guard state == .recording || state == .paused || (state == .countdown && agentOwner != nil) else { return }
         state = .finishing
         hideHighlight()
         let session = self.session
@@ -283,9 +318,13 @@ import RecorderCore
         Task {
             await camera?.finishWriting(cancelled: true)
             await session?.cancel()
+            let finishAfterRestart = self.finishRequested
             self.reset()
             if let owner, let cap {
-                do { try await self.beginForAgent(target: target, settings: settings, owner: owner, title: title, maxDuration: cap) }
+                do {
+                    try await self.beginForAgent(target: target, settings: settings, owner: owner, title: title, maxDuration: cap)
+                    if finishAfterRestart { self.finish() }
+                }
                 catch { self.lastAgentFailure = (owner, error.localizedDescription) }
             } else {
                 await self.start(target: target, isRestart: true, restartCamera: camera)
@@ -320,6 +359,7 @@ import RecorderCore
         maxDuration = nil
         agentTitle = nil
         currentSettings = nil
+        finishRequested = false
         recordingToken = UUID()
         hideHighlight()
         CameraBubblePanel.hide()
