@@ -822,7 +822,7 @@ toggle (R3), any driver with Claude Code computer use for the eval, and one wind
 |---|---|---|
 | Capture path + MCP tool | T-950…T-951 | 2/2 |
 | Docs, smoke, scripts | T-952 | 1/1 |
-| Live eval (Mac mini) | T-953 | 0/1 |
+| Live eval (MacBook Air) | T-953 | 0/1 |
 | Robustness | T-954…T-956 | 0/3 |
 
 - [x] **T-950 Agent recording path** · RECORDING-AGENT §5 T-950. `RecordingSettings(agentCopyOf:excludedBundleIDs:)`,
@@ -836,10 +836,10 @@ toggle (R3), any driver with Claude Code computer use for the eval, and one wind
 - [x] **T-952 Docs, smoke, scripts** · §5 T-952. `mcp-smoke` 10 tools, MCP.md/SPEC §10/README/CLAUDE.md,
   `scripts/mcp-record-demo.sh`, `scripts/mcp-log.py`. Verify: `make mcp-smoke`; `bash -n`; relay self-check; `make test`.
 - [~] **T-953 Live eval: TextEdit silent demo** · §5 T-953. HUMAN prerequisites (grants, interactive computer use on
-  the Mac mini). Verify: `agent-eval.py docs/evals/textedit-silent-demo.jsonl` in the Log; `render.lint demo` clean;
+  the MacBook Air). Verify: `agent-eval.py docs/evals/textedit-silent-demo.jsonl` in the Log; `render.lint demo` clean;
   draft visible in the Claude tab; SPEC §9 re-prompt question answered.
-  HUMAN pending: Enable Claude Code computer use and approve TextEdit access in the staged session. The current signed
-  Recorder build has both macOS grants. The prior Recorder still owns the standard socket.
+  Claude Code computer use is enabled. The signed build runs from `/Applications/Recorder.app` with both macOS
+  grants and ten tools connected. The live run needs human approval for TextEdit access and Recorder capture.
 - [ ] **T-954 Agent pointer events** · §5 T-954. `record.mark {x,y,action}` → `EventLog.mergingAgentPointer` (Core,
   tested) so Accessibility-only drivers still get a cursor and auto-zooms. Verify: `make test FILTER=EventsAgentPointer`;
   `make test`; `--selftest mcp-record`.
@@ -1870,3 +1870,5 @@ T-952 · 2026-11-18 · MacBook Air, macOS 27.2: `make mcp-smoke` passed against 
 T-953 preflight · 2026-11-18 · Mac mini (macOS 27.0.1): staged the signed build, verified its signature and Recorder's Screen Recording and Accessibility grants, and verified ten tools and idle capture on a private socket. In the staged interactive Claude Code 2.1.327 session, the built-in computer-use server is disabled. The relay connects to the older nine-tool app on the standard socket. Awaiting human setup and approval for the TextEdit run.
 
 T-953 scoring preflight · 2026-11-18 · Fixed the scorer to read `structuredContent.report.lint` and keep dry-run lint and duration out of the final metrics. The saved T-940 transcript now reports PASS with its existing 23 calls, 11 ops, 45 images and 29.1 s. Scorer selftest passed on the Air and on the staged Mac mini copy. `make test` passed 305 tests in 18 suites. The live TextEdit eval remains pending.
+
+T-953 local setup · 2026-11-18 · User moved the eval to the MacBook Air (macOS 27.2). Installed the Developer ID signed build at `/Applications/Recorder.app` after normally quitting the idle source build. The same signer retained both Recorder grants. The installed shim returned all ten tools and idle capture. `--selftest mcp-record` passed with real capture and injected consent. The extra native-consent selftest did not pass locally, so native capture approval is still to be checked in the interactive run. Claude Code sees the installed server and the user enabled computer use. Restarted only the staged Claude session with `--dangerously-skip-permissions` at the user's request.

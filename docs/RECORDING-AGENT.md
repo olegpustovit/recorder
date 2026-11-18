@@ -1,6 +1,6 @@
 # Agent recording — implementation guide (T-950…T-956)
 
-Status: T-950 through T-952 verified. The T-953 live eval is staged on the Mac mini and awaits computer-use approval.
+Status: T-950 through T-952 verified. The T-953 live eval is staged on the MacBook Air and awaits computer-use approval.
 See `docs/PLAN.md` for progress and `CHECKPOINT.md` for the staged session.
 Proposal: https://artifacts.microapps.space/a/d0rs3s43x727
 
@@ -359,9 +359,9 @@ running `scripts/mcp-record-demo.sh`, defined in T-952. The user waived this rem
 
 **Verify:** `make mcp-smoke` passes with 10 tools; `bash -n scripts/mcp-record-demo.sh`; the `mcp-log.py` self-check; `make test`.
 
-### T-953 Live eval: an agent records and edits a silent demo (Mac mini)
+### T-953 Live eval: an agent records and edits a silent demo (MacBook Air)
 
-Run on `olegs-mac-mini`, as in the T-940 evals. HUMAN prerequisites, done once by a person (mark `- [~]` until done):
+Run on the MacBook Air per the user's updated direction. HUMAN prerequisites, done once by a person (mark `- [~]` until done):
 Screen Recording + Accessibility for Recorder and for the driver, and Claude Code computer use enabled in an
 **interactive** session (`/mcp` → computer-use; it doesn't work with `-p`).
 
@@ -468,7 +468,7 @@ Log.
 
 ## 7. What a finished session looks like (acceptance)
 
-1. An interactive Claude Code session on the Mac mini, with Recorder + computer use connected, gets the T-953 brief.
+1. An interactive Claude Code session on the MacBook Air, with Recorder + computer use connected, gets the T-953 brief.
 2. It records a window, marks 4–6 steps, stops, and the editor opens on a project named after the brief.
 3. It cuts dead time on its markers (or with `steps`), adds step titles, passes `render.lint demo`, and submits.
 4. The human sees "Draft ready", opens it, sees the cut chips and titles on the timeline, unticks one change, and clicks
