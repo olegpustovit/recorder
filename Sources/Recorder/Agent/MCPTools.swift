@@ -1,3 +1,4 @@
+import AppKit
 import AVFoundation
 import CryptoKit
 import Foundation
@@ -536,7 +537,8 @@ enum MCPTools {
         return ["id": draft.id, "status": stale ? "stale" : draft.submitted ? "submitted" : "drafting", "base": draft.base, "revision": draft.revision,
                 "changes": changes.count, "list": "draft.status"]   // the full list costs ~10 KB per open
     }
-    @MainActor private static func draft(_ action: String, _ args: [String: Any], model: EditorModel, session: MCPSession) async throws -> [String: Any] {
+    @MainActor private static func draft(_ action: String, _ args: [String: Any], model: EditorModel, session: MCPSession,
+                                         notify: ((String, String) -> Void)?) async throws -> [String: Any] {
         if action == "submit" { try requireEditable(model, draftSession: session) }
         if action != "status", model.voiceover.isActive { throw MCPFailure(code: "PERMISSION_DENIED", message: "Recording a voiceover; stop it before reviewing") }
         if let draft = session.draft, draft.baseProject.id != model.liveProject.id, action != "discard" {
@@ -546,8 +548,15 @@ enum MCPTools {
         if action == "submit" {
             guard session.draft != nil, session.draft?.verdict == nil else { throw MCPFailure(code: "INVALID_OP", message: "Create a draft with edit.apply before submitting it") }
             session.draft?.submitted = true; session.draft?.note = args["note"] as? String
-            _ = await EditorWindowController.open(package: model.packageURL).value
+            let wasActive = NSApp.isActive
+            if wasActive { _ = await EditorWindowController.open(package: model.packageURL).value }
             try MCPServer.shared.review(session)
+            if !wasActive, model.reviewSessionID == session.id, !model.isWatchingDraft, let count = session.draft?.selectedCount {
+                let title = "Draft ready: \(model.liveProject.title)"
+                let body = "\(session.agentName) submitted \(count) changes"
+                if let notify { notify(title, body) }
+                else { (NSApp.delegate as? AppDelegate)?.notifyDraft(title: title, body: body, package: model.packageURL) }
+            }
         }
         let draft = session.draft
         var changes = draft?.changes.flatMap { $0 } ?? []
@@ -581,7 +590,7 @@ enum MCPTools {
     @MainActor static func call(_ name: String, _ args: [String: Any], session: MCPSession, progress: @escaping (Double) -> Void = { _ in },
                                 approveExport: (@MainActor (AgentExportRequest) async throws -> Bool)? = nil,
                                 approveRecording: (@MainActor (AgentRecordingRequest) async throws -> Bool)? = nil,
-                                approvalTimeout: Duration = .seconds(600)) async -> [String: Any] {
+                                approvalTimeout: Duration = .seconds(600), notify: ((String, String) -> Void)? = nil) async -> [String: Any] {
         let began = Date()
         let definition = list.first { $0["name"] as? String == name }
         let properties = (definition?["inputSchema"] as? [String: Any])?["properties"] as? [String: Any] ?? [:]
@@ -736,7 +745,7 @@ enum MCPTools {
                 case ("render", _):
                     (payload, extraContent) = try await render(action, args, model: model, session: session, progress: progress)
                 case ("edit", _): payload = try await edit(action, args, model: model, session: session)
-                case ("draft", _): payload = try await draft(action, args, model: model, session: session)
+                case ("draft", _): payload = try await draft(action, args, model: model, session: session, notify: notify)
                 case ("export", "final"):
                     (payload, extraContent) = try await exportFinal(args, model: model, session: session, progress: progress,
                         approve: approveExport, approvalTimeout: approvalTimeout)

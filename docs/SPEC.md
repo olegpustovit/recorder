@@ -1173,7 +1173,9 @@ The human base remains frozen for autosave/Save Now/close, with no undo entry un
 inclusion/Accept are disabled and the panel/timeline say `Claude is editing, Esc to take over`. Escape restores
 the human base and pauses automatic preview for that session while retaining its draft. Later agent calls stay
 hidden; a human edit makes the old draft stale. `draft.submit` makes the visible draft ready for review, enables
-controls and focuses Claude. Review the preview/marks, untick individual operations or whole groups, then Accept.
+controls and selects the Claude tab. If Recorder is in the background, it requests Dock attention and posts a
+notification when allowed. Clicking the notification focuses the project and its Claude tab. Review the preview
+and marks, untick individual operations or whole groups, then Accept.
 Claude may append another call to its submitted pending draft using the current checked proposal's revision.
 That returns the same draft to watching until resubmitted, retaining operation ids, human exclusions and a nil
 verdict. Status reports excluded op indices and skipped op indices/reasons so Claude can respond to rejections.

@@ -4848,8 +4848,9 @@ private final class MCPTestClient {
         UserDefaults.standard.removeObject(forKey: "agentAccess.\(fixture.id)")
         try? FileManager.default.removeItem(at: root)
     }
-    func tool(_ action: String) async throws -> [String: Any] {
-        let result = await MCPTools.call("draft", ["action": action, "note": "Tighten the introduction"], session: session)
+    func tool(_ action: String, notify: ((String, String) -> Void)? = nil) async throws -> [String: Any] {
+        let result = await MCPTools.call("draft", ["action": action, "note": "Tighten the introduction"],
+                                         session: session, notify: notify)
         guard result["isError"] as? Bool == false, let payload = result["structuredContent"] as? [String: Any] else {
             throw MCPTestFailure(description: "Review draft.\(action) failed: \(result)")
         }
@@ -4868,7 +4869,15 @@ private final class MCPTestClient {
     let ops: [EditOp] = [.cut(from: 0.5, to: 1), .style(patch: ["frame": .object(["padding": .number(0.04)])]),
                          .text(from: 1.2, to: 2, style: .title, text: "Welcome", position: nil, size: nil)]
     session.draft = try proposal(ops, base: base)
-    _ = try await tool("submit")
+    NSApp.hide(nil)
+    for _ in 0..<100 where NSApp.isActive { try await Task.sleep(for: .milliseconds(10)) }
+    var notification: (title: String, body: String)?
+    _ = try await tool("submit") { notification = ($0, $1) }
+    guard notification?.title == "Draft ready: \(base.title)",
+          notification?.body == "claude-code submitted 3 changes" else {
+        throw MCPTestFailure(description: "Inactive submit did not report only the expected draft notification fields")
+    }
+    _ = await EditorWindowController.open(package: package).value
     guard model.isReviewingDraft, model.inspectorShowsAgent, model.liveProject == base, model.project != base,
           model.undoStepNames.isEmpty, !model.reviewAddedIDs.isEmpty, model.reviewCuts.count == 1,
           abs(model.reviewCuts[0].time - 0.5) < 1e-6, model.reviewCuts[0].label == "−0.5 s" else {

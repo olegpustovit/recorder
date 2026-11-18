@@ -2,19 +2,22 @@ import AppKit
 import RecorderCore
 import SwiftUI
 import UniformTypeIdentifiers
+import UserNotifications
 
 /// App shell: dark appearance, main menu (SPEC §8), status item, background-app lifecycle.
 /// Menu items with no app logic yet keep `action: nil`; later tasks (see SPEC §8, T-104, T-207, T-311…) wire them.
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     var window: NSWindow!
     var statusItem: NSStatusItem!
     private var statusTimer: Timer?
+    private var draftNotificationAuthorization: Task<Bool, Never>?
     /// Tracks which of the two status menus (SPEC §8 idle / §4.7 recording) is currently installed, so
     /// `updateStatusItem` only rebuilds it on an actual state change instead of every tick.
     private var isShowingRecordingMenu = false
 
     @MainActor func applicationDidFinishLaunching(_ n: Notification) {
         NSApp.appearance = NSAppearance(named: .darkAqua)
+        UNUserNotificationCenter.current().delegate = self
         do { try MCPServer.shared.start() }
         catch { NSLog("Recorder MCP listener unavailable: %@", error.localizedDescription) }
         Task.detached(priority: .utility) { AgentRender.purgeOldCaches() }
@@ -49,6 +52,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         AppDelegate.applyShowInDockPolicy()
         NSApp.activate()
+    }
+
+    @MainActor func notifyDraft(title: String, body: String, package: URL) {
+        NSApp.requestUserAttention(.informationalRequest)
+        let center = UNUserNotificationCenter.current()
+        if draftNotificationAuthorization == nil {
+            draftNotificationAuthorization = Task {
+                let settings = await center.notificationSettings()
+                if settings.authorizationStatus == .notDetermined {
+                    return (try? await center.requestAuthorization(options: [.alert])) == true
+                }
+                return settings.authorizationStatus == .authorized
+            }
+        }
+        let authorization = draftNotificationAuthorization
+        Task {
+            guard await authorization?.value == true else { return }
+            let content = UNMutableNotificationContent()
+            content.title = title
+            content.body = body
+            content.userInfo = ["recorderDraftPackage": package.path]
+            try? await center.add(UNNotificationRequest(identifier: package.path, content: content, trigger: nil))
+        }
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
+        guard response.actionIdentifier == UNNotificationDefaultActionIdentifier,
+              let path = response.notification.request.content.userInfo["recorderDraftPackage"] as? String else { return }
+        let package = URL(fileURLWithPath: path, isDirectory: true)
+        guard package.pathExtension == "recorder" else { return }
+        await Task { @MainActor in
+            let editor = await EditorWindowController.open(package: package).value
+            editor?.model.inspectorShowsAgent = true
+        }.value
     }
 
     /// `application(_:open:)`: Finder double-click on a `.recorder` package (SPEC §5, AC-LIB-3).

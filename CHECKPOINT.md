@@ -8,7 +8,7 @@ Branch: `dev`. Push target: `origin/dev` (`git@github.com:olegpustovit/recorder.
 ## Resume here
 
 Read `AGENTS.md`, `docs/PLAN.md` §“Agent recording”, and `docs/RECORDING-AGENT.md`.
-**Resume at T-955 on the MacBook Air.** The TextEdit draft is ready for review in Recorder.
+**Resume at T-956 on the MacBook Air.** The TextEdit draft is ready for review in Recorder.
 
 On the MacBook Air, preserve any local changes before switching or pulling. With a clean worktree:
 
@@ -99,12 +99,10 @@ Use `make test`, never bare `swift test`. Avoid changing Swift source while a bu
 
 ### Next
 
-T-954 is verified in the signed QA build. It adds `record.mark {x,y,pointerAction}` and corrects cursor drift
-on existing takes. The installed release will be updated after the remaining tasks.
+T-954 and T-955 are verified in the signed QA build. They add `record.mark {x,y,pointerAction}`, correct cursor
+drift on existing takes and add a background draft notification. The installed release will be updated after T-956.
 
-1. **T-955 — draft-ready notification**, native attention/notification and click-through to the editor's Claude tab.
-   **Not implemented yet.**
-2. **T-956 — `steps` intent.** The submitted T-953 draft needed nine cuts for four steps, which meets the threshold.
+**T-956 — `steps` intent.** The submitted T-953 draft needed nine cuts for four steps, which meets the threshold.
 
 ## Files and state
 

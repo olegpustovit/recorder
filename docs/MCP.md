@@ -880,3 +880,6 @@ For a driver that leaves no mouse events, add `x`, `y` and `pointerAction` toget
 Coordinates use global screen points with a top-left origin. The action is `click`, `doubleClick` or `move`.
 Declarations affect the recorded pointer only. Marks outside the target or during a pause keep the label and omit
 the pointer event, and a nearby captured click supersedes a declared click.
+
+When a draft is submitted in the background, Recorder requests Dock attention and can show a macOS notification
+with the project title, client name and change count. Clicking it opens the Claude review.
