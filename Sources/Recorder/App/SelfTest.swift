@@ -2467,6 +2467,52 @@ enum SelfTest {
         },
     ]
     private static let recordingCases: [String: Case] = [
+        "record-agent": { @MainActor _ in
+            guard Permissions.allGranted else { print("SKIP: needs Screen Recording + Accessibility"); return }
+            NSApplication.shared.setActivationPolicy(.accessory)
+            NSApplication.shared.finishLaunching()
+            let defaults = UserDefaults.standard
+            let savedCountdown = defaults.object(forKey: "recording.countdown") as? Int
+            let savedMic = defaults.string(forKey: "recording.micID")
+            let settings = RecordingSettings(agentCopyOf: .shared, excludedBundleIDs: ["com.apple.finder"])
+            guard settings.countdown == 0, settings.micID == nil, settings.cameraID == nil, settings.systemAudio == .off else {
+                throw MCPTestFailure(description: "Agent settings are not silent")
+            }
+            let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
+            guard let display = content.displays.first(where: { $0.displayID == CGMainDisplayID() }) else {
+                throw MCPTestFailure(description: "No main display")
+            }
+            let target = CaptureTarget.area(display, CGRect(x: 0, y: 0, width: 400, height: 300))
+            let rc = RecordingController.shared
+            try await rc.beginForAgent(target: target, settings: settings, owner: "selftest", title: "record-agent selftest", maxDuration: 30)
+            defer { rc.cancel() }
+            do {
+                try await rc.beginForAgent(target: target, settings: settings, owner: "other", title: nil, maxDuration: 30)
+                throw MCPTestFailure(description: "Second recording accepted")
+            } catch let error as MCPFailure where error.code == "RECORDING_BUSY" {}
+            // SCK can deliver the first frame before startCapture returns.
+            try await Task.sleep(for: .seconds(max(0, 1 - rc.elapsed)))
+            let one = rc.addMarker(label: "one")
+            rc.pause()
+            try await Task.sleep(for: .milliseconds(500))
+            let paused = rc.addMarker(label: "paused")
+            rc.resume()
+            try await Task.sleep(for: .milliseconds(500))
+            let two = rc.addMarker(label: "two")
+            let url = try await rc.finishForAgent()
+            let editor = await EditorWindowController.open(package: url).value
+            defer { editor?.close(); try? FileManager.default.trashItem(at: url, resultingItemURL: nil) }
+            let project = try Project.load(from: url.appendingPathComponent("project.json"))
+            guard project.title == "record-agent selftest", project.markers == [one, paused, two],
+                  one.time <= paused.time, paused.time < two.time, paused.time - one.time < 0.6,
+                  abs(project.source.duration - 1.5) < 0.4, !project.source.hasMic, !project.source.hasSystemAudio,
+                  !FileManager.default.fileExists(atPath: url.appendingPathComponent("camera.mov").path),
+                  defaults.object(forKey: "recording.countdown") as? Int == savedCountdown,
+                  defaults.string(forKey: "recording.micID") == savedMic else {
+                throw MCPTestFailure(description: "Agent capture settings, markers, duration or saved preferences changed: \(project.source.duration)")
+            }
+            print("Silent agent capture: \(project.source.duration) s, three pause-aware markers, preferences unchanged")
+        },
         "recover": { _ in
             struct Fail: Error, CustomStringConvertible { let description: String }
             let fm = FileManager.default

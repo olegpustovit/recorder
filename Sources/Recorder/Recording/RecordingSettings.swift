@@ -32,6 +32,25 @@ import Observation
     var fps: Int { didSet { UserDefaults.standard.set(fps, forKey: Keys.fps) } } // 30,60 (SPEC §8)
     var projectsFolder: URL { didSet { UserDefaults.standard.set(projectsFolder, forKey: Keys.projectsFolder) } }
 
+    /// Set only on throwaway agent copies; never persisted.
+    var excludedBundleIDs: [String] = []
+
+    init(agentCopyOf base: RecordingSettings, excludedBundleIDs: [String]) {
+        mode = base.mode
+        cameraID = nil
+        micID = nil
+        systemAudio = .off
+        denoise = base.denoise
+        disableAGC = base.disableAGC
+        hideDesktopIcons = base.hideDesktopIcons
+        hideDockIcon = base.hideDockIcon
+        highlightArea = base.highlightArea
+        countdown = 0
+        fps = base.fps
+        projectsFolder = base.projectsFolder
+        self.excludedBundleIDs = excludedBundleIDs
+    }
+
     private enum Keys {
         static let mode = "recording.mode"
         static let cameraID = "recording.cameraID"

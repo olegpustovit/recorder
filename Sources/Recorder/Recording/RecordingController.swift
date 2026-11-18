@@ -22,7 +22,68 @@ import RecorderCore
     private var currentTarget: CaptureTarget?
     private var highlightWindow: NSWindow?
 
+    private(set) var agentOwner: String?
+    private(set) var lastAgentPackage: (owner: String, url: URL)?
+    private(set) var lastAgentFailure: (owner: String, message: String)?
+    private(set) var markers: [Marker] = []
+    private(set) var maxDuration: Double?
+    private var recordingToken = UUID()
+    private var currentSettings: RecordingSettings?
+    private var agentTitle: String?
+
     private init() {}
+
+    func beginForAgent(target: CaptureTarget, settings: RecordingSettings, owner: String,
+                       title: String?, maxDuration: Double) async throws {
+        guard state == .idle else { throw MCPFailure(code: "RECORDING_BUSY", message: "Another recording is running") }
+        guard Permissions.allGranted else { throw MCPFailure(code: "PERMISSION_NEEDED", message: "Screen Recording and Accessibility are required") }
+        guard (10...1800).contains(maxDuration), maxDuration.isFinite else {
+            throw MCPFailure(code: "OUT_OF_RANGE", message: "maxDuration must be 10–1800 seconds")
+        }
+        state = .countdown
+        agentOwner = owner
+        agentTitle = title
+        self.maxDuration = maxDuration
+        lastAgentPackage = nil
+        lastAgentFailure = nil
+        recordingToken = UUID()
+        let token = recordingToken
+        ToolbarController.shared.close()
+        do {
+            try await capture(target: target, settings: settings, camera: nil)
+        } catch {
+            reset()
+            throw MCPFailure(code: "RECORDING_FAILED", message: error.localizedDescription)
+        }
+        // The safety cap uses wall time, including pauses, so a paused agent cannot capture forever.
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(maxDuration))
+            guard let self, self.recordingToken == token else { return }
+            self.finish()
+        }
+    }
+
+    func addMarker(label: String) -> Marker {
+        let marker = Marker(time: elapsed, label: label)
+        markers.append(marker)
+        return marker
+    }
+
+    func finishForAgent() async throws -> URL {
+        // A stop can arrive while start or the human's Finish is still completing.
+        for _ in 0..<60 where state == .countdown || state == .finishing {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        if state == .idle, let lastAgentPackage { return lastAgentPackage.url }
+        guard state == .recording || state == .paused else {
+            throw MCPFailure(code: "RECORDING_FAILED", message: "The recording did not become ready")
+        }
+        state = .finishing
+        guard let url = try await finishCapture(presentErrors: false) else {
+            throw MCPFailure(code: "RECORDING_FAILED", message: "No recording was saved")
+        }
+        return url
+    }
 
     /// Elapsed output-clock seconds of the current recording, for the status item (SPEC §4.7).
     var elapsed: Double { session?.elapsed ?? 0 }
@@ -75,44 +136,58 @@ import RecorderCore
 
         if let camera { CameraBubblePanel.show(previewLayer: camera.previewLayer) }
 
-        let packageURL = ProjectStore.newProjectURL(in: settings.projectsFolder)
+        do {
+            try await capture(target: target, settings: settings, camera: camera)
+        } catch {
+            NSLog("Recorder: capture failed to start: \(error)")
+            await camera?.stop(cancelled: true)
+            reset()
+            NSAlert(error: error).runModal()
+            ToolbarController.shared.show()
+        }
+    }
 
-        // Both registered with `FloatingPanel` *before* `CaptureSession` reads the exclusion list below
-        // (its `SCContentFilter` is a fixed snapshot, not updated afterward), so neither ever leaks into
-        // `screen.mov` (AC-TB-1 applies to every recording-flow surface, including these two). The widget
-        // shows here — alongside the highlight, before the capture session even exists — rather than
-        // after `session.start()` succeeds, specifically so its window exists in time for that snapshot.
+    private func capture(target: CaptureTarget, settings: RecordingSettings, camera: CameraCapture?) async throws {
+        let packageURL = ProjectStore.newProjectURL(in: settings.projectsFolder)
+        currentSettings = settings
+        // Create excluded surfaces before CaptureSession snapshots the content filter.
         showHighlight(for: target, settings: settings)
         RecordingWidgetPanel.show()
-
         do {
             let session = try await CaptureSession(target: target, settings: settings, packageURL: packageURL)
             if let camera {
                 session.hasCamera = true
                 camera.startWriting(packageURL: packageURL, clock: session)
             }
-            try await session.start()
             self.session = session
             self.camera = camera
             self.packageURL = packageURL
             self.currentTarget = target
+            session.onStopped = { [weak self, weak session] in
+                Task { @MainActor in
+                    guard let self, self.session === session else { return }
+                    self.finish()
+                }
+            }
+            try await session.start()
+            if agentOwner != nil {
+                for _ in 0..<60 where session.t0 == nil { try await Task.sleep(for: .milliseconds(50)) }
+                guard session.t0 != nil else { throw MCPFailure(code: "RECORDING_FAILED", message: "No screen frame arrived within three seconds") }
+            }
+            if let error = session.captureError { throw error }
             state = .recording
             applyDockIconPolicy(hiddenWhileRecording: true)
             if case .windows(let windows) = target {
-                for window in windows.reversed() { // window 0 ends up frontmost
+                for window in windows.reversed() {
                     if let pid = window.owningApplication?.processID { WindowResizer.focus(pid: pid, windowTitle: window.title, frame: window.frame) }
                 }
             }
         } catch {
-            NSLog("Recorder: capture failed to start: \(error)")
+            await session?.cancel()
+            try? FileManager.default.removeItem(at: packageURL)
             hideHighlight()
             RecordingWidgetPanel.hide()
-            await camera?.stop(cancelled: true)
-            CameraBubblePanel.hide()
-            try? FileManager.default.removeItem(at: packageURL)
-            state = .idle
-            NSAlert(error: error).runModal()
-            ToolbarController.shared.show()
+            throw error
         }
     }
 
@@ -122,52 +197,47 @@ import RecorderCore
     func finish() {
         guard state == .recording || state == .paused else { return }
         state = .finishing
-        Task { await finishCapture() }
+        Task { _ = try? await finishCapture(presentErrors: agentOwner == nil) }
     }
 
-    private func finishCapture() async {
+    private func finishCapture(presentErrors: Bool) async throws -> URL? {
         defer { if state == .finishing { reset() } }
-        guard let session, let packageURL else { return }
+        guard let session, let packageURL else { return nil }
         hideHighlight()
 
-        var source: Source
         do {
-            source = try await session.finish()
-        } catch {
+            var source: Source
+            do { source = try await session.finish() }
+            catch {
+                await camera?.stop(cancelled: false)
+                throw error
+            }
             await camera?.stop(cancelled: false)
-            NSAlert(error: error).runModal()
-            return // Keep the package available for recovery.
-        }
-        await camera?.stop(cancelled: false)
-        source.hasCamera = camera?.hasRecording == true
-        if let error = camera?.error {
-            NSAlert(error: error).runModal()
-            return // Preserve the package for recovery instead of claiming the camera saved.
-        }
+            source.hasCamera = camera?.hasRecording == true
+            if let error = camera?.error { throw error }
 
-        var project = Project(title: packageURL.deletingPathExtension().lastPathComponent,
-                               source: source,
-                               clips: [Clip(sourceStart: 0, sourceEnd: source.duration)])
-        if let radius = session.windowCornerRadius { project.frame.cornerRadius = radius }
-        project.camera.corner = CameraBubblePanel.corner
-        project.audio.denoise = RecordingSettings.shared.denoise
-
-        if let data = try? Data(contentsOf: packageURL.appendingPathComponent("events.json")),
-           let log = try? JSONDecoder().decode(EventLog.self, from: data) {
-            project.windowShots = autoWindowShots(events: log, duration: source.duration, windowCount: project.windowCount)
-            project.zooms = project.generatedAutoZooms(events: log)
-        }
-
-        do {
+            var project = Project(title: agentTitle ?? packageURL.deletingPathExtension().lastPathComponent,
+                                  source: source, clips: [Clip(sourceStart: 0, sourceEnd: source.duration)])
+            if let radius = session.windowCornerRadius { project.frame.cornerRadius = radius }
+            project.camera.corner = CameraBubblePanel.corner
+            project.audio.denoise = RecordingSettings.shared.denoise
+            project.markers = markers
+            if let data = try? Data(contentsOf: packageURL.appendingPathComponent("events.json")),
+               let log = try? JSONDecoder().decode(EventLog.self, from: data) {
+                project.windowShots = autoWindowShots(events: log, duration: source.duration, windowCount: project.windowCount)
+                project.zooms = project.generatedAutoZooms(events: log)
+            }
             try project.save(to: packageURL.appendingPathComponent("project.json"))
+            if let agentOwner { lastAgentPackage = (agentOwner, packageURL) }
+            reset()
+            EditorWindowController.open(package: packageURL)
+            Task { await writeThumbnail(packageURL: packageURL) }
+            return packageURL
         } catch {
-            NSAlert(error: error).runModal()
-            return
+            if let agentOwner { lastAgentFailure = (agentOwner, error.localizedDescription) }
+            if presentErrors { NSAlert(error: error).runModal(); return nil }
+            throw MCPFailure(code: "RECORDING_FAILED", message: error.localizedDescription)
         }
-
-        reset() // Restore normal activation policy before making the editor key.
-        EditorWindowController.open(package: packageURL)
-        Task { await writeThumbnail(packageURL: packageURL) }
     }
 
     func cancel() {
@@ -206,11 +276,20 @@ import RecorderCore
         hideHighlight()
         let session = self.session
         let camera = self.camera
+        let settings = currentSettings ?? .shared
+        let owner = agentOwner
+        let title = agentTitle
+        let cap = maxDuration
         Task {
             await camera?.finishWriting(cancelled: true)
             await session?.cancel()
             self.reset()
-            await self.start(target: target, isRestart: true, restartCamera: camera)
+            if let owner, let cap {
+                do { try await self.beginForAgent(target: target, settings: settings, owner: owner, title: title, maxDuration: cap) }
+                catch { self.lastAgentFailure = (owner, error.localizedDescription) }
+            } else {
+                await self.start(target: target, isRestart: true, restartCamera: camera)
+            }
         }
     }
 
@@ -236,6 +315,13 @@ import RecorderCore
         packageURL = nil
         currentTarget = nil
         state = .idle
+        agentOwner = nil
+        markers = []
+        maxDuration = nil
+        agentTitle = nil
+        currentSettings = nil
+        recordingToken = UUID()
+        hideHighlight()
         CameraBubblePanel.hide()
         RecordingWidgetPanel.hide()
         applyDockIconPolicy(hiddenWhileRecording: false)

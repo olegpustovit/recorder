@@ -807,6 +807,45 @@ TimelineOps primitive → EditOp → human command → selftest (D4), and fills 
 - [x] **T-940 Docs + eval** — MCP.md v2, SPEC §5/§10, eval harness brief "30 s reel with a title card and two callouts"
   on Golden Island. Verify: `make mcp-smoke`; harness run recorded.
 
+
+---
+
+## Agent recording: silent demos without a person — 2026-11-18
+
+Source: [RECORDING-AGENT.md](RECORDING-AGENT.md) (normative: decisions R1–R10, `record` tool §3, edge cases §6) ·
+proposal https://artifacts.microapps.space/a/d0rs3s43x727. The user asked for an agent to record the screen and deliver
+an edited silent demo as a reviewable project. Recorder captures and marks; the agent's own computer-use tool acts (R1).
+The proposal's open choices are taken at its recommendations: consent once per session plus an opt-in "without asking"
+toggle (R3), any driver with Claude Code computer use for the eval, and one window as the default target (R8).
+
+| Scope | Tasks | Done |
+|---|---|---|
+| Capture path + MCP tool | T-950…T-951 | 1/2 |
+| Docs, smoke, scripts | T-952 | 0/1 |
+| Live eval (Mac mini) | T-953 | 0/1 |
+| Robustness | T-954…T-956 | 0/3 |
+
+- [x] **T-950 Agent recording path** · RECORDING-AGENT §5 T-950. `RecordingSettings(agentCopyOf:excludedBundleIDs:)`,
+  `CaptureTarget.filter` excludes bundle ids, `RecordingController.beginForAgent/addMarker/finishForAgent` (shared
+  `capture` body, `finishCapture(presentErrors:)`, owner/markers/title/maxDuration, markers saved into `project.json`).
+  Verify: `--selftest record-agent` OK (or SKIP → `[~]` HUMAN: grant and re-run); `menus`, `menu-actions`; `make test`.
+- [ ] **T-951 MCP `record` tool** · §3, §5 T-951. targets/start/status/mark/pause/resume/stop, `openProject` extracted
+  from `project.open`, consent alert + `approveRecording` injection + timeout, disconnect → finish, Settings ▸ Agents
+  toggle. Verify: `--selftest mcp-record`, `record-agent-cap`, `mcp-schema`, `mcp-export`, `mcp-roundtrip <fixture>`;
+  `settings-png <out> agents` inspected; `make test`. HUMAN (waivable): see the real consent alert via T-952's script.
+- [ ] **T-952 Docs, smoke, scripts** · §5 T-952. `mcp-smoke` 10 tools, MCP.md/SPEC §10/README/CLAUDE.md,
+  `scripts/mcp-record-demo.sh`, `scripts/mcp-log.py`. Verify: `make mcp-smoke`; `bash -n`; relay self-check; `make test`.
+- [ ] **T-953 Live eval: TextEdit silent demo** · §5 T-953. HUMAN prerequisites (grants, interactive computer use on
+  the Mac mini). Verify: `agent-eval.py docs/evals/textedit-silent-demo.jsonl` in the Log; `render.lint demo` clean;
+  draft visible in the Claude tab; SPEC §9 re-prompt question answered.
+- [ ] **T-954 Agent pointer events** · §5 T-954. `record.mark {x,y,action}` → `EventLog.mergingAgentPointer` (Core,
+  tested) so Accessibility-only drivers still get a cursor and auto-zooms. Verify: `make test FILTER=EventsAgentPointer`;
+  `make test`; `--selftest mcp-record`.
+- [ ] **T-955 Draft-ready notification** · §5 T-955. Dock bounce + `UNUserNotificationCenter` on `draft.submit` when
+  inactive; title and count only. Verify: `--selftest mcp-review` incl. injected `notify`.
+- [ ] **T-956 `steps` intent (conditional)** · §5 T-956. Only if T-953 shows ≥2 manual cuts per step or static-span lint
+  warnings after `pace`; otherwise tick with `not needed: <evidence>`. Verify: `make test FILTER=IntentOps`; `make test`.
+
 ---
 
 ## Requested Nudge fixes — 2026-09-22
@@ -1819,3 +1858,5 @@ HUMAN waiver · 2026-11-17 · The user waived the in-app HUMAN look/feel checks 
 Parity fix · 2026-11-17 · verified: `--selftest parity` maxDelta 0 on the untouched Bright Forest copy (was 4) and on the T-923 graphics fixture (19 times, was 3) · Root cause in the parity selftest, not the renderer: sample times like 1.286 s were compared at the exact time on the export path but seeked at 1/600 s CMTime (1.28667) on the preview path; with a variable-rate recording a frame inside that window was picked by one path only. Times are now quantized to the preview's 1/600 s clock before both paths (exports already run on n/fps, exact in that clock).
 Windowed + live verification (Mac mini, user's choice to keep the laptop free) · 2026-11-17 · on `olegs-mac-mini` (macOS 27.0.1) with this tree: `make test` 305/305; `make-m6-fixture` then `--selftest mcp-roundtrip`, `mcp-edit`, `mcp-review`, `mcp-live` on copies of /tmp/M6Fixture.recorder all OK (mcp-edit's hard-coded op-schema count updated 18 → 22: −update, +set graphic animate freeze transition; earlier failures on Bright Forest/Gentle Moon were fixture assumptions — 2× speed halves the synthetic 2 s pause, existing zooms overlap the test's zoom, the tests expect the 3 s M6 fixture). Live eval: a real JSON-RPC session (`scratchpad eval_reel_graphics.py`) against this build's MCP server on a private socket (`--selftest mcp-serve`, because another Recorder owned the default socket on the mini), Golden Island copy: templates listed, 66 shots, fitDuration → 29.46 s, applied lint's `uncovered` cut, titleCard + two screen callouts with keyed pop-in, dissolve at 6.53 s → 28.90 s, 3 graphic blocks, frames + lint rendered, draft discarded; `scripts/agent-eval.py`: 15 calls, 6 ops, 3 images, 28.9 s (lint warnings left: edgeContent ×4 from the 16:9 crop, tinyShot ×1). Freeze-frame parity (T-933): `--selftest freeze <pkg> <out>` keeps a frozen copy; `parity` on it maxDelta 0 over 10 times. Fixed: dissolve frames were named `freeze-*` in media/.
 Free-running Claude eval (T-940) · 2026-11-17 · on the Mac mini, `claude -p` (Claude Code 2.1.326) given only the brief ("~30 s social reel, fast cuts, title card, two callouts; verify with renders and render.lint reel; fix every warning; submit, don't export") and the Recorder MCP tools, through a logging stdio↔socket relay to this build's server (`--selftest mcp-serve`): it chose pace + fitDuration, cut the uncovered tail gap and two flicker slivers, reframed per shot, added a title card and two callouts (re-placed one after a render), submitted. Final 29.13 s, final `render.lint` reel: no warnings. `scripts/agent-eval.py docs/evals/golden-island-reel-graphics.jsonl`: 23 calls, 11 ops, 45 images, 29.1 s. Transcript kept in docs/evals/ (no key events in it). `mcp-edit`'s schema check is now the planned op-name set (22 names: primitives, set, graphic/animate/freeze/transition, intents; no update) instead of a count — passes.
+
+T-950 · 2026-11-18 · verified: `make app APP=build/agent-recording/Recorder.app` (release, Developer ID signed, separate bundle to leave the running source app intact); that binary's `--selftest record-agent` OK (real 400×300 display-area capture, 1.517 s, silent settings, title + three pause-aware markers saved, second owner refused, saved mic/countdown unchanged, test package trashed), `menus`, `menu-actions` OK; `make test` 305/305. Debug capture/menu checks also passed. Shared capture and throwing finish path, agent ownership/title/markers, token-checked wall-time cap and restart settings; stream failure now finishes through the controller rather than only logging. Area frames now include their display's global offset. Excluded Finder apps no longer get desktop windows re-included through the hide-desktop exceptions. Agent-owned widget/timer finishes suppress error alerts (R9); human errors still alert and failed-finish packages stay recoverable. Selftest measures its first second from the recording clock (SCK's first frame may precede startCapture's return). Duration-cap timing is T-951's `record-agent-cap` check; the MCP tool and the remaining proposal tasks are not implemented yet.

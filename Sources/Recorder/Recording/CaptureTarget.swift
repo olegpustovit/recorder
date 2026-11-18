@@ -16,9 +16,12 @@ extension CaptureTarget {
     func filter(content: SCShareableContent, settings: RecordingSettings) -> SCContentFilter {
         switch self {
         case .display(let display), .area(let display, _):
-            let ownApps = content.applications.filter { $0.processID == ProcessInfo.processInfo.processIdentifier }
+            let ownApps = content.applications.filter {
+                $0.processID == ProcessInfo.processInfo.processIdentifier || settings.excludedBundleIDs.contains($0.bundleIdentifier)
+            }
             var excluded: [SCWindow] = []
-            if settings.hideDesktopIcons {
+            // An exception for an excluded app would include that window again.
+            if settings.hideDesktopIcons && !settings.excludedBundleIDs.contains("com.apple.finder") {
                 // ponytail: SPEC §9 open question 3 ("which Finder windows must be excluded to hide desktop
                 // icons on macOS 26?") isn't verifiable without Screen Recording permission on this machine.
                 // Best-known heuristic: Finder's desktop-icons window sits at kCGDesktopIconWindowLevel.
@@ -97,7 +100,7 @@ extension CaptureTarget {
         switch self {
         case .display(let display): return display.frame
         case .windows(let windows): return windows.dropFirst().reduce(windows[0].frame) { $0.union($1.frame) }
-        case .area(_, let rect): return rect
+        case .area(let display, let rect): return rect.offsetBy(dx: display.frame.minX, dy: display.frame.minY)
         }
     }
 

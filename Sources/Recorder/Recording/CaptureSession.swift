@@ -297,8 +297,13 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
         }
     }
 
+    var onStopped: (() -> Void)?
+    private(set) var captureError: Error?
+
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         NSLog("Recorder: capture stream stopped: \(error)")
+        captureError = error
+        onStopped?()
     }
 }
 
