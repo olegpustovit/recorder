@@ -66,9 +66,10 @@ import RecorderCore
         }
     }
 
-    func addMarker(label: String) -> Marker {
+    func addMarker(label: String, point: CGPoint? = nil, action: AgentPointer? = nil) -> Marker {
         let marker = Marker(time: elapsed, label: label)
         markers.append(marker)
+        if let point, let action { session?.addAgentPointer(globalPoint: point, action: action) }
         return marker
     }
 

@@ -389,7 +389,7 @@ mouse events**, so `events.json` has no moves or clicks. The cursor stays frozen
 **position** comes only from the event tap. The 60 Hz timer only logs cursor *image* changes.)
 
 1. `record.mark` gains optional `x`, `y` (global points) and
-   `action: "click"|"doubleClick"|"move"` (schema: `x`/`y` number, `action` enum). `action` requires `x` and `y`. Target
+   `pointerAction: "click"|"doubleClick"|"move"`. Send all three together. The top-level `action` still selects `mark`. Target
    must not be multi-window, which agent recordings never are.
 2. Core, `RecorderCore/Events.swift`:
 
@@ -415,8 +415,10 @@ mouse events**, so `events.json` has no moves or clicks. The cursor stays frozen
    `normalized(_:)` and stamps `outputTime(hostSeconds())`. It stores the action in a separate locked array (dropped
    while paused). `stop()` returns `EventLog(...).mergingAgentPointer(agentActions)`. Expose it through
    `CaptureSession.addAgentPointer` and `RecordingController.addMarker(label:point:action:)`.
-4. Extend `mcp-record`: `record.mark {label, x, y, action:"click"}` with a point inside the recorded area → after stop,
+4. Extend `mcp-record`: `record.mark {label, x, y, pointerAction:"click"}` with a point inside the recorded area → after stop,
    `events.json` has the synthetic `.down` and the project has ≥1 auto-zoom.
+5. T-953 also exposed drift between sparse samples from a driver that does emit some events. Use captured down
+   locations as cursor samples and limit interpolation to the 0.2 s before each new sample.
 
 **Verify:** `make test FILTER=EventsAgentPointer`; `make test`; `--selftest mcp-record`.
 

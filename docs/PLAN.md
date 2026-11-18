@@ -823,7 +823,7 @@ toggle (R3), any driver with Claude Code computer use for the eval, and one wind
 | Capture path + MCP tool | T-950…T-951 | 2/2 |
 | Docs, smoke, scripts | T-952 | 1/1 |
 | Live eval (MacBook Air) | T-953 | 1/1 |
-| Robustness | T-954…T-956 | 0/3 |
+| Robustness | T-954…T-956 | 1/3 |
 
 - [x] **T-950 Agent recording path** · RECORDING-AGENT §5 T-950. `RecordingSettings(agentCopyOf:excludedBundleIDs:)`,
   `CaptureTarget.filter` excludes bundle ids, `RecordingController.beginForAgent/addMarker/finishForAgent` (shared
@@ -839,8 +839,9 @@ toggle (R3), any driver with Claude Code computer use for the eval, and one wind
   the MacBook Air). Verify: `agent-eval.py docs/evals/textedit-silent-demo.jsonl` in the Log; `render.lint demo` clean;
   draft visible in the Claude tab; SPEC §9 re-prompt question answered.
   See the Log for the live take, cursor limitations and consent observations.
-- [ ] **T-954 Agent pointer events** · §5 T-954. `record.mark {x,y,action}` → `EventLog.mergingAgentPointer` (Core,
-  tested) so Accessibility-only drivers still get a cursor and auto-zooms. Verify: `make test FILTER=EventsAgentPointer`;
+- [x] **T-954 Agent pointer events** · §5 T-954. `record.mark {x,y,pointerAction}` → `EventLog.mergingAgentPointer` (Core,
+  tested) so Accessibility-only drivers still get a cursor and auto-zooms. Cursor playback holds through sparse
+  sample gaps. Verify: `make test FILTER=EventsAgentPointer`;
   `make test`; `--selftest mcp-record`.
 - [ ] **T-955 Draft-ready notification** · §5 T-955. Dock bounce + `UNUserNotificationCenter` on `draft.submit` when
   inactive; title and count only. Verify: `--selftest mcp-review` incl. injected `notify`.
@@ -1873,3 +1874,5 @@ T-953 scoring preflight · 2026-11-18 · Fixed the scorer to read `structuredCon
 T-953 local setup · 2026-11-18 · User moved the eval to the MacBook Air (macOS 27.2). Installed the Developer ID signed build at `/Applications/Recorder.app` after normally quitting the idle source build. The same signer retained both Recorder grants. The installed shim returned all ten tools and idle capture. `--selftest mcp-record` passed with real capture and injected consent. The extra native-consent selftest did not pass locally, so native capture approval is still to be checked in the interactive run. Claude Code sees the installed server and the user enabled computer use. Restarted only the staged Claude session with `--dangerously-skip-permissions` at the user's request.
 
 T-953 · 2026-11-18 · Live interactive Claude Code 2.1.327 + built-in computer use on the MacBook Air, macOS 27.2. After approval for TextEdit and the installed Recorder's native prompt, Claude selected a bounded display area to include the Open panel, captured a 38.25 s silent take with five markers, created a document and typed a bold 36 pt heading. The raw timeline had six auto-zooms. Two raw filmstrips show cursor movement around clicks with long gaps and drift between samples. Local event counts show 18 move/drag samples over the take and an 8.16 s gap, supporting the user's report of visibly broken motion. The submitted draft reduces the take to 16.3 s, has four step titles and nine manual cuts across four steps, and replaces the six auto-zooms with one fixed zoom. The trial of `pace` removed whole steps and Claude undid it. The nine retained cuts meet T-956's threshold. `render.lint demo` returned no warnings or errors and one duration info item. `scripts/ui.sh screenshot` showed the Claude tab in Ready for review with 20 changes. `scripts/agent-eval.py docs/evals/textedit-silent-demo.jsonl`: 27 calls, 35 ops including reverted work, 35 images, PASS, 16.3 s. The public transcript preserves metrics with image bytes and unrelated window metadata removed. The original transcript and screenshots stay local. No export was requested or performed. Separate macOS re-consent was unconfirmed, so SPEC §9 records the observation without inferring a periodic policy.
+
+T-954 · 2026-11-18 · `make test FILTER=EventsAgentPointer` passed three tests, and `make test` passed 309 tests in 19 suites. The signed debug bundle passed `mcp-record` and `mcp-schema`. The real area-capture selftest declared a click without posting a mouse event, found the normalized down in the local package and found an auto-zoom. `pointerAction` distinguishes the pointer event from the MCP dispatch field `action:"mark"`. Existing captures also benefit from bounded cursor interpolation. In new filmstrips of the original TextEdit take, the cursor stays on Bold through the 24–25.3 s idle segment, where the original strip showed it sliding across the toolbar. No change to the saved draft or its source events was needed.

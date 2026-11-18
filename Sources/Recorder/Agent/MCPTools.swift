@@ -174,7 +174,11 @@ enum MCPTools {
                   "exclude": ["type": "array", "items": string, "maxItems": 20],
                   "title": ["type": "string", "maxLength": 80],
                   "maxDuration": ["type": "number", "minimum": 10, "maximum": 1800],
-                  "label": ["type": "string", "minLength": 1, "maxLength": 80], "discard": boolean]),
+                  "label": ["type": "string", "minLength": 1, "maxLength": 80], "discard": boolean,
+                  "x": ["type": "number", "description": "record.mark only: global pointer x in points, top-left origin."],
+                  "y": ["type": "number", "description": "record.mark only: global pointer y in points, top-left origin."],
+                  "pointerAction": ["type": "string", "enum": AgentPointer.allCases.map(\.rawValue),
+                                    "description": "record.mark only: with x and y, declare a pointer action if the driver sends no mouse events. This records motion without moving the system cursor."]]),
             tool("project", ["list", "open", "info", "assets", "templates"], "List recordings, open one by id or package path, read its summary and revision, list the media a layer op can use (assets), or the motion-graphic templates a graphic op can use (templates).", ["id": string, "path": string], read: true),
             tool("timeline", ["get"], "Read clips, effect blocks and markers in output seconds.", range, read: true),
             tool("transcript", ["get"], "Read up to 2000 spoken words with stable wN ids, or timestamped phrases. Key presses are never returned.", range.merging(["format": ["type": "string", "enum": ["words", "phrases"]]], uniquingKeysWith: { _, b in b }), read: true),
@@ -815,7 +819,7 @@ enum MCPTools {
         let fields: Set<String>
         switch action {
         case "start": fields = ["window", "display", "area", "width", "height", "exclude", "title", "maxDuration"]
-        case "mark": fields = ["label"]
+        case "mark": fields = ["label", "x", "y", "pointerAction"]
         case "stop": fields = ["discard"]
         default: fields = []
         }
@@ -967,7 +971,18 @@ enum MCPTools {
                 throw MCPFailure(code: "INVALID_OP", message: "mark needs a nonempty label")
             }
             guard rc.markers.count < 500 else { throw MCPFailure(code: "OUT_OF_RANGE", message: "A recording takes at most 500 markers") }
-            let marker = rc.addMarker(label: String(text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80)))
+            let label = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let marker: Marker
+            if args["x"] != nil || args["y"] != nil || args["pointerAction"] != nil {
+                guard args["x"] != nil, args["y"] != nil, let value = args["pointerAction"] as? String,
+                      let pointerAction = AgentPointer(rawValue: value) else {
+                    throw MCPFailure(code: "INVALID_OP", message: "Send x, y and pointerAction together for a pointer mark")
+                }
+                let point = try CGPoint(x: number(args, "x", default: 0), y: number(args, "y", default: 0))
+                marker = rc.addMarker(label: label, point: point, action: pointerAction)
+            } else {
+                marker = rc.addMarker(label: label)
+            }
             return ["marker": marker.id, "at": marker.time]
         case "pause": rc.pause()
         case "resume": rc.resume()

@@ -37,6 +37,21 @@ import Testing
     #expect(path.sample(atSource: 2.5).alpha < 0.01)
 }
 
+@Test func sparsePointerHoldsDuringRestAndApproachesClick() {
+    let events = EventLog(events: [
+        InputEvent(t: 0.1, k: .move, x: 0.2, y: 0.4),
+        InputEvent(t: 8, k: .down, x: 0.8, y: 0.4, b: 0),
+    ])
+    let raw = CursorPath(events: events, style: CursorStyle(style: .none, hideWhenIdle: false), hidden: [], duration: 9)
+    #expect(raw.sample(atSource: 5).x == 0.2)
+    #expect(raw.sample(atSource: 7.9).x > 0.2)
+    #expect(raw.sample(atSource: 8).x == 0.8)
+    let smooth = CursorPath(events: events, style: CursorStyle(style: .smooth), hidden: [], duration: 9)
+    #expect(smooth.sample(atSource: 0).x == 0.2)
+    #expect(smooth.sample(atSource: 5).alpha < 0.01)
+    #expect(smooth.sample(atSource: 8).alpha > 0.9)
+}
+
 @Test func shakeRemovalDropsBriefExcursion() {
     // A quick (1 ms) 19.2 px jump that returns 40 ms later, well inside the 80 ms window. `.none`
     // spring passes raw straight through so the two paths only differ by the shake filter.
@@ -72,10 +87,10 @@ import Testing
 }
 
 @Test func rotationTiltsWithHorizontalVelocityAndClamps() {
-    let sweeping = EventLog(events: [
-        InputEvent(t: 0, k: .move, x: 0.0, y: 0.5),
-        InputEvent(t: 1, k: .move, x: 1.0, y: 0.5),
-    ])
+    let sweeping = EventLog(events: (0...10).map {
+        let t = Double($0) / 10
+        return InputEvent(t: t, k: .move, x: t, y: 0.5)
+    })
     let path = CursorPath(events: sweeping, style: CursorStyle(style: .none, rotate: true), hidden: [], duration: 2)
     let s = path.sample(atSource: 0.5)
     #expect(s.rotation > 0)

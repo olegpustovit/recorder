@@ -38,7 +38,9 @@ public struct CursorPath: Sendable {
         let dt = 1 / rate
         let steps = max(1, Int((self.duration * rate).rounded()) + 1)
 
-        let moves = events.moves()
+        let moves = events.events.filter {
+            ($0.k == .move || $0.k == .drag || $0.k == .down) && $0.x != nil && $0.y != nil
+        }
         let clicks = events.clicks()
         let cursorEvents = events.events.filter { $0.k == .cursor }
 
@@ -55,8 +57,7 @@ public struct CursorPath: Sendable {
             while idx < es.count && es[idx].t <= t { idx += 1 }
         }
 
-        // Raw pointer position (piecewise-linear between recorded moves) + time since the last
-        // move, one entry per 240 Hz step.
+        // Limit interpolation to a short approach so sparse input doesn't make a resting cursor drift.
         var moveIdx = 0
         var rawXs = [Double](repeating: 0.5, count: steps)
         var rawYs = [Double](repeating: 0.5, count: steps)
@@ -74,11 +75,11 @@ public struct CursorPath: Sendable {
             case (.some(let p), nil):
                 rawXs[i] = p.x ?? 0.5; rawYs[i] = p.y ?? 0.5; idleSince[i] = t - p.t
             case (.some(let p), .some(let n)):
-                let span = n.t - p.t
-                let frac = span > 0 ? (t - p.t) / span : 0
+                let span = min(n.t - p.t, 0.2)
+                let frac = span > 0 ? max(0, 1 - (n.t - t) / span) : 0
                 rawXs[i] = (p.x ?? 0.5) + ((n.x ?? 0.5) - (p.x ?? 0.5)) * frac
                 rawYs[i] = (p.y ?? 0.5) + ((n.y ?? 0.5) - (p.y ?? 0.5)) * frac
-                idleSince[i] = t - p.t
+                idleSince[i] = frac > 0 ? 0 : t - p.t
             }
         }
 
@@ -91,7 +92,7 @@ public struct CursorPath: Sendable {
         // Stage 2: spring follow.
         var xs = [Double](repeating: 0.5, count: steps)
         var ys = [Double](repeating: 0.5, count: steps)
-        var x = 0.5, y = 0.5, vx = 0.0, vy = 0.0
+        var x = rawXs[0], y = rawYs[0], vx = 0.0, vy = 0.0
         for i in 0..<steps {
             if let spring {
                 spring.step(x: &x, v: &vx, target: rawXs[i], dt: dt)

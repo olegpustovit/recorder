@@ -169,6 +169,10 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
         eventRecorder.resume()
     }
 
+    func addAgentPointer(globalPoint: CGPoint, action: AgentPointer) {
+        eventRecorder.addAgentPointer(globalPoint: globalPoint, action: action)
+    }
+
     /// Stops the stream, finishes every writer, writes `events.json`, and returns the measured
     /// `Source` (duration read back from the finished `screen.mov`, not the wall clock).
     func finish() async throws -> Source {

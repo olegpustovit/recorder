@@ -640,7 +640,11 @@ Scrub: `seek(toleranceBefore: .zero, toleranceAfter: .zero)`, coalesced — neve
 
 ### 6.5 Cursor path
 
-Pipeline over raw `move` events → 240 Hz table: (optional) shake removal (drop excursions < 3 px that return within 80 ms) → spring follow (preset) → idle hide (alpha→0 over 0.3 s after 2 s without movement, back in 0.15 s) → loop (last 1.5 s springs toward the first position) → rotation (tilt ∝ horizontal velocity, max 12°) → click pulse (scale 1→0.85→1 over 0.2 s on `down`). Hidden inside `cursorHidden` ranges.
+Pipeline over moves, drags and click positions → 240 Hz table. The cursor holds during gaps and approaches each new
+position over at most 0.2 s. The remaining stages are optional shake removal (drop excursions < 3 px that return
+within 80 ms), spring follow, idle hide (fade out over 0.3 s after 2 s idle, back in 0.15 s), loop (last 1.5 s
+springs toward the first position), rotation (tilt ∝ horizontal velocity, max 12°) and click pulse
+(scale 1→0.85→1 over 0.2 s on `down`). Hidden inside `cursorHidden` ranges.
 
 **AC-CUR-1** (unit) output never leads the raw path; final position error after 1 s of rest < 0.5 px. **AC-CUR-2** Cursor at size 4× is sharp (uses the hi-res stored representation, not an upscaled frame).
 
@@ -1240,6 +1244,8 @@ seconds. If the human finishes the take, its session can still retrieve the proj
 ordinary editor. Markers are stored in source seconds with paused time removed, ready to anchor edits on the fresh
 timeline. Capture failures return tool errors and preserve recoverable media wherever the human capture path does.
 Key events remain in the local package and agent previews hide key overlays.
+Drivers that send no mouse events can include global `x` and `y` plus `pointerAction` in a step mark. Recorder
+uses the declaration in the saved cursor path and auto-zooms. Nearby captured clicks take precedence.
 
 ### Protocol and tools
 

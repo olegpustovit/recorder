@@ -46,6 +46,34 @@ public struct EventLog: Codable, Sendable {
     public func clicks() -> [InputEvent] { events.filter { $0.k == .down && $0.b == 0 } }
 }
 
+public enum AgentPointer: String, Codable, Sendable, CaseIterable { case click, doubleClick, move }
+
+public extension EventLog {
+    func mergingAgentPointer(_ actions: [(t: Double, x: Double, y: Double, action: AgentPointer)]) -> EventLog {
+        let realClicks = actions.isEmpty ? [] : clicks()
+        var result = self
+        for (t, x, y, action) in actions {
+            if action != .move, realClicks.contains(where: { event in
+                guard let realX = event.x, let realY = event.y else { return false }
+                return abs(event.t - t) <= 0.25 && hypot(realX - x, realY - y) <= 0.03
+            }) { continue }
+            result.events.append(InputEvent(t: t, k: .move, x: x, y: y))
+            switch action {
+            case .click, .doubleClick:
+                result.events.append(InputEvent(t: t + 0.05, k: .down, x: x, y: y, b: 0))
+                result.events.append(InputEvent(t: t + 0.12, k: .up, x: x, y: y, b: 0))
+            case .move: break
+            }
+            if action == .doubleClick {
+                result.events.append(InputEvent(t: t + 0.20, k: .down, x: x, y: y, b: 0))
+                result.events.append(InputEvent(t: t + 0.27, k: .up, x: x, y: y, b: 0))
+            }
+        }
+        result.events.sort { $0.t < $1.t }
+        return result
+    }
+}
+
 public func idleRanges(events: [InputEvent], minDuration: Double = 3) -> [TimeRange] {
     guard minDuration.isFinite, minDuration >= 0,
           let end = events.map(\.t).filter({ $0.isFinite && $0 >= 0 }).max() else { return [] }

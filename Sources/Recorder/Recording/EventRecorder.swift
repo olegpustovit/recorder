@@ -20,6 +20,7 @@ final class EventRecorder {
 
     private let lock = NSLock()
     private var events: [InputEvent] = []
+    private var agentActions: [(t: Double, x: Double, y: Double, action: AgentPointer)] = []
     private var lastMoveT = -Double.infinity
     private var knownCursorIDs = Set<String>()
     private var lastCursorID: String?
@@ -50,7 +51,7 @@ final class EventRecorder {
     /// clock (`CMClockGetHostTimeClock()`), the same clock `mach_absolute_time()` uses — so it and
     /// every event/cursor timestamp below share one origin.
     func start(t0HostTime: CMTime) {
-        t0Seconds = CMTimeGetSeconds(t0HostTime)
+        lock.withLock { t0Seconds = CMTimeGetSeconds(t0HostTime) }
         startEventTap()
         startCursorTimer()
         if case .windows = target { startWindowFrameTimer() }
@@ -73,8 +74,22 @@ final class EventRecorder {
         tapRunLoop = nil
         cursorTimer?.cancel(); cursorTimer = nil
         windowFrameTimer?.cancel(); windowFrameTimer = nil
-        lock.lock(); defer { lock.unlock() }
-        return EventLog(events: events.sorted { $0.t < $1.t }, windowFrames: multiWindow ? windowFrames : nil)
+        let (log, actions) = lock.withLock {
+            (EventLog(events: events, windowFrames: multiWindow ? windowFrames : nil), agentActions)
+        }
+        return log.mergingAgentPointer(actions)
+    }
+
+    func addAgentPointer(globalPoint: CGPoint, action: AgentPointer) {
+        guard !multiWindow else { return }
+        let point = normalized(globalPoint)
+        guard (0...1).contains(point.x), (0...1).contains(point.y) else { return }
+        lock.withLock {
+            guard pauseStartSeconds == nil, t0Seconds > 0 else { return }
+            let t = EventRecorder.hostSeconds() - t0Seconds - pausedSoFar
+            guard t >= 0 else { return }
+            agentActions.append((t, point.x, point.y, action))
+        }
     }
 
     // MARK: - Clock
