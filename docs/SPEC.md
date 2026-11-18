@@ -689,7 +689,7 @@ Wallpapers: ship 12 JPEGs in `Resources/Wallpapers/` (abstract gradients generat
 └───────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-Reuses the same `SelectionRectView` as §4.5 (one implementation). Size/position in source pixels.
+Reuses the same `SelectionRectView` as §4.5 (one implementation). Size/position in source pixels. Confirm sets the manual crop for the whole project and replaces any automatic reframe keyframes, even when the selection matches the saved manual crop.
 
 **AC-CROP-1** Confirm applies crop to preview + export and is one undo step; Discard/`Esc` changes nothing. **AC-CROP-2** Zoom centres and masks remain anchored to the same content after cropping (they are stored in uncropped source coordinates).
 

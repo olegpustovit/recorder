@@ -834,6 +834,23 @@ enum SelfTest {
             }
             guard await model.project == beforeDiscard else { throw Fail(description: "discard mutated the project") }
         },
+        "crop-reframe": { _ in
+            struct Fail: Error, CustomStringConvertible { let description: String }
+            let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("recorder-selftest-crop-\(UUID().uuidString)")
+            try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: tmp) }
+            var original = Project(clips: [Clip(sourceStart: 0, sourceEnd: 10)])
+            original.crop = NormRect(x: 0.1875, y: 0, w: 0.625, h: 1)
+            original.cropKeys = [CropKey(t: 0, rect: NormRect(x: 0.375, y: 0, w: 0.625, h: 1))]
+            let model = await EditorModel(packageURL: tmp, project: original, events: EventLog())
+            await CropSheet.confirm(original.crop, on: model)
+            let cropped = await model.project
+            guard cropped.cropKeys.isEmpty, cropped.cropSample(atSource: 5) == original.crop else {
+                throw Fail(description: "confirm didn't replace the keyed reframe with the manual crop")
+            }
+            await model.undo()
+            guard await model.project == original else { throw Fail(description: "undo didn't restore the keyed reframe") }
+        },
         // T-601: `MaskRectOverlay` — visibility follows selection, a drag on its `view` maps
         // through `ZoomTargetMapping.contentRect` + `CropMapping` (the same pure pair "crop" above
         // already round-trips) into the selected mask's `rect`, and the whole drag is exactly one

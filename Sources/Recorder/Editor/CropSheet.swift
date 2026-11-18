@@ -46,7 +46,7 @@ enum CropSheet {
     /// One `EditorModel.edit` call = one undo step (AC-CROP-1).
     @MainActor
     static func confirm(_ newCrop: NormRect, on model: EditorModel) {
-        guard newCrop != model.project.crop else { return }
+        guard newCrop != model.project.crop || !model.project.cropKeys.isEmpty else { return }
         model.edit("Crop") { $0.crop = newCrop; $0.cropKeys = [] }
     }
 
