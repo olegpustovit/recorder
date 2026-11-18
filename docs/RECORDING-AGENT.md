@@ -1,6 +1,7 @@
 # Agent recording — implementation guide (T-950…T-956)
 
-Status: T-950 through T-952 verified. Next is the T-953 live eval on the Mac mini. See `docs/PLAN.md` for progress.
+Status: T-950 through T-952 verified. The T-953 live eval is staged on the Mac mini and awaits computer-use approval.
+See `docs/PLAN.md` for progress and `CHECKPOINT.md` for the staged session.
 Proposal: https://artifacts.microapps.space/a/d0rs3s43x727
 
 This guide is for an implementing agent (Codex or any model). It says **what** to build, **where**, **with which existing

@@ -8,7 +8,7 @@ Branch: `dev`. Push target: `origin/dev` (`git@github.com:olegpustovit/recorder.
 ## Resume here
 
 Read `AGENTS.md`, `docs/PLAN.md` §“Agent recording”, and `docs/RECORDING-AGENT.md`.
-**The next task is T-953.** Follow the tasks in order.
+**Resume T-953.** The plan marks it `[~]` pending the interactive Mac mini setup. Follow the tasks in order.
 
 On the MacBook Air, preserve any local changes before switching or pulling. With a clean worktree:
 
@@ -83,11 +83,18 @@ Use `make test`, never bare `swift test`. Avoid changing Swift source while a bu
 
 ## Remaining work, in order
 
-1. **T-953 — real TextEdit silent-demo eval**, per the guide, on `olegs-mac-mini`. Save the MCP transcript and metrics,
-   prove clean `render.lint demo`, inspect cursor/auto-zooms and the submitted draft, answer the macOS re-consent
-   question from real observations. SSH worked and an older signed Recorder reported both grants on the mini;
-   the new code has **not** been copied or evaluated there. Interactive driver availability/prerequisites remain
-   unverified. Development may resume on the Air; the guide's live-eval machine remains the mini unless changed.
+1. **T-953 — real TextEdit silent-demo eval**, per the guide, on `olegs-mac-mini` (macOS 27.0.1).
+   The signed T-952 bundle and relay are staged in `/tmp/recorder-t953-72b6f12`. The bundle passed
+   `codesign --verify --strict` and `--selftest permissions` reported `screen=true accessibility=true`. A private-socket
+   preflight on the staged build returned all ten tools and idle capture without touching the older instance.
+   Attach on the mini with `tmux -L recorder-t953 attach -t eval`. Claude Code 2.1.327 shows built-in computer use
+   disabled in `/mcp`. The staged relay connects but sees nine tools because an older source-build Recorder owns the
+   normal socket. Its Claude session is also still running, so switch apps after confirming those sessions can close
+   normally. Reconnect `recorder-eval` and confirm ten tools before sending the brief. Recorder's unattended opt-in is
+   off. The real run still needs any driver grants and app approvals, and the native Recorder start approval.
+   The current local transcript contains setup traffic only. Start a fresh log for the actual take. Inspect it before
+   committing to `docs/evals/textedit-silent-demo.jsonl`, then score it, verify clean `render.lint demo`, inspect the
+   cursor, auto-zooms and submitted draft, and record the macOS re-consent observations.
 2. **T-954 — pointer declarations**, `record.mark {x,y,action}` → deduplicated Core events and auto-zoom tests.
    These arguments are **not implemented yet**.
 3. **T-955 — draft-ready notification**, native attention/notification and click-through to the editor's Claude tab.
