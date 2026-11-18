@@ -5533,7 +5533,7 @@ private final class MCPTestClient {
     // The op set the plan specifies (EDITING-CORE §4, MCP.md §5.2/§5.3): primitives, v2 additions, intents; `update` is gone.
     let opNames = Set(MCPTools.operationSchemas.compactMap { (($0["properties"] as? [String: Any])?["op"] as? [String: Any])?["enum"] as? [String] }.flatMap { $0 })
     let planned: Set<String> = ["cut", "cutPauses", "cutWords", "speed", "zoom", "text", "captions", "highlight", "marker", "set", "remove", "style", "layer", "reframe",
-                                "graphic", "animate", "freeze", "transition", "keepShots", "pace", "fitDuration", "autoZoom"]
+                                "graphic", "animate", "freeze", "transition", "keepShots", "pace", "fitDuration", "autoZoom", "steps"]
     guard model.project.checkInvariants() == nil, opNames == planned, MCPTools.operationSchemas.count == planned.count else {
         throw MCPTestFailure(description: "Edit invariants/schemas: missing \(planned.subtracting(opNames).sorted()), unplanned \(opNames.subtracting(planned).sorted())")
     }

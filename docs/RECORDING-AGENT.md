@@ -1,6 +1,7 @@
 # Agent recording — implementation guide (T-950…T-956)
 
-Status: T-950 through T-953 verified. The live TextEdit draft is ready for review on the MacBook Air.
+Status: T-950 through T-955 verified. T-956 is implemented and installed, with a fresh interactive comparison pending.
+The original live TextEdit draft is ready for review on the MacBook Air.
 See `docs/PLAN.md` for progress and `CHECKPOINT.md` for the staged session.
 Proposal: https://artifacts.microapps.space/a/d0rs3s43x727
 
@@ -439,10 +440,11 @@ and the count.
 **Do this only if T-953's Log shows the agent needed ≥2 manual `cut` ops per step, or `render.lint demo` still flags
 static spans after `pace`.** Otherwise tick it with `not needed: <evidence from T-953>`.
 
-If needed: an intent op `steps {lead: 0.4, settle: 1.2, maxGap: 2.0, retake: "retake:"}` in `IntentOps.swift`. It keeps
+The T-953 draft kept nine manual cuts across four steps, so implement
+`steps {lead: 0.4, settle: 1.2, maxGap: 2.0, retake: "retake:", protect?}` in `IntentOps.swift`. It keeps
 `[marker.time − lead, settle end]` for each marker. Settle end = the last event or shot change before the next marker,
 plus `settle`, capped at the next marker. It cuts the rest when a gap exceeds `maxGap`. It drops from a step's marker to
-its `"retake: <label>"` marker. It lowers to existing `cut` ops (D4 rule: primitive → EditOp → human command not needed
+its `"retake: <label>"` marker and leaves protected shots intact. It lowers to existing `cut` ops (D4 rule: primitive → EditOp → human command not needed
 for an intent), and it's listed in `report` like `pace`. Tests in `IntentOpsTests` (three markers, a retake, gap
 collapse, protect untouched). Add it to the MCP `edit` description and the EDITING-CORE §5 table.
 

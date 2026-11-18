@@ -6,9 +6,9 @@ import Testing
     let board = EditReportTests.board()
     let base = EditReportTests.project()
 
-    func lower(_ json: String, clicks: [InputEvent] = [], project: Project? = nil, board custom: Storyboard? = nil) throws -> (ops: [EditOp], lowered: [LoweredIntent], origin: [Int]) {
+    func lower(_ json: String, clicks: [InputEvent] = [], activity: [Double] = [], project: Project? = nil, board custom: Storyboard? = nil) throws -> (ops: [EditOp], lowered: [LoweredIntent], origin: [Int]) {
         let raw = try JSONDecoder().decode([JSONValue].self, from: Data(json.utf8))
-        let r = try lowerIntents(raw, project: project ?? base, clicks: clicks) { custom ?? board }
+        let r = try lowerIntents(raw, project: project ?? base, clicks: clicks, activity: activity) { custom ?? board }
         return (try JSONDecoder().decode([EditOp].self, from: JSONEncoder().encode(r.ops)), r.lowered, r.origin)
     }
     func one(_ shots: [Shot]) -> Storyboard { Storyboard(duration: 20, fps: 10, shots: shots, summary: StoryboardSummary(shots: shots.count, aslSec: 0, staticSec: 0, longestStatic: nil)) }
@@ -52,6 +52,44 @@ import Testing
         let r = try lower(#"[{"op":"fitDuration","target":12,"tolerance":0.5}]"#, project: outro)
         let after = try outro.applying(r.ops, context: EditContext()).project
         #expect(abs(after.exportDuration - 12) <= 0.5)                               // the outro moves earlier, export hits target
+    }
+
+    @Test func stepsCutsRetakesAndLongWaitsAroundThreeMarkers() throws {
+        var project = Project(source: Source(duration: 24), clips: [Clip(sourceStart: 0, sourceEnd: 24)])
+        project.markers = [Marker(time: 2, label: "Open"), Marker(time: 8, label: "Type"),
+                           Marker(time: 12, label: "retake: Type"), Marker(time: 17, label: "Finish")]
+        let protected = Shot(id: "s01", from: 9.5, to: 10.5, kind: .static, boundary: .start)
+        let command = #"[{"op":"steps","protect":["s01"]}]"#
+        let result = try lower(command, activity: [2.5, 8.3, 13, 17.5], project: project, board: one([protected]))
+        #expect(result.ops == [.cut(from: 3.7, to: 9.5, snap: true), .cut(from: 10.5, to: 12, snap: true),
+                               .cut(from: 14.2, to: 16.6, snap: true), .cut(from: 18.7, to: 24, snap: true)])
+        #expect(result.lowered.first?.intent == "steps")
+        let after = try project.applying(result.ops, context: EditContext()).project
+        #expect(abs(after.exportDuration - 9) < 1e-6)
+        #expect(after.clips.contains { $0.mediaIn <= 9.5 && $0.mediaEnd >= 10.5 })
+    }
+
+    @Test func stepsKeepsProtectedShotAtAnEdgeThatWouldSnap() throws {
+        var project = Project(source: Source(duration: 20), clips: [Clip(sourceStart: 0, sourceEnd: 10),
+                                                                    Clip(sourceStart: 10, sourceEnd: 20)])
+        project.markers = [Marker(time: 2, label: "Open")]
+        let protected = Shot(id: "s01", from: 9.95, to: 10.1, kind: .static, boundary: .start)
+        let result = try lower(#"[{"op":"steps","protect":["s01"]}]"#, project: project, board: one([protected]))
+        let after = try project.applying(result.ops, context: EditContext()).project
+        #expect(after.clips.contains { $0.mediaIn <= 9.95 && $0.mediaEnd >= 10 })
+        #expect(after.clips.contains { $0.mediaIn <= 10 && $0.mediaEnd >= 10.1 })
+    }
+
+    @Test func stepsUsesMediaActivityAndShotChangesOnTheOutputClock() throws {
+        var clip = Clip(sourceStart: 0, sourceEnd: 20, speed: 2)
+        clip.mediaStart = 10
+        var project = Project(source: Source(duration: 30), clips: [clip])
+        project.markers = [Marker(time: 4, label: "Open"), Marker(time: 14, label: "Finish")]
+        let change = Shot(id: "s01", from: 16, to: 17, kind: .payoff, boundary: .cut)
+        let result = try lower(#"[{"op":"steps","settle":0.5,"maxGap":1}]"#, activity: [18], project: project, board: one([change]))
+        #expect(result.ops == [.cut(from: 0, to: 1.6, snap: true), .cut(from: 4.5, to: 6.6, snap: true)])
+        #expect(throws: EditError.self) { try lower(#"[{"op":"steps"},{"op":"pace"}]"#) }
+        #expect(throws: EditError.self) { try lower(#"[{"op":"steps"}]"#) }
     }
 
     @Test func fitDurationHitsTargetAndProtects() throws {
@@ -108,7 +146,7 @@ import Testing
     }
 
     @Test func oneLengthChangingIntentPerBatch() throws {
-        #expect(throws: EditError.invalidOp(index: 1, reason: "only one of keepShots/pace/fitDuration per batch; call edit.apply once per intent")) {
+        #expect(throws: EditError.invalidOp(index: 1, reason: "only one of keepShots/pace/fitDuration/steps per batch; call edit.apply once per intent")) {
             try lower(#"[{"op":"pace"},{"op":"fitDuration","target":10}]"#)
         }
         #expect(try lower(#"[{"op":"pace"},{"op":"autoZoom"},{"op":"cut","from":0,"to":1}]"#).ops.isEmpty == false)

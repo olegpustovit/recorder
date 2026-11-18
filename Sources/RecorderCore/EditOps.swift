@@ -347,7 +347,7 @@ public extension Project {
     }
 }
 
-private func mergedEditRanges(_ ranges: [TimeRange]) -> [TimeRange] {
+func mergedEditRanges(_ ranges: [TimeRange]) -> [TimeRange] {
     var union: [TimeRange] = []
     for range in ranges.sorted(by: { $0.start < $1.start }) {
         if let last = union.last, range.start <= last.end + 1e-9 {
@@ -357,7 +357,7 @@ private func mergedEditRanges(_ ranges: [TimeRange]) -> [TimeRange] {
     return union
 }
 
-private func snappedEditRanges(_ ranges: [TimeRange], clips: [Clip]) -> [TimeRange] {
+func snappedEditRanges(_ ranges: [TimeRange], clips: [Clip]) -> [TimeRange] {
     mergedEditRanges(ranges.flatMap { range in
         clips.filter { !$0.isEmpty }.compactMap { clip -> TimeRange? in
             var start = max(range.start, clip.sourceStart), end = min(range.end, clip.sourceEnd)
@@ -375,6 +375,19 @@ private func snappedEditRanges(_ ranges: [TimeRange], clips: [Clip]) -> [TimeRan
             return TimeRange(start: start, end: end)
         }
     })
+}
+
+extension TimeMap {
+    func editRanges(from: Double, to: Double, recordedOnly: Bool = false, gaps: Bool = false) -> [TimeRange] {
+        var offset = 0.0
+        return clips.compactMap { clip in
+            defer { offset += clip.outputDuration }
+            let lo = max(from, offset), hi = min(to, offset + clip.outputDuration)
+            guard hi > lo, gaps || !clip.isEmpty, !recordedOnly || clip.file == nil else { return nil }
+            return TimeRange(start: clip.sourceStart + (lo - offset) * clip.timeScale,
+                             end: clip.sourceStart + (hi - offset) * clip.timeScale)
+        }
+    }
 }
 
 private func snappingNote(_ before: [TimeRange], _ after: [TimeRange]) -> String? {
@@ -401,15 +414,7 @@ public extension Project {
             guard from.isFinite, to.isFinite, to > from, snap || (from >= 0 && to <= duration) else {
                 throw EditError.outOfRange(index: index, reason: "expected 0 ≤ from < to ≤ \(duration)")
             }
-            let from = max(0, from), to = min(duration, to)
-            var offset = 0.0
-            return clips.compactMap { clip in
-                defer { offset += clip.outputDuration }
-                let lo = max(from, offset), hi = min(to, offset + clip.outputDuration)
-                guard hi > lo, gaps || !clip.isEmpty, !recordedOnly || clip.file == nil else { return nil }
-                return TimeRange(start: clip.sourceStart + (lo - offset) * clip.timeScale,
-                                 end: clip.sourceStart + (hi - offset) * clip.timeScale)
-            }
+            return baseMap.editRanges(from: max(0, from), to: min(duration, to), recordedOnly: recordedOnly, gaps: gaps)
         }
         var context = context
         var prepared: [PreparedEdit] = []

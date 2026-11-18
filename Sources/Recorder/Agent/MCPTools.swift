@@ -95,6 +95,11 @@ enum MCPTools {
                 "trim": ["type": "object", "description": "Source seconds trimmed from the start/end of each kept shot.", "properties": ["lead": number, "tail": number], "additionalProperties": false]], []),
             op("pace", ["beat": ["type": "object", "description": "Seconds a shot is held: default 0.9, payoff 1.3, motion 0.8.", "properties": ["default": number, "payoff": number, "motion": number], "additionalProperties": false],
                 "maxStatic": number, "profile": ["type": "string", "enum": ["reel", "demo", "tutorial"], "default": "reel", "description": "Rhythm: reel beat-cuts clicks tight (beats 0.9/1.3/0.8 s, cuts waits ≥ 0.5 s); demo 1.4/2.0/1.2 s, waits ≥ 1 s; tutorial 2.5/3.5/2.0 s, waits ≥ 2 s. maxStatic defaults to the profile's."], "speedFill": ["type": "object", "description": "Speed range used to squeeze holds and slow shots (default 1.5-6).", "properties": ["min": number, "max": number], "additionalProperties": false]], []),
+            op("steps", ["lead": ["type": "number", "minimum": 0, "default": 0.4],
+                "settle": ["type": "number", "minimum": 0, "default": 1.2],
+                "maxGap": ["type": "number", "minimum": 0, "default": 2],
+                "retake": ["type": "string", "minLength": 1, "default": "retake:"],
+                "protect": ["type": "array", "items": string, "description": "Shots never cut: ids, section:N or caption~regex."]], []),
             op("fitDuration", ["target": number, "tolerance": number, "protect": ["type": "array", "items": string, "description": "Shots never cut: ids, section:N or caption~regex."],
                 "minPerSection": ["type": "number", "minimum": 0, "description": "Output seconds every section (shot.section from analyze.shots) keeps at least; report.sections shows kept time per section."],
                 "balance": ["type": "string", "enum": ["energy", "even", "proportional"], "default": "energy", "description": "energy: drop the least interesting shots first; even: every section ends near the same seconds; proportional: sections keep time in proportion to their length."],
@@ -187,7 +192,7 @@ enum MCPTools {
                 "captions": ["type": "boolean", "description": "analyze.shots only: add on-device 6–10 word captions per shot (slower; null when unavailable)."],
                 "response_format": ["type": "string", "enum": ["concise", "detailed"], "description": "analyze.shots only: concise (default) omits reasons only; focus is always kept."],
                 "thresholds": ["type": "object", "description": "analyze.shots only: optional overrides of ssim, minStable, cutSsim, motionDiff, payoffDiff, cursorSpeed, energyScale. energyScale and minStable must be > 0; ssim and cutSsim within 0…1.", "additionalProperties": ["type": "number", "minimum": 0]]]),   // not read-only: transcribe writes the transcript
-            tool("edit", ["apply", "undo"], "Apply atomic edits using the latest ifRevision; edits land in a draft by default. Numeric times use that revision's output timeline; anchors ({marker:id|label, offset}, {ref:name, offset}, {shot, edge}) resolve after earlier ops in the batch. Declare ref:\"name\" on an op to anchor later ops on its start. At most one of keepShots/pace/fitDuration per batch (call edit.apply once per intent). Intent fields: keepShots {shots|where{kind,minEnergy}, protect[id|section:N|caption~re], trim}; pace {profile reel|demo|tutorial, maxStatic, beat, speedFill}; fitDuration {target, tolerance, balance energy|even|proportional, minPerSection, drop[section], protect} (protect is per op, repeat it on each intent). undo inside a draft removes your last edit.apply call. Errors carry fix and current.", ["ifRevision": string, "ops": ["type": "array", "items": ["oneOf": operationSchemas]], "dryRun": boolean, "lint": ["type": "string", "enum": ["reel", "tutorial", "demo"], "description": "Profile for report.lint (default reel)."]]),
+            tool("edit", ["apply", "undo"], "Apply atomic edits using the latest ifRevision; edits land in a draft by default. Numeric times use that revision's output timeline; anchors ({marker:id|label, offset}, {ref:name, offset}, {shot, edge}) resolve after earlier ops in the batch. Declare ref:\"name\" on an op to anchor later ops on its start. At most one of keepShots/pace/fitDuration/steps per batch (call edit.apply once per intent). Intent fields: keepShots {shots|where{kind,minEnergy}, protect[id|section:N|caption~re], trim}; pace {profile reel|demo|tutorial, maxStatic, beat, speedFill}; fitDuration {target, tolerance, balance energy|even|proportional, minPerSection, drop[section], protect}; steps {lead, settle, maxGap, retake, protect} trims idle gaps around marked recording steps (run analyze.shots first). protect is per op. undo inside a draft removes your last edit.apply call. Errors carry fix and current.", ["ifRevision": string, "ops": ["type": "array", "items": ["oneOf": operationSchemas]], "dryRun": boolean, "lint": ["type": "string", "enum": ["reel", "tutorial", "demo"], "description": "Profile for report.lint (default reel)."]]),
             tool("draft", ["status", "submit", "discard"], "Read your draft's exclusions, skipped reasons and verdict; submit for review or discard it. A pending submitted draft can receive more edit.apply calls, returning to watching until submitted again. Reframe ops show keys as a count (plus jumps: crop steps not at a cut) unless response_format is detailed; submit returns op/change counts unless detailed.", ["note": string, "response_format": ["type": "string", "enum": ["concise", "detailed"]]]),
             tool("render", ["frames", "sheet", "clip", "storyboard", "strip", "compare", "lint", "cancel"], "Render frames, a contact sheet, a 540p proxy, per-shot storyboard tiles (needs analyze.shots), a filmstrip (strip: from, to, fps 4–8, ≤48 tiles) base|draft rows (compare: at ≤6) into the agent cache (key chips hidden), or lint the draft against a profile (lint: reel, tutorial, demo; needs analyze.shots).", ["at": ["type": "array", "items": number, "maxItems": 24], "shots": ["type": "array", "items": string, "maxItems": 48, "description": "render.storyboard only: shot ids; default all shots the draft keeps."], "page": ["type": "integer", "minimum": 1, "description": "render.storyboard only: 48 tiles per page."], "fps": ["type": "integer", "minimum": 4, "maximum": 8, "description": "render.strip only."], "from": number, "to": number, "count": ["type": "integer", "minimum": 1, "maximum": 24], "longEdge": ["type": "integer", "minimum": 2, "maximum": 640], "draft": boolean, "profile": ["type": "string", "enum": ["reel", "tutorial", "demo"]],
                 "grid": ["type": "boolean", "description": "render.frames only: overlay a 0.1-step grid labelled 0–1, origin top-left, matching zoom center and text position coordinates (exact at 1× zoom with no layout padding)."]], read: true),
@@ -330,14 +335,21 @@ enum MCPTools {
         guard let name = value as? String, let profile = LintProfile(name: name) else { throw MCPFailure(code: "INVALID_OP", message: "lint/profile must be reel, tutorial or demo") }
         return profile
     }
-    /// keepShots, pace, fitDuration, autoZoom and ramped speed become cut/speed/zoom ops against the viewed timeline.
-    private static func lowerIntentOps(_ value: Any?, project: Project, clicks: [InputEvent], storyboard: Storyboard?) throws -> (Any?, [Int], [LoweredIntent]) {
-        guard let values = value as? [[String: Any]], values.contains(where: { ["keepShots", "pace", "fitDuration", "autoZoom"].contains($0["op"] as? String) || $0["ramp"] != nil }) else { return (value, (value as? [Any] ?? []).indices.map { $0 }, []) }
+    /// Intents and ramped speed become cut/speed/zoom ops against the viewed timeline.
+    private static func lowerIntentOps(_ value: Any?, project: Project, events: EventLog, storyboard: Storyboard?) throws -> (Any?, [Int], [LoweredIntent]) {
+        guard let values = value as? [[String: Any]], values.contains(where: { ["keepShots", "pace", "fitDuration", "autoZoom", "steps"].contains($0["op"] as? String) || $0["ramp"] != nil }) else { return (value, (value as? [Any] ?? []).indices.map { $0 }, []) }
         for (index, op) in values.enumerated() { try validateOp(op, index: index) }   // intents bypassed decodeOps' check (R3-3)
         guard let raw = try? JSONDecoder().decode([JSONValue].self, from: JSONSerialization.data(withJSONObject: values)) else {
             throw MCPFailure(code: "INVALID_OP", message: "edit.apply ops must be JSON objects; use tools/list for the op schemas")
         }
-        let result = try lowerIntents(raw, project: project, clicks: clicks) {
+        let activity: [Double] = values.contains { ($0["op"] as? String) == "steps" }
+            ? events.events.compactMap { event in
+                switch event.k {
+                case .down, .up, .drag, .scroll, .key, .typing: return event.t
+                case .move, .cursor: return nil
+                }
+            } : []
+        let result = try lowerIntents(raw, project: project, clicks: events.clicks(), activity: activity) {
             guard let storyboard else { throw MCPFailure(code: "NOT_ANALYZED", message: "Run analyze.shots first") }
             return storyboard
         }
@@ -377,7 +389,10 @@ enum MCPTools {
         do { board = try loadStoryboard(model: model) }
         catch { reportNote = (error as? MCPFailure)?.message ?? "\(error)" }
         let profile = try lintProfile(args["lint"])
-        let (loweredOps, origin, lowered) = try lowerIntentOps(args["ops"], project: try viewedProject(model, session: session), clicks: model.events.clicks(), storyboard: board)
+        let viewed = try viewedProject(model, session: session)
+        let usesSteps = (args["ops"] as? [[String: Any]])?.contains { $0["op"] as? String == "steps" } == true
+        let intentBoard = usesSteps ? (try? loadStoryboard(model: model, media: true).inSource(clips: viewed.clips)) : board
+        let (loweredOps, origin, lowered) = try lowerIntentOps(args["ops"], project: viewed, events: model.events, storyboard: intentBoard)
         let decoded = try decodeOps(loweredOps)
         let originalDraftID = session.draft?.id
         let dryRun = args["dryRun"] as? Bool ?? false

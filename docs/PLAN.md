@@ -845,8 +845,9 @@ toggle (R3), any driver with Claude Code computer use for the eval, and one wind
   `make test`; `--selftest mcp-record`.
 - [x] **T-955 Draft-ready notification** · §5 T-955. Dock bounce + `UNUserNotificationCenter` on `draft.submit` when
   inactive; title and count only. Verify: `--selftest mcp-review` incl. injected `notify`.
-- [ ] **T-956 `steps` intent (conditional)** · §5 T-956. Only if T-953 shows ≥2 manual cuts per step or static-span lint
+- [~] **T-956 `steps` intent (conditional)** · §5 T-956. Only if T-953 shows ≥2 manual cuts per step or static-span lint
   warnings after `pace`; otherwise tick with `not needed: <evidence>`. Verify: `make test FILTER=IntentOps`; `make test`.
+  Implemented and verified against the saved take. Fresh interactive comparison remains pending.
 
 ---
 
@@ -1878,3 +1879,5 @@ T-953 · 2026-11-18 · Live interactive Claude Code 2.1.327 + built-in computer 
 T-954 · 2026-11-18 · `make test FILTER=EventsAgentPointer` passed three tests, and `make test` passed 309 tests in 19 suites. The signed debug bundle passed `mcp-record` and `mcp-schema`. The real area-capture selftest declared a click without posting a mouse event, found the normalized down in the local package and found an auto-zoom. `pointerAction` distinguishes the pointer event from the MCP dispatch field `action:"mark"`. Existing captures also benefit from bounded cursor interpolation. In new filmstrips of the original TextEdit take, the cursor stays on Bold through the 24–25.3 s idle segment, where the original strip showed it sliding across the toolbar. No change to the saved draft or its source events was needed.
 
 T-955 · 2026-11-18 · Signed debug `mcp-review /tmp/M6Fixture.recorder` passed. The background submit branch used an injected notifier to verify the project title, client and three-change count, then the usual review, checkboxes, acceptance, one undo and persistence tests all passed. Background submit stays in the background and requests Dock attention. The notification action reopens the package on the Claude tab. The native banner was not visually checked.
+
+T-956 implementation · 2026-11-18 · `make test FILTER=IntentOps` passed 18 tests and `make test` passed 312 tests across 19 suites. Signed `mcp-schema` passed in debug and release, `mcp-edit /tmp/M6Fixture.recorder` passed, and the installed release exposed both `pointerAction` and `steps` through its real socket. Dry runs on a copy of the original take reduced 38.25 s to 33.57 s with two default cuts, 30.90 s with four cuts at a 1 s gap, and 27.15 s with six cuts at a 0.8 s gap and settle. Each trial still had demo lint warnings. The installed build reopened the original clean 16.3 s draft with 20 changes. A fresh interactive comparison stopped before capture after Claude reasoned from an older schema despite the reconnected tool list containing `steps`. User requested wrap-up, commit, push and install.

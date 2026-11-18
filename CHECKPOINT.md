@@ -8,7 +8,7 @@ Branch: `dev`. Push target: `origin/dev` (`git@github.com:olegpustovit/recorder.
 ## Resume here
 
 Read `AGENTS.md`, `docs/PLAN.md` §“Agent recording”, and `docs/RECORDING-AGENT.md`.
-**Resume at T-956 on the MacBook Air.** The TextEdit draft is ready for review in Recorder.
+**The demo build is ready on the MacBook Air.** The original TextEdit draft is ready for review in Recorder.
 
 On the MacBook Air, preserve any local changes before switching or pulling. With a clean worktree:
 
@@ -95,14 +95,17 @@ Use `make test`, never bare `swift test`. Avoid changing Swift source while a bu
    Recorder's unattended opt-in is off, so the first start also requires native capture approval.
    The draft runs 16.3 s with four step titles, nine cuts and no demo lint warnings. The raw take was 38.25 s.
    The public transcript in `docs/evals/textedit-silent-demo.jsonl` retains call metadata and scores with image
-   payloads and unrelated window titles removed. The raw transcript and review screenshots stay in `build/textedit-eval`.
+   payloads and unrelated window titles removed. The raw transcript is `build/textedit-eval/t953-textedit-silent-demo.jsonl`.
 
 ### Next
 
-T-954 and T-955 are verified in the signed QA build. They add `record.mark {x,y,pointerAction}`, correct cursor
-drift on existing takes and add a background draft notification. The installed release will be updated after T-956.
+The installed release adds `record.mark {x,y,pointerAction}`, corrects cursor drift on existing takes, supports
+background draft notifications and exposes the `steps` intent.
 
-**T-956 — `steps` intent.** The submitted T-953 draft needed nine cuts for four steps, which meets the threshold.
+**T-956 follow-up verification.** The new intent passed unit, schema and edit checks and ran through MCP on a
+copy of the original 38.25 s TextEdit take. The default settings produced two cuts and 33.57 s. Tighter
+settings produced six cuts and 27.15 s. Both retained lint warnings. The fresh Claude comparison was stopped
+at the user's request to wrap up and install the build.
 
 ## Files and state
 

@@ -173,6 +173,7 @@ user's check in the running app (no test windows were used).
 | Capability | Core primitive | Human | MCP op |
 |---|---|---|---|
 | Cut / split / remove | `split`, `deleteClips`, gap removal | C, ⌫ | `cut` (also removes gaps), `cutPauses`, `cutWords` |
+| Trim waits between recorded steps | Marker and activity ranges lowered to `cut` | Trim on the timeline | `steps {lead, settle, maxGap, retake, protect}` |
 | Speed / ramp | `setSpeed`, ramp lowering | inspector, Ramp 0.3/0.6/1 s | `speed {ramp}` |
 | Zoom (auto/manual/follow) | `addZoom` | Z, inspector | `zoom`, `autoZoom` |
 | Text styles + keys | `addText`, `keys` | T, TextPanel | `text`, `animate` |

@@ -37,29 +37,30 @@ func protects(_ list: [String], _ shot: Shot) -> Bool {
 public let intentFields: [String: Set<String>] = [
     "keepShots": ["shots", "where", "trim", "protect"],
     "pace": ["beat", "maxStatic", "speedFill", "profile"],
+    "steps": ["lead", "settle", "maxGap", "retake", "protect"],
     "fitDuration": ["target", "tolerance", "protect", "minPerSection", "balance", "drop"],
     "autoZoom": ["lead", "tail", "scale", "from", "to"],
     "speed": ["from", "to", "speed", "ramp", "snap"]]
 
 /// `storyboard` is only called when an op needs shots (so autoZoom/ramp work without analysis).
 /// `origin[i]` is the index in the agent's batch that produced `ops[i]`; use it to report errors and changes.
-public func lowerIntents(_ ops: [JSONValue], project: Project, clicks: [InputEvent] = [],
+public func lowerIntents(_ ops: [JSONValue], project: Project, clicks: [InputEvent] = [], activity: [Double] = [],
                          storyboard: () throws -> Storyboard) throws -> (ops: [JSONValue], origin: [Int], lowered: [LoweredIntent]) {
     let map = TimeMap(project.clips), total = map.outputDuration
     // End of the last recorded/imported footage: a trailing gap clip has nothing to cut (snapping would skip it).
     let contentEnd = { () -> Double in var t = 0.0, end = 0.0; for c in project.clips { t += c.outputDuration; if !c.isEmpty { end = t } }; return end }()
     var out: [JSONValue] = [], origin: [Int] = [], lowered: [LoweredIntent] = []
     // Each intent reads the batch-start timeline, so two that change the length would aim at stale times.
-    let lengthChanging = ops.enumerated().filter { if case .string(let n)? = $1["op"] { return ["keepShots", "pace", "fitDuration"].contains(n) }; return false }
+    let lengthChanging = ops.enumerated().filter { if case .string(let n)? = $1["op"] { return ["keepShots", "pace", "fitDuration", "steps"].contains(n) }; return false }
     if lengthChanging.count > 1 {
-        throw EditError.invalidOp(index: lengthChanging[1].offset, reason: "only one of keepShots/pace/fitDuration per batch; call edit.apply once per intent")
+        throw EditError.invalidOp(index: lengthChanging[1].offset, reason: "only one of keepShots/pace/fitDuration/steps per batch; call edit.apply once per intent")
     }
     let imported = { () -> [TimeRange] in var t = 0.0; return project.clips.compactMap { c in defer { t += c.outputDuration }; return c.file != nil ? TimeRange(start: t, end: t + c.outputDuration) : nil } }()
     var board: Storyboard?
     func sb() throws -> Storyboard { if let board { return board }; let b = try storyboard(); board = b; return b }
-    func cutsAvoidingImported(_ a: Double, _ b: Double) -> [JSONValue] {   // imported clips are never deleted by an intent
+    func cutsAvoidingImported(_ a: Double, _ b: Double, protecting protected: [TimeRange] = []) -> [JSONValue] {
         var pieces = [TimeRange(start: a, end: b)]
-        for hole in imported {
+        for hole in imported + protected {
             pieces = pieces.flatMap { p -> [TimeRange] in
                 guard hole.end > p.start, hole.start < p.end else { return [p] }
                 return [TimeRange(start: p.start, end: hole.start), TimeRange(start: hole.end, end: p.end)].filter { $0.end - $0.start > 0.05 }
@@ -191,6 +192,72 @@ public func lowerIntents(_ ops: [JSONValue], project: Project, clicks: [InputEve
                     guard let f = op["from"]?.num, let t = op["to"]?.num else { return true }
                     return !merged.contains { f >= $0.0 - 1e-9 && t <= $0.1 + 1e-9 }
                 } + merged.map { cutJSON($0.0, $0.1) }
+            }
+        case "steps":
+            let lead = try number("lead", 0.4), settle = try number("settle", 1.2), maxGap = try number("maxGap", 2)
+            guard lead >= 0, settle >= 0, maxGap >= 0 else { throw bad("steps lead, settle and maxGap must be nonnegative") }
+            let retake: String
+            switch arg("retake") {
+            case nil: retake = "retake:"
+            case .string(let prefix)? where !prefix.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty: retake = prefix
+            default: throw bad("steps retake must be a nonempty marker prefix")
+            }
+            guard arg("protect") == nil || arg("protect")?.strings != nil else { throw bad("protect must be a list of shot selectors") }
+            let segments = try sb().segments(map), selectors = arg("protect")?.strings ?? []
+            let protected = segments.filter { protects(selectors, $0.shot) }.map(\.range)
+            let marks = project.markers.compactMap { mark in
+                map.outputTime(atSource: mark.time).flatMap { $0 <= contentEnd ? (time: $0, label: mark.label) : nil }
+            }.sorted { $0.time < $1.time }
+            guard !marks.isEmpty else { throw bad("steps needs at least one marker on the video timeline") }
+            var failedAttempts = Set<Int>(), failedRanges: [TimeRange] = [], lastAttempt: [String: Int] = [:]
+            for (i, mark) in marks.enumerated() {
+                var label = mark.label
+                if label.hasPrefix(retake) {
+                    label = String(label.dropFirst(retake.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                    if let failed = lastAttempt[label] {
+                        failedAttempts.insert(failed)
+                        failedRanges.append(TimeRange(start: marks[failed].time, end: mark.time))
+                    }
+                }
+                lastAttempt[label] = i
+            }
+            var outputStart = 0.0
+            var activityInOutput = project.clips.flatMap { clip -> [Double] in
+                defer { outputStart += clip.outputDuration }
+                guard !clip.isEmpty, clip.file == nil else { return [] }
+                return activity.filter { $0 >= clip.mediaIn && $0 < clip.mediaEnd }
+                    .map { outputStart + ($0 - clip.mediaIn) / clip.speed }
+            }
+            for segment in segments {
+                if !segment.shot.isStatic || segment.shot.boundary == .cut { activityInOutput.append(segment.range.start) }
+                if !segment.shot.isStatic { activityInOutput.append(segment.range.end) }
+            }
+            activityInOutput.sort()
+            let windows = marks.indices.filter { !failedAttempts.contains($0) }.map { i in
+                let start = marks[i].time
+                let limit = i + 1 < marks.count ? marks[i + 1].time : contentEnd
+                let last = activityInOutput.last { start <= $0 && $0 < limit } ?? start
+                return TimeRange(start: max(0, start - lead), end: min(limit, last + settle))
+            }
+            guard windows.contains(where: { $0.end > $0.start }) else { throw bad("steps kept no video; increase lead or settle") }
+            var start = 0.0
+            var gaps = failedRanges
+            for keep in mergedEditRanges(windows + protected) {
+                if keep.start - start > maxGap { gaps.append(TimeRange(start: start, end: keep.start)) }
+                start = max(start, keep.end)
+            }
+            if contentEnd - start > maxGap { gaps.append(TimeRange(start: start, end: contentEnd)) }
+            result = mergedEditRanges(gaps).flatMap { cutsAvoidingImported($0.start, $0.end, protecting: protected) }
+            let reserved = (imported + protected).flatMap { map.editRanges(from: $0.start, to: $0.end) }
+            if !reserved.isEmpty {
+                // shortcut: omit cuts that would snap into protected footage, split them further if this leaves visible waits.
+                result = result.filter { cut in
+                    guard let from = cut["from"]?.num, let to = cut["to"]?.num else { return false }
+                    let snapped = snappedEditRanges(map.editRanges(from: from, to: to), clips: project.clips)
+                    return !snapped.contains { piece in
+                        reserved.contains { min(piece.end, $0.end) - max(piece.start, $0.start) > 1e-9 }
+                    }
+                }
             }
         case "fitDuration":
             let target = try number("target", 0), tolerance = try number("tolerance", 2)

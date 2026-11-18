@@ -883,3 +883,8 @@ the pointer event, and a nearby captured click supersedes a declared click.
 
 When a draft is submitted in the background, Recorder requests Dock attention and can show a macOS notification
 with the project title, client name and change count. Clicking it opens the Claude review.
+
+After `analyze.shots`, `edit.apply` with `{"op":"steps"}` keeps each marker and its following activity, removes
+waits longer than two seconds, and cuts failed attempts before their `retake: <step>` markers. Use `dryRun:true`
+to inspect the lowered cuts. Set `lead`, `settle` or `maxGap` in output seconds, or use `protect` for shots
+that must stay intact. `steps` and `pace` need separate calls.
