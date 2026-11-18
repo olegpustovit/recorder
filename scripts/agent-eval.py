@@ -41,10 +41,14 @@ def score(label, lines):
                 at = args.get("at")
                 n = len(at) if isinstance(at, list) else args.get("count", 1)
                 m["images"] += n
+        if not ok or args.get("dryRun", False):
+            continue
         sc = res.get("structuredContent", {})
-        if isinstance(sc.get("lint"), list):
-            m["lintPass"] = not any(i.get("sev") in WARN_SEVS for i in sc["lint"])
-        d = (sc.get("report") or {}).get("duration", sc.get("duration"))
+        report = sc.get("report") or {}
+        lint = report.get("lint", sc.get("lint"))
+        if isinstance(lint, list):
+            m["lintPass"] = not any(i.get("sev") in WARN_SEVS for i in lint)
+        d = report.get("duration", sc.get("duration"))
         if isinstance(d, dict):
             d = d.get("after")
         if isinstance(d, (int, float)):
@@ -99,19 +103,21 @@ def selftest():
         call(3, "edit", action="apply", dryRun=True, ops=[{"op": "cut"}]),
         reply(3, {"lint": [{"sev": "warn"}]}),
         call(4, "render", action="frames", at=[1, 2, 3]), reply(4, images=3),
-        call(5, "render", action="lint"), reply(5, {"lint": [{"sev": "info", "rule": "hook"}]}),
+        call(5, "render", action="lint"), reply(5, {"report": {"lint": [{"sev": "info", "rule": "hook"}]}}),
     ]
     b = [
         call(1, "edit", action="apply", ops=[{"op": "cut"}, {"op": "cut"}, {"op": "cutPauses"}]),
         reply(1, {"lint": [{"sev": "warn", "rule": "maxStatic"}], "report": {"duration": {"before": 30, "after": 25}}}),
         call(2, "edit", action="apply", ops=[{"op": "cut"}] * 4), reply(2, {"error": "INVALID_OP"}, is_error=True),
         call(3, "render", action="sheet", count=12), reply(3, images=1),
+        call(4, "edit", action="apply", dryRun=True),
+        reply(4, {"report": {"lint": [], "duration": {"before": 25, "after": 20}}}),
     ]
     rows = [score("runA", a), score("runB", b)]
     rows[0]["pref"], rows[1]["pref"] = 0.7, None
     got = [(r["toolCalls"], r["ops"], r["images"], r["lintPass"], r["duration"]) for r in rows]
     assert got[0] == (5, 2, 3, True, 27), got[0]
-    assert got[1] == (3, 3, 12, False, 25), got[1]
+    assert got[1] == (4, 3, 12, False, 25), got[1]
     s = summarize(rows, {"runA": 0.7})
     assert s["transcripts"] == 2 and s["lintPassRate"] == 0.5, s
     assert s["meanOps"] == 2.5 and s["meanImages"] == 7.5 and s["meanPref"] == 0.7, s

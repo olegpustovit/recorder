@@ -864,8 +864,9 @@ scripts/agent-eval.py --selftest                         # asserts metrics on bu
 ```
 
 Metrics: `ops` = ops of `edit.apply` calls with `dryRun` false that succeeded; `images` = image items of `render.*`
-responses, counting `at` length or `count` from the args; lint pass = the last `lint` array in a response's
-`structuredContent` has no `error`/`warn` item; the summary lint rate is passes over transcripts.
+responses, counting `at` length or `count` from the args. Lint passes when the last successful report outside
+a dry run has no `error` or `warn` item in `structuredContent.report.lint`. Older logs may have a top-level
+`structuredContent.lint` array. The summary lint rate uses transcripts with a verdict.
 
 ## 11. Agent recording
 
