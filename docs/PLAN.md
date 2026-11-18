@@ -822,7 +822,7 @@ toggle (R3), any driver with Claude Code computer use for the eval, and one wind
 |---|---|---|
 | Capture path + MCP tool | T-950…T-951 | 2/2 |
 | Docs, smoke, scripts | T-952 | 1/1 |
-| Live eval (MacBook Air) | T-953 | 0/1 |
+| Live eval (MacBook Air) | T-953 | 1/1 |
 | Robustness | T-954…T-956 | 0/3 |
 
 - [x] **T-950 Agent recording path** · RECORDING-AGENT §5 T-950. `RecordingSettings(agentCopyOf:excludedBundleIDs:)`,
@@ -835,11 +835,10 @@ toggle (R3), any driver with Claude Code computer use for the eval, and one wind
   `settings-png <out> agents` inspected; `make test`. HUMAN (waivable): see the real consent alert via T-952's script.
 - [x] **T-952 Docs, smoke, scripts** · §5 T-952. `mcp-smoke` 10 tools, MCP.md/SPEC §10/README/CLAUDE.md,
   `scripts/mcp-record-demo.sh`, `scripts/mcp-log.py`. Verify: `make mcp-smoke`; `bash -n`; relay self-check; `make test`.
-- [~] **T-953 Live eval: TextEdit silent demo** · §5 T-953. HUMAN prerequisites (grants, interactive computer use on
+- [x] **T-953 Live eval: TextEdit silent demo** · §5 T-953. HUMAN prerequisites (grants, interactive computer use on
   the MacBook Air). Verify: `agent-eval.py docs/evals/textedit-silent-demo.jsonl` in the Log; `render.lint demo` clean;
   draft visible in the Claude tab; SPEC §9 re-prompt question answered.
-  Claude Code computer use is enabled. The signed build runs from `/Applications/Recorder.app` with both macOS
-  grants and ten tools connected. The live run needs human approval for TextEdit access and Recorder capture.
+  See the Log for the live take, cursor limitations and consent observations.
 - [ ] **T-954 Agent pointer events** · §5 T-954. `record.mark {x,y,action}` → `EventLog.mergingAgentPointer` (Core,
   tested) so Accessibility-only drivers still get a cursor and auto-zooms. Verify: `make test FILTER=EventsAgentPointer`;
   `make test`; `--selftest mcp-record`.
@@ -1872,3 +1871,5 @@ T-953 preflight · 2026-11-18 · Mac mini (macOS 27.0.1): staged the signed buil
 T-953 scoring preflight · 2026-11-18 · Fixed the scorer to read `structuredContent.report.lint` and keep dry-run lint and duration out of the final metrics. The saved T-940 transcript now reports PASS with its existing 23 calls, 11 ops, 45 images and 29.1 s. Scorer selftest passed on the Air and on the staged Mac mini copy. `make test` passed 305 tests in 18 suites. The live TextEdit eval remains pending.
 
 T-953 local setup · 2026-11-18 · User moved the eval to the MacBook Air (macOS 27.2). Installed the Developer ID signed build at `/Applications/Recorder.app` after normally quitting the idle source build. The same signer retained both Recorder grants. The installed shim returned all ten tools and idle capture. `--selftest mcp-record` passed with real capture and injected consent. The extra native-consent selftest did not pass locally, so native capture approval is still to be checked in the interactive run. Claude Code sees the installed server and the user enabled computer use. Restarted only the staged Claude session with `--dangerously-skip-permissions` at the user's request.
+
+T-953 · 2026-11-18 · Live interactive Claude Code 2.1.327 + built-in computer use on the MacBook Air, macOS 27.2. After approval for TextEdit and the installed Recorder's native prompt, Claude selected a bounded display area to include the Open panel, captured a 38.25 s silent take with five markers, created a document and typed a bold 36 pt heading. The raw timeline had six auto-zooms. Two raw filmstrips show cursor movement around clicks with long gaps and drift between samples. Local event counts show 18 move/drag samples over the take and an 8.16 s gap, supporting the user's report of visibly broken motion. The submitted draft reduces the take to 16.3 s, has four step titles and nine manual cuts across four steps, and replaces the six auto-zooms with one fixed zoom. The trial of `pace` removed whole steps and Claude undid it. The nine retained cuts meet T-956's threshold. `render.lint demo` returned no warnings or errors and one duration info item. `scripts/ui.sh screenshot` showed the Claude tab in Ready for review with 20 changes. `scripts/agent-eval.py docs/evals/textedit-silent-demo.jsonl`: 27 calls, 35 ops including reverted work, 35 images, PASS, 16.3 s. The public transcript preserves metrics with image bytes and unrelated window metadata removed. The original transcript and screenshots stay local. No export was requested or performed. Separate macOS re-consent was unconfirmed, so SPEC §9 records the observation without inferring a periodic policy.

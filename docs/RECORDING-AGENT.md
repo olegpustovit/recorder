@@ -1,6 +1,6 @@
 # Agent recording — implementation guide (T-950…T-956)
 
-Status: T-950 through T-952 verified. The T-953 live eval is staged on the MacBook Air and awaits computer-use approval.
+Status: T-950 through T-953 verified. The live TextEdit draft is ready for review on the MacBook Air.
 See `docs/PLAN.md` for progress and `CHECKPOINT.md` for the staged session.
 Proposal: https://artifacts.microapps.space/a/d0rs3s43x727
 

@@ -8,7 +8,7 @@ Branch: `dev`. Push target: `origin/dev` (`git@github.com:olegpustovit/recorder.
 ## Resume here
 
 Read `AGENTS.md`, `docs/PLAN.md` §“Agent recording”, and `docs/RECORDING-AGENT.md`.
-**Resume T-953 on the MacBook Air.** The plan marks it `[~]` pending interactive computer use. Follow the tasks in order.
+**Resume at T-954 on the MacBook Air.** The TextEdit draft is ready for review in Recorder.
 
 On the MacBook Air, preserve any local changes before switching or pulling. With a clean worktree:
 
@@ -83,7 +83,9 @@ Use `make test`, never bare `swift test`. Avoid changing Swift source while a bu
 
 ## Remaining work, in order
 
-1. **T-953 — real TextEdit silent-demo eval**, per the guide, on the MacBook Air (macOS 27.2).
+### Completed local eval
+
+**T-953 — real TextEdit silent-demo eval** on the MacBook Air (macOS 27.2).
    The signed build is installed at `/Applications/Recorder.app` and owns the standard MCP socket.
    Its Screen Recording and Accessibility grants survived the same-signer update. The existing Claude Code
    `recorder` connection uses the installed binary. The staged interactive session and relay see all ten tools.
@@ -91,15 +93,17 @@ Use `make test`, never bare `swift test`. Avoid changing Swift source while a bu
    eval folder. The local launcher in `build/textedit-eval/start.sh` runs Claude Code with
    `--dangerously-skip-permissions` at the user's request. Claude still requires TextEdit access per session.
    Recorder's unattended opt-in is off, so the first start also requires native capture approval.
-   The local transcript is `build/textedit-eval/textedit-silent-demo.jsonl`. Inspect it before committing to
-   `docs/evals/textedit-silent-demo.jsonl`, then score it, verify clean `render.lint demo`, inspect the cursor,
-   auto-zooms and submitted draft, and record the macOS re-consent observations.
-2. **T-954 — pointer declarations**, `record.mark {x,y,action}` → deduplicated Core events and auto-zoom tests.
+   The draft runs 16.3 s with four step titles, nine cuts and no demo lint warnings. The raw take was 38.25 s.
+   The public transcript in `docs/evals/textedit-silent-demo.jsonl` retains call metadata and scores with image
+   payloads and unrelated window titles removed. The raw transcript and review screenshots stay in `build/textedit-eval`.
+
+### Next
+
+1. **T-954 — pointer declarations**, `record.mark {x,y,action}` → deduplicated Core events and auto-zoom tests.
    These arguments are **not implemented yet**.
-3. **T-955 — draft-ready notification**, native attention/notification and click-through to the editor's Claude tab.
+2. **T-955 — draft-ready notification**, native attention/notification and click-through to the editor's Claude tab.
    **Not implemented yet.**
-4. **T-956 — conditional `steps` intent.** Decide from T-953's actual manual-cut/static-span evidence. Do not invent
-   a reason to build it or mark it unnecessary before that evidence exists.
+3. **T-956 — `steps` intent.** The submitted T-953 draft needed nine cuts for four steps, which meets the threshold.
 
 ## Files and state
 

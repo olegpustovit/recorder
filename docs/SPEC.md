@@ -1135,6 +1135,9 @@ PLAN T-640…T-650.
 ### Agent recording open question
 
 Does macOS 27 still prompt periodically to reconfirm ScreenCaptureKit access? Record the T-953 observations here.
+**T-953, macOS 27.2:** The Developer ID signed update retained Screen Recording access and the live take succeeded
+after Recorder's own session approval. A separate macOS re-confirmation prompt could not be confirmed. This take
+does not establish a re-prompt interval.
 
 ## 10. Agents (MCP)
 
