@@ -18,27 +18,119 @@ enum MCPTools {
     static let operationSchemas: [[String: Any]] = {
         let number: [String: Any] = ["type": "number", "minimum": 0]
         let string: [String: Any] = ["type": "string"]
+        let offset: [String: Any] = ["type": "number", "default": 0]
+        let time: [String: Any] = ["description": "Numeric seconds use the ifRevision base timeline. Anchors resolve on the timeline after earlier operations in this batch; offset is signed output seconds, default 0. {marker} is a marker id or a label that exactly one marker has; {ref} is the start of an earlier op in this batch that declared ref; {shot, edge} is a shot id from analyze.shots (unknown until shot analysis is available).", "oneOf": [number,
+            ["type": "object", "properties": ["marker": ["type": "string", "minLength": 1], "offset": offset], "required": ["marker"], "additionalProperties": false],
+            ["type": "object", "properties": ["ref": ["type": "string", "minLength": 1], "offset": offset], "required": ["ref"], "additionalProperties": false],
+            ["type": "object", "properties": ["shot": ["type": "string", "minLength": 1], "edge": ["type": "string", "enum": ["start", "end"], "default": "start"]], "required": ["shot"], "additionalProperties": false]]]
         let point: [String: Any] = ["type": "object", "properties": ["x": number, "y": number], "required": ["x", "y"], "additionalProperties": false]
+        let center: [String: Any] = ["type": "object", "description": "Normalized 0–1 coordinates in the source frame; origin is the top-left corner.", "properties": ["x": ["type": "number", "minimum": 0, "maximum": 1], "y": ["type": "number", "minimum": 0, "maximum": 1]], "required": ["x", "y"], "additionalProperties": false]
+        let follow: [String: Any] = ["type": "string", "enum": ["cursor", "fixed"], "description": "cursor: the camera tracks the cursor (no center); fixed: hold center. Default: cursor when center is omitted, fixed otherwise."]
+        let ease: [String: Any] = ["type": "string", "enum": ZoomEase.allCases.map(\.rawValue), "description": "Camera easing preset for this zoom's entry, tracking and exit: focused, smooth, rapid, medium or slow. Default: the project's screen animation."]
+        let color: [String: Any] = ["type": "string", "enum": BlockColor.allCases.map(\.rawValue), "description": "Palette colour tag shown on the block (inspector swatch): red, orange, yellow, green, blue, purple or gray."]
+        let textSize: [String: Any] = ["type": "number", "minimum": 16, "maximum": 120, "description": "Text size in points, same range as the inspector slider."]
         let rect: [String: Any] = ["type": "object", "properties": ["x": number, "y": number, "w": number, "h": number], "required": ["x", "y", "w", "h"], "additionalProperties": false]
         func op(_ name: String, _ properties: [String: Any], _ required: [String]) -> [String: Any] {
-            ["type": "object", "properties": properties.merging(["op": ["type": "string", "enum": [name]]], uniquingKeysWith: { _, b in b }),
+            var properties = properties
+            for key in ["from", "to", "at"] where properties[key] != nil { properties[key] = time }
+            if ["cut", "speed", "zoom", "text", "highlight", "marker", "layer"].contains(name) {
+                properties["ref"] = ["type": "string", "minLength": 1, "description": "Names this op's start so later ops in the same batch can anchor on {ref:name}. Unique within the batch."]
+            }
+            if ["cut", "cutPauses", "cutWords", "speed"].contains(name) {
+                properties["snap"] = ["type": "boolean", "default": name == "cutPauses", "description": "Snap invalid split boundaries to the nearest clip edge. Skips ranges below the clip minimum with a warning; changes[].note reports adjustments."]
+            }
+            return ["type": "object", "properties": properties.merging(["op": ["type": "string", "enum": [name]]], uniquingKeysWith: { _, b in b }),
              "required": ["op"] + required, "additionalProperties": false]
         }
         return [
             op("cut", ["from": number, "to": number], ["from", "to"]),
             op("cutPauses", ["from": number, "to": number, "minDuration": number, "keepTail": number], []),
             op("cutWords", ["transcript": string, "words": ["type": "array", "items": string]], ["transcript", "words"]),
-            op("speed", ["from": number, "to": number, "speed": number], ["from", "to", "speed"]),
-            op("zoom", ["from": number, "to": number, "scale": number, "center": point], ["from", "to", "scale"]),
-            op("text", ["from": number, "to": number, "style": ["type": "string", "enum": TextBlock.Style.allCases.map(\.rawValue)], "text": string, "position": point, "size": number], ["from", "to", "style", "text"]),
+            op("speed", ["from": number, "to": number, "speed": number,
+                "ramp": ["type": "object", "description": "Ease the speed change: output seconds of stepped ramp before and after the span (numeric from/to only).", "properties": ["in": number, "out": number], "additionalProperties": false]], ["from", "to", "speed"]),
+            op("zoom", ["from": number, "to": number, "scale": number, "center": center, "follow": follow, "ease": ease], ["from", "to", "scale"]),
+            op("text", ["from": number, "to": number, "style": ["type": "string", "enum": TextBlock.Style.allCases.map(\.rawValue)], "text": string, "position": point, "size": textSize, "color": color], ["from", "to", "style", "text"]),
             op("captions", ["maxWords": ["type": "integer", "minimum": 1, "maximum": 100]], []),
             op("highlight", ["from": number, "to": number, "rect": rect, "opacity": number], ["from", "to", "rect"]),
             op("marker", ["at": number, "label": string], ["at", "label"]),
-            op("update", ["id": string, "from": number, "to": number, "text": string, "position": point, "size": number, "scale": number, "center": point], ["id"]),
+            op("set", ["id": string, "from": number, "to": number,
+                "mediaStart": ["type": "number", "minimum": 0, "description": "Layers: media in-point (slip; position and length stay)."],
+                "mediaRate": ["type": "number", "minimum": 0.25, "maximum": 16, "description": "Layers: playback rate; the output length follows (2 = twice as fast, half as long)."],
+                "text": string, "color": color, "position": point, "size": textSize, "scale": number, "center": center, "follow": follow, "ease": ease,
+                "kind": ["type": "string", "enum": ["mask", "highlight", "blur"], "description": "Masks only."],
+                "duck": ["type": "boolean", "description": "Audio only: the clip's track drops to 25 % under other tracks' sound (music under speech)."]], ["id"]),
+            op("graphic", ["from": number, "to": number,
+                "template": ["type": "object", "description": "A template from project.templates: {name, params}. Short and always valid; prefer it.",
+                             "properties": ["name": ["type": "string", "enum": GraphicTemplates.catalog.map(\.name)], "params": ["type": "object"]], "required": ["name"], "additionalProperties": false],
+                "elements": ["type": "array", "description": "Escape hatch instead of template: [{kind rect|ellipse|line|arrow|text, frame {x,y,w,h} 0–1 inside rect, points [{x,y},{x,y}] for line/arrow, fill/stroke #RRGGBB[AA], width, radius, text, size (pt at 1080p), weight light|regular|medium|bold, align, reveal (s), count [from,to], keys}]",
+                             "items": ["type": "object"], "maxItems": 32],
+                "space": ["type": "string", "enum": ["canvas", "screen"], "description": "screen: positions are source-frame 0–1 and follow zoom/crop."],
+                "anchor": point, "rect": rect,
+                "keys": ["type": "array", "description": "Whole-graphic keyframes [{t (s since start), x, y (offsets 0–1), scale, rotation (deg), opacity, ease linear|hold|easeIn|easeOut|easeInOut|spring}]", "items": ["type": "object"], "maxItems": 64]], ["from", "to"]),
+            op("freeze", ["at": number, "duration": ["type": "number", "minimum": 0.5, "maximum": 10, "description": "Seconds to hold the frame at `at`; later footage moves back."]], ["at", "duration"]),
+            op("transition", ["at": number, "kind": ["type": "string", "enum": ["dissolve", "dip"]], "duration": ["type": "number", "minimum": 0.1, "maximum": 3, "default": 0.5, "description": "At the clip seam nearest `at` (within 0.5 s). dissolve (≥ 0.5 s): the outgoing frame fades into the next clip; dip: through the background."]], ["at", "kind"]),
+            op("animate", ["id": string, "keys": ["type": "array", "description": "Replace the keyframes of a layer, graphic or text block (same key shape as graphic.keys); [] clears.", "items": ["type": "object"], "maxItems": 64]], ["id", "keys"]),
+            op("layer", ["from": number, "to": number, "asset": ["type": "string", "description": "A media/ file listed by project.assets (reuse an existing layer's media)."],
+                "path": ["type": "string", "description": "Absolute path to an image or video in your home or temp folder; imported into the project when applied."],
+                "recording": ["type": "string", "description": "A library recording id from project.assets; its screen video becomes a video layer."],
+                "rect": rect], ["from"]),
             op("remove", ["id": string], ["id"]),
-            op("style", ["patch": ["type": "object"]], ["patch"])
+            op("style", ["patch": ["type": "object"]], ["patch"]),
+            op("reframe", ["aspect": ["type": "string", "enum": ["4:5", "1:1", "9:16", "16:9"]], "mode": ["type": "string", "enum": ["perShot", "static"], "default": "perShot", "description": "perShot: one stationary or pan crop per shot aimed at its focus and cursor; static: one crop over every focus. Needs analyze.shots."],
+                "focus": ["type": "object", "description": "Per-shot aim override: {\"s12\": {\"x\": 0.7, \"y\": 0.4}} (source frame 0–1, top-left origin).", "additionalProperties": point]], ["aspect"]),
+            op("keepShots", ["shots": ["type": "array", "items": string, "description": "Shot ids from analyze.shots to keep; everything else is cut."],
+                "protect": ["type": "array", "items": string, "description": "Shots always kept: ids, section:N, or caption~regex (needs analyze.shots captions:true), e.g. caption~graph, so the subject survives an energy filter."],
+                "where": ["type": "object", "description": "Keep shots by kind and energy instead of ids.", "properties": ["kind": ["type": "array", "items": ["type": "string", "enum": ShotKind.allCases.map(\.rawValue)]], "minEnergy": number], "additionalProperties": false],
+                "trim": ["type": "object", "description": "Source seconds trimmed from the start/end of each kept shot.", "properties": ["lead": number, "tail": number], "additionalProperties": false]], []),
+            op("pace", ["beat": ["type": "object", "description": "Seconds a shot is held: default 0.9, payoff 1.3, motion 0.8.", "properties": ["default": number, "payoff": number, "motion": number], "additionalProperties": false],
+                "maxStatic": number, "profile": ["type": "string", "enum": ["reel", "demo", "tutorial"], "default": "reel", "description": "Rhythm: reel beat-cuts clicks tight (beats 0.9/1.3/0.8 s, cuts waits ≥ 0.5 s); demo 1.4/2.0/1.2 s, waits ≥ 1 s; tutorial 2.5/3.5/2.0 s, waits ≥ 2 s. maxStatic defaults to the profile's."], "speedFill": ["type": "object", "description": "Speed range used to squeeze holds and slow shots (default 1.5-6).", "properties": ["min": number, "max": number], "additionalProperties": false]], []),
+            op("fitDuration", ["target": number, "tolerance": number, "protect": ["type": "array", "items": string, "description": "Shots never cut: ids, section:N or caption~regex."],
+                "minPerSection": ["type": "number", "minimum": 0, "description": "Output seconds every section (shot.section from analyze.shots) keeps at least; report.sections shows kept time per section."],
+                "balance": ["type": "string", "enum": ["energy", "even", "proportional"], "default": "energy", "description": "energy: drop the least interesting shots first; even: every section ends near the same seconds; proportional: sections keep time in proportion to their length."],
+                "drop": ["type": "array", "items": ["type": "integer", "minimum": 1], "description": "Sections cut whole first (weak scenes), protected shots excepted."]], ["target"]),
+            op("autoZoom", ["lead": number, "tail": number, "scale": number, "from": number, "to": number], [])
         ]
     }()
+    private static let outputFields: [String: [String: Any]] = {
+        let array: [String: Any] = ["type": "array"], object: [String: Any] = ["type": "object"], number: [String: Any] = ["type": "number"]
+        let string: [String: Any] = ["type": "string"], boolean: [String: Any] = ["type": "boolean"]
+        return [
+            "project": ["projects": array, "title": string, "duration": number, "size": object, "clips": ["type": "integer"], "lanes": object, "hasMic": boolean,
+                        "hasCamera": boolean, "transcribed": boolean, "access": string, "layers": array, "library": array, "paths": string, "draft": object, "templates": array],
+            "timeline": ["duration": number, "clips": array, "blocks": array, "markers": array],
+            "transcript": ["transcript": string, "words": array, "phrases": array, "truncated": boolean, "from": number],
+            "analyze": ["pauses": array, "fillers": array, "idle": array, "typing": array, "clicks": array, "transcript": string, "words": ["type": "integer"]],
+            "edit": ["mode": string, "changes": array, "duration": object, "warnings": array, "dryRun": boolean, "undone": string, "lowered": array, "reframe": object,
+                     "report": ["type": "object", "description": "With a storyboard: duration, aslSec (visual shots), subShotAslSec, staticSec {before,after}, hookSec, longestStatic {sec,at}, lint [{rule,sev,at,shot,msg,suggest}], reframeJumps, sections [{section, name, srcFrom, srcTo (source s), outFrom, outTo (output s), shots [first,last], keptSec}]."]],
+            "draft": ["base": ["type": ["string", "null"]], "ops": ["type": ["array", "integer"]], "changes": ["type": ["array", "integer"]], "submitted": boolean, "stale": boolean, "selected": ["type": "integer"],
+                      "excluded": array, "skipped": array, "verdict": string],
+            "render": ["files": array, "at": array, "seconds": number, "bytes": ["type": "integer"], "cancelled": boolean],
+            "export": ["path": string, "srtPath": string, "seconds": number, "bytes": ["type": "integer"]],
+            "ui": ["at": number, "select": array]]
+    }()
+    /// Every argument and op field path ("render.longEdge", "op.fitDuration.balance"), to tell a stale client what it misses.
+    static let fieldPaths: Set<String> = {
+        var paths = Set<String>()
+        for tool in list {
+            guard let name = tool["name"] as? String, let props = (tool["inputSchema"] as? [String: Any])?["properties"] as? [String: Any] else { continue }
+            paths.formUnion(props.keys.map { "\(name).\($0)" })
+        }
+        for schema in operationSchemas {
+            guard let props = schema["properties"] as? [String: Any], let op = ((props["op"] as? [String: Any])?["enum"] as? [String])?.first else { continue }
+            paths.formUnion(props.keys.filter { $0 != "op" }.map { "op.\(op).\($0)" })
+        }
+        return paths
+    }()
+    /// Changes whenever any tool name, schema or annotation changes; sent in `initialize` (R2).
+    static let schemaVersion: String = {
+        let data = (try? JSONSerialization.data(withJSONObject: list, options: [.sortedKeys])) ?? Data()
+        return SHA256.hash(data: data).prefix(6).map { String(format: "%02x", $0) }.joined()
+    }()
+    /// `tool.action` pairs with a handler in `call`; the `mcp-schema` self-test diffs this against `tools/list`.
+    static let handled: Set<String> = [
+        "project.list", "project.open", "project.info", "project.assets", "project.templates", "timeline.get", "transcript.get",
+        "analyze.transcribe", "analyze.pauses", "analyze.fillers", "analyze.activity", "analyze.shots", "edit.apply", "edit.undo",
+        "draft.status", "draft.submit", "draft.discard", "render.frames", "render.sheet", "render.clip", "render.storyboard", "render.strip", "render.compare", "render.lint", "render.cancel", "export.final", "ui.show"]
     static let list: [[String: Any]] = {
         let string: [String: Any] = ["type": "string"]
         let number: [String: Any] = ["type": "number", "minimum": 0]
@@ -49,18 +141,26 @@ enum MCPTools {
             properties["action"] = ["type": "string", "enum": actions]
             var annotations: [String: Any] = read ? ["readOnlyHint": true] : ["destructiveHint": false]
             if name == "export" { annotations["openWorldHint"] = false }
+            // Every result also carries the project id and the revision it describes (null before project.open); errors carry error/message.
+            let output = (outputFields[name] ?? [:]).merging(["project": ["type": ["string", "null"]], "revision": ["type": ["string", "null"]],
+                "error": ["type": "string"], "message": ["type": "string"], "fix": ["type": "object"], "current": ["type": ["object", "null"]]], uniquingKeysWith: { a, _ in a })
             return ["name": name, "description": description, "annotations": annotations,
-                    "inputSchema": ["type": "object", "properties": properties, "required": ["action"], "additionalProperties": false]]
+                    "inputSchema": ["type": "object", "properties": properties, "required": ["action"], "additionalProperties": false],
+                    "outputSchema": ["type": "object", "properties": output]]
         }
         return [
-            tool("project", ["list", "open", "info"], "List recordings, open one by id or package path, or read its summary and revision.", ["id": string, "path": string], read: true),
+            tool("project", ["list", "open", "info", "assets", "templates"], "List recordings, open one by id or package path, read its summary and revision, list the media a layer op can use (assets), or the motion-graphic templates a graphic op can use (templates).", ["id": string, "path": string], read: true),
             tool("timeline", ["get"], "Read clips, effect blocks and markers in output seconds.", range, read: true),
             tool("transcript", ["get"], "Read up to 2000 spoken words with stable wN ids, or timestamped phrases. Key presses are never returned.", range.merging(["format": ["type": "string", "enum": ["words", "phrases"]]], uniquingKeysWith: { _, b in b }), read: true),
-            tool("analyze", ["transcribe", "pauses", "fillers", "activity"], "Transcribe on-device, find mic pauses/fillers, or read activity ranges without key characters.", ["minDuration": number, "threshold": number], read: true),
-            tool("edit", ["apply", "undo"], "Apply atomic edits using the latest ifRevision; edits land in a draft by default. All times in a call refer to that revision's output timeline.", ["ifRevision": string, "ops": ["type": "array", "items": ["oneOf": operationSchemas]], "dryRun": boolean]),
-            tool("draft", ["status", "submit", "discard"], "Read or submit your draft for review, or discard it.", ["note": string]),
-            tool("render", ["frames", "sheet", "clip", "cancel"], "Render frames, a contact sheet or a 540p proxy into the agent cache. Key chips are hidden.", ["at": ["type": "array", "items": number, "maxItems": 24], "from": number, "to": number, "count": ["type": "integer", "minimum": 1, "maximum": 24], "longEdge": ["type": "integer", "minimum": 1, "maximum": 640], "draft": boolean]),
-            tool("export", ["final"], "Export an MP4 after the user's native approval, optionally with SRT subtitles.", ["destination": string, "shortEdge": ["type": "integer", "enum": [720, 1080, 2160]], "fps": ["type": "integer", "enum": [24, 30, 60]], "srt": boolean]),
+            tool("analyze", ["transcribe", "pauses", "fillers", "activity", "shots"], "Transcribe on-device, find mic pauses/fillers, read activity ranges without key characters, or get the shot storyboard (shots: ids stay tied to source moments across edits; times are output seconds).", ["minDuration": number, "threshold": ["type": "number", "minimum": 0, "maximum": 1],
+                "captions": ["type": "boolean", "description": "analyze.shots only: add on-device 6–10 word captions per shot (slower; null when unavailable)."],
+                "response_format": ["type": "string", "enum": ["concise", "detailed"], "description": "analyze.shots only: concise (default) omits reasons only; focus is always kept."],
+                "thresholds": ["type": "object", "description": "analyze.shots only: optional overrides of ssim, minStable, cutSsim, motionDiff, payoffDiff, cursorSpeed, energyScale. energyScale and minStable must be > 0; ssim and cutSsim within 0…1.", "additionalProperties": ["type": "number", "minimum": 0]]]),   // not read-only: transcribe writes the transcript
+            tool("edit", ["apply", "undo"], "Apply atomic edits using the latest ifRevision; edits land in a draft by default. Numeric times use that revision's output timeline; anchors ({marker:id|label, offset}, {ref:name, offset}, {shot, edge}) resolve after earlier ops in the batch. Declare ref:\"name\" on an op to anchor later ops on its start. At most one of keepShots/pace/fitDuration per batch (call edit.apply once per intent). Intent fields: keepShots {shots|where{kind,minEnergy}, protect[id|section:N|caption~re], trim}; pace {profile reel|demo|tutorial, maxStatic, beat, speedFill}; fitDuration {target, tolerance, balance energy|even|proportional, minPerSection, drop[section], protect} (protect is per op, repeat it on each intent). undo inside a draft removes your last edit.apply call. Errors carry fix and current.", ["ifRevision": string, "ops": ["type": "array", "items": ["oneOf": operationSchemas]], "dryRun": boolean, "lint": ["type": "string", "enum": ["reel", "tutorial", "demo"], "description": "Profile for report.lint (default reel)."]]),
+            tool("draft", ["status", "submit", "discard"], "Read your draft's exclusions, skipped reasons and verdict; submit for review or discard it. A pending submitted draft can receive more edit.apply calls, returning to watching until submitted again. Reframe ops show keys as a count (plus jumps: crop steps not at a cut) unless response_format is detailed; submit returns op/change counts unless detailed.", ["note": string, "response_format": ["type": "string", "enum": ["concise", "detailed"]]]),
+            tool("render", ["frames", "sheet", "clip", "storyboard", "strip", "compare", "lint", "cancel"], "Render frames, a contact sheet, a 540p proxy, per-shot storyboard tiles (needs analyze.shots), a filmstrip (strip: from, to, fps 4–8, ≤48 tiles) base|draft rows (compare: at ≤6) into the agent cache (key chips hidden), or lint the draft against a profile (lint: reel, tutorial, demo; needs analyze.shots).", ["at": ["type": "array", "items": number, "maxItems": 24], "shots": ["type": "array", "items": string, "maxItems": 48, "description": "render.storyboard only: shot ids; default all shots the draft keeps."], "page": ["type": "integer", "minimum": 1, "description": "render.storyboard only: 48 tiles per page."], "fps": ["type": "integer", "minimum": 4, "maximum": 8, "description": "render.strip only."], "from": number, "to": number, "count": ["type": "integer", "minimum": 1, "maximum": 24], "longEdge": ["type": "integer", "minimum": 2, "maximum": 640], "draft": boolean, "profile": ["type": "string", "enum": ["reel", "tutorial", "demo"]],
+                "grid": ["type": "boolean", "description": "render.frames only: overlay a 0.1-step grid labelled 0–1, origin top-left, matching zoom center and text position coordinates (exact at 1× zoom with no layout padding)."]], read: true),
+            tool("export", ["final"], "Export an MP4 after the user's native approval, optionally with SRT subtitles, or only from…to (output seconds).", ["destination": string, "shortEdge": ["type": "integer", "enum": [720, 1080, 2160]], "fps": ["type": "integer", "enum": [24, 30, 60]], "srt": boolean, "from": number, "to": number]),
             tool("ui", ["show"], "Move the editor playhead and select blocks by id.", ["at": ["type": "number"], "select": ["type": "array", "items": string]])
         ]
     }()
@@ -95,15 +195,42 @@ enum MCPTools {
     private static func json<T: Encodable>(_ value: T) throws -> Any {
         try JSONSerialization.jsonObject(with: JSONEncoder().encode(value))
     }
-    private static func decodeOps(_ value: Any?) throws -> [EditOp] {
-        guard let values = value as? [[String: Any]] else { throw MCPFailure(code: "INVALID_OP", message: "edit.apply needs ops: [EditOp]; use tools/list for the twelve op schemas") }
+    /// `ref` names declared on the ops of one batch, as name → op index (the batch is the scope; a duplicate name is an error).
+    static func opRefs(_ value: Any?) throws -> [String: Int] {
+        var refs: [String: Int] = [:]
+        for (index, op) in (value as? [[String: Any]] ?? []).enumerated() {
+            guard let name = op["ref"] as? String else { continue }
+            guard refs.updateValue(index, forKey: name) == nil else { throw MCPFailure(code: "INVALID_OP", message: "ref \(name) is declared twice in this batch; use unique names") }
+        }
+        return refs
+    }
+    /// Every op the agent sends, intent or primitive, is checked against its tools/list schema before anything runs:
+    /// an unknown or misspelt field is an error, never silently ignored.
+    static func validateOp(_ value: [String: Any], index: Int) throws {
+        guard let name = value["op"] as? String, let schema = operationSchemas.first(where: {
+            (($0["properties"] as? [String: Any])?["op"] as? [String: Any])?["enum"] as? [String] == [name]
+        }), let properties = schema["properties"] as? [String: Any] else {
+            throw MCPFailure(code: "INVALID_OP", message: "op \(index) has an unknown op name; revise it using tools/list")
+        }
+        if let unknown = value.keys.sorted().first(where: { properties[$0] == nil }) {
+            throw MCPFailure(code: "INVALID_OP", message: "op \(index) \(name): unknown field \(unknown); valid: \(properties.keys.filter { $0 != "op" }.sorted().joined(separator: ", "))")
+        }
+        for (key, field) in value {   // nested objects (where, trim, beat, speedFill, ramp) name their valid fields too
+            guard let fields = field as? [String: Any], let sub = (properties[key] as? [String: Any])?["properties"] as? [String: Any],
+                  let unknown = fields.keys.sorted().first(where: { sub[$0] == nil }) else { continue }
+            throw MCPFailure(code: "INVALID_OP", message: "op \(index) \(name): unknown field \(key).\(unknown); valid: \(sub.keys.sorted().joined(separator: ", "))")
+        }
+        if let missing = (schema["required"] as? [String] ?? []).first(where: { value[$0] == nil }) {
+            throw MCPFailure(code: "INVALID_OP", message: "op \(index) \(name): missing \(missing); revise it using tools/list")
+        }
+        if let problem = schemaViolation(value, schema, path: "op \(index)") {
+            throw MCPFailure(code: "INVALID_OP", message: "\(problem.message); revise the op using tools/list")
+        }
+    }
+    static func decodeOps(_ value: Any?) throws -> [EditOp] {
+        guard let values = value as? [[String: Any]] else { throw MCPFailure(code: "INVALID_OP", message: "edit.apply needs ops: [EditOp]; use tools/list for the op schemas") }
         return try values.enumerated().map { index, value in
-            guard let name = value["op"] as? String, let schema = operationSchemas.first(where: {
-                (($0["properties"] as? [String: Any])?["op"] as? [String: Any])?["enum"] as? [String] == [name]
-            }), let properties = schema["properties"] as? [String: Any],
-                Set(value.keys).isSubset(of: Set(properties.keys)), (schema["required"] as? [String] ?? []).allSatisfy({ value[$0] != nil }) else {
-                throw MCPFailure(code: "INVALID_OP", message: "op \(index) has missing or unknown fields; revise it using tools/list")
-            }
+            try validateOp(value, index: index)
             for key in ["position", "center", "rect"] where value[key] != nil {
                 let keys = key == "rect" ? Set(["x", "y", "w", "h"]) : Set(["x", "y"])
                 guard let fields = value[key] as? [String: Any], Set(fields.keys) == keys else {
@@ -115,9 +242,37 @@ enum MCPTools {
             catch { throw MCPFailure(code: "INVALID_OP", message: "op \(index) has an invalid value; revise it using tools/list") }
         }
     }
-    @MainActor private static func requireEditable(_ model: EditorModel) throws {
+    @MainActor private static func requireEditable(_ model: EditorModel, draftSession: MCPSession? = nil, allowInvisible: Bool = false) throws {
         guard !model.voiceover.isActive else { throw MCPFailure(code: "PERMISSION_DENIED", message: "Recording a voiceover; stop it before editing or reviewing") }
-        guard !model.isReviewingDraft, !model.isEditingGesture, model.mediaImportStatus == nil else { throw MCPFailure(code: "REVIEW_IN_PROGRESS", message: "Finish the review, import or timeline gesture before editing") }
+        guard !model.isEditingGesture, model.mediaImportStatus == nil else { throw MCPFailure(code: "REVIEW_IN_PROGRESS", message: "Finish the import or timeline gesture before editing") }
+        if model.isReviewingDraft {
+            guard let session = draftSession, let owner = model.reviewSessionID, AgentAccess.level(for: model.liveProject.id) == .draft,
+                  owner == session.id || allowInvisible else {
+                throw MCPFailure(code: "REVIEW_IN_PROGRESS", message: "Finish the current review before editing or submitting another draft")
+            }
+        }
+    }
+    /// Fills each `reframe` op's crop keys from the storyboard so the stored op replays without it.
+    /// `raw` is the JSON op list: a reframe's optional `focus: {"s12": {x, y}}` re-aims those shots (feedback run 6 #7).
+    @MainActor private static func reframed(_ ops: [EditOp], raw: Any?, model: EditorModel) async throws -> [EditOp] {
+        var storyboard: Storyboard?, out: [EditOp] = []
+        let rawOps = raw as? [[String: Any]] ?? []
+        for (index, op) in ops.enumerated() {
+            guard case let .reframe(aspect, mode, nil) = op else { out.append(op); continue }
+            if storyboard == nil { storyboard = try loadStoryboard(model: model) }
+            var points: [String: NormPoint] = [:]
+            for (id, value) in (rawOps.indices.contains(index) ? rawOps[index]["focus"] as? [String: Any] : nil) ?? [:] {
+                guard let point = value as? [String: Any], let x = point["x"] as? Double, let y = point["y"] as? Double, (0...1).contains(x), (0...1).contains(y) else {
+                    throw MCPFailure(code: "INVALID_OP", message: "reframe focus.\(id) must be {x, y} in 0–1 (source frame, top-left origin)")
+                }
+                points[id] = NormPoint(x: x, y: y)
+            }
+            let (board, unknown) = storyboard!.refocused(points)
+            if let id = unknown.first { throw MCPFailure(code: "INVALID_OP", message: "reframe focus: unknown shot \(id); use ids from analyze.shots") }
+            let source = model.liveProject.source
+            out.append(.reframe(aspect: aspect, mode: mode, keys: reframePlan(storyboard: board, aspect: aspect, mode: mode, sourceSize: CGSize(width: source.pixelWidth, height: source.pixelHeight))))
+        }
+        return out
     }
     @MainActor private static func editContext(_ ops: [EditOp], model: EditorModel) async throws -> EditContext {
         var needsWords = false, needsSilence = false
@@ -126,19 +281,52 @@ enum MCPTools {
         }
         if needsWords, !model.liveProject.source.hasMic || model.transcript == nil { throw notTranscribed() }
         var context = EditContext(words: model.transcript ?? [])
+        context.shotTime = shotTime(model: model)
         if needsSilence {
             guard model.liveProject.source.hasMic, let audio = Waveform.audioURL(in: model.packageURL, file: "mic.m4a") else { throw notTranscribed() }
             context.silent = silentRanges(levels: try await Waveform.peaks(for: audio), perSecond: Double(Waveform.peaksPerSecond), minDuration: 0, pad: 0)
         }
         return context
     }
+    /// `{shot, edge}` anchors: source seconds of a shot edge from analyze.shots' cache (shot ids are source-keyed, so replay is stable).
+    @MainActor static func shotTime(model: EditorModel) -> (@Sendable (String, Bool) -> Double?)? {
+        guard let board = try? loadStoryboard(model: model) else { return nil }
+        let edges = Dictionary(board.shots.map { ($0.id, ($0.from, $0.to)) }, uniquingKeysWith: { a, _ in a })
+        return { id, end in edges[id].map { end ? $0.1 : $0.0 } }
+    }
+    private static func lintProfile(_ value: Any?) throws -> LintProfile {
+        guard let value else { return .reel }
+        guard let name = value as? String, let profile = LintProfile(name: name) else { throw MCPFailure(code: "INVALID_OP", message: "lint/profile must be reel, tutorial or demo") }
+        return profile
+    }
+    /// keepShots, pace, fitDuration, autoZoom and ramped speed become cut/speed/zoom ops against the viewed timeline.
+    private static func lowerIntentOps(_ value: Any?, project: Project, clicks: [InputEvent], storyboard: Storyboard?) throws -> (Any?, [Int], [LoweredIntent]) {
+        guard let values = value as? [[String: Any]], values.contains(where: { ["keepShots", "pace", "fitDuration", "autoZoom"].contains($0["op"] as? String) || $0["ramp"] != nil }) else { return (value, (value as? [Any] ?? []).indices.map { $0 }, []) }
+        for (index, op) in values.enumerated() { try validateOp(op, index: index) }   // intents bypassed decodeOps' check (R3-3)
+        guard let raw = try? JSONDecoder().decode([JSONValue].self, from: JSONSerialization.data(withJSONObject: values)) else {
+            throw MCPFailure(code: "INVALID_OP", message: "edit.apply ops must be JSON objects; use tools/list for the op schemas")
+        }
+        let result = try lowerIntents(raw, project: project, clicks: clicks) {
+            guard let storyboard else { throw MCPFailure(code: "NOT_ANALYZED", message: "Run analyze.shots first") }
+            return storyboard
+        }
+        return (try JSONSerialization.jsonObject(with: JSONEncoder().encode(result.ops)), result.origin, result.lowered)
+    }
     @MainActor private static func edit(_ action: String, _ args: [String: Any], model: EditorModel, session: MCPSession) async throws -> [String: Any] {
-        try requireEditable(model)
+        try requireEditable(model, draftSession: session, allowInvisible: true)
         let level = AgentAccess.level(for: model.liveProject.id)
         guard level == .draft || level == .live else { throw MCPFailure(code: "PERMISSION_DENIED", message: "Editing needs Draft or Live access in the Claude tab") }
         let active = session.draft.flatMap { $0.verdict == nil ? $0 : nil }
-        if let active, active.baseProject.id != model.liveProject.id || active.submitted || level == .live {
+        if let active, active.baseProject.id != model.liveProject.id || level == .live {
             throw MCPFailure(code: "REVIEW_IN_PROGRESS", message: "Discard or finish the pending draft, or reopen its project, before editing")
+        }
+        if action == "undo", level == .draft {
+            guard var draft = active, !draft.calls.isEmpty else { throw MCPFailure(code: "INVALID_OP", message: "Nothing to undo in this draft") }
+            let undone = draft.changes.last?.first?.summary ?? "edit"
+            try draft.popLastCall()
+            if draft.calls.isEmpty { try MCPServer.shared.finishReview(session, commit: false) }
+            else { session.draft = draft; try MCPServer.shared.review(session, watching: true); DraftPlayback.shared.invalidate(sessionID: session.id) }
+            return ["mode": "draft", "undone": undone, "calls": draft.calls.count, "revision": draft.revision]
         }
         if action == "undo" {
             guard level == .live, let name = model.undoStepNames.last, name.hasPrefix("Claude:") else {
@@ -151,54 +339,175 @@ enum MCPTools {
         let expected = active?.revision ?? liveRevision
         guard let sent = args["ifRevision"] as? String else { throw MCPFailure(code: "INVALID_OP", message: "Pass ifRevision from timeline.get or the previous edit.apply") }
         guard sent == expected, active == nil || active?.base == liveRevision else {
-            throw MCPFailure(code: "STALE_REVISION", message: "Editor is at \(liveRevision), draft is at \(expected); call timeline.get, then discard/review any stale draft and retry")
+            // Feedback run 6 #8: say what was sent and what is current, and only mention the base when it is the problem.
+            throw MCPFailure(code: "STALE_REVISION", message: staleRevisionMessage(sent: sent, current: expected, isDraft: active != nil, draftBase: active?.base, live: liveRevision))
         }
-        let ops = try decodeOps(args["ops"])
+        var board: Storyboard?, reportNote: String?
+        do { board = try loadStoryboard(model: model) }
+        catch { reportNote = (error as? MCPFailure)?.message ?? "\(error)" }
+        let profile = try lintProfile(args["lint"])
+        let (loweredOps, origin, lowered) = try lowerIntentOps(args["ops"], project: try viewedProject(model, session: session), clicks: model.events.clicks(), storyboard: board)
+        let decoded = try decodeOps(loweredOps)
         let originalDraftID = session.draft?.id
-        let context = try await editContext(ops, model: model)
+        let dryRun = args["dryRun"] as? Bool ?? false
+        let resolution = try await MCPAssets.resolve(decoded, package: model.packageURL, project: model.liveProject, library: decoded.contains(where: { if case .layer(_, _, .recording, _) = $0 { return true }; return false }) ? await libraryRecordings() : [],
+                                                     known: session.draft?.assets ?? [:])
+        var keepImported = false, rendered: [URL] = []
+        defer { if !keepImported || dryRun { MCPAssets.removeFiles(resolution.created + rendered) } }
+        var ops = try await reframed(resolution.ops, raw: loweredOps, model: model)
+        // freeze: render the held frame from the viewed project (draft included) into media/ (T-933).
+        for (i, op) in ops.enumerated() {
+            var at: EditTime, render: Double
+            switch op {
+            case let .freeze(when, _, nil): at = when; render = 0
+            case let .transition(when, .dissolve, _, nil): at = when; render = -1.0 / 60   // the outgoing clip's last frame
+            default: continue
+            }
+            guard case .seconds(var time) = at else { throw MCPFailure(code: "INVALID_OP", message: "freeze/transition at must be numeric output seconds") }
+            let viewed = try viewedProject(model, session: session)
+            if render != 0 { guard let seam = viewed.seam(near: time) else { throw MCPFailure(code: "INVALID_OP", message: "no clip seam within 0.5 s of \(time); seams are at timeline.get clip edges") }; time = max(0, seam.at + render) }
+            let frame = EditorModel(packageURL: model.packageURL, project: viewed, events: model.events)
+            guard time >= 0, time <= viewed.exportDuration, let png = try await EditorWindowController.renderFramesPNG(model: frame, at: [time], longEdge: nil).first else {
+                throw MCPFailure(code: "OUT_OF_RANGE", message: "freeze at must be inside 0–\(viewed.exportDuration)")
+            }
+            let file = "media/\(render == 0 ? "freeze" : "transition")-\(UUID().uuidString).png", url = model.packageURL.appendingPathComponent(file)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try png.write(to: url, options: .atomic)
+            rendered.append(url)
+            switch op {
+            case let .freeze(_, duration, _): ops[i] = .freeze(at: at, duration: duration, file: file)
+            case let .transition(_, kind, duration, _): ops[i] = .transition(at: at, kind: kind, duration: duration, file: file)
+            default: break
+            }
+        }
+        var context = try await editContext(ops, model: model)
+        context.assets = resolution.assets
+        context.refs = try opRefs(args["ops"])
         guard try MCPTools.model(for: session) === model else { throw MCPFailure(code: "NO_PROJECT", message: "Project changed during analysis; reopen it and retry") }
-        try requireAccess(model.liveProject, tool: "edit"); try requireEditable(model)
+        try requireAccess(model.liveProject, tool: "edit"); try requireEditable(model, draftSession: session, allowInvisible: true)
         guard level == AgentAccess.level(for: model.liveProject.id) else { throw MCPFailure(code: "PERMISSION_DENIED", message: "Access changed during analysis; check access and retry") }
         guard liveRevision == (try revision(model.liveProject)), originalDraftID == session.draft?.id,
               active?.revision == session.draft.flatMap({ $0.verdict == nil ? $0.revision : nil }),
               active?.calls.count == session.draft.flatMap({ $0.verdict == nil ? $0.calls.count : nil }),
-              session.draft.map({ $0.verdict != nil || !$0.submitted }) ?? true else {
+              active?.submitted == session.draft.flatMap({ $0.verdict == nil ? $0.submitted : nil }),
+              active?.excluded == session.draft.flatMap({ $0.verdict == nil ? $0.excluded : nil }),
+              active?.skipped == session.draft.flatMap({ $0.verdict == nil ? $0.skipped : nil }) else {
             throw MCPFailure(code: "STALE_REVISION", message: "The editor or draft changed during analysis; call timeline.get and retry")
         }
         if ops.contains(where: { switch $0 { case .cutWords, .captions: return true; default: return false } }), context.words != model.transcript {
             throw MCPFailure(code: "TRANSCRIPT_CHANGED", message: "Transcript changed during analysis; call transcript.get and retry")
         }
-        let dryRun = args["dryRun"] as? Bool ?? false
         let before = try viewedProject(model, session: session)
-        let result: (project: Project, changes: [EditChange])
+        var result: (project: Project, changes: [EditChange])
         var nextRevision = expected
+        do {
         if level == .draft {
             var draft = active ?? AgentDraft(base: liveRevision, baseProject: model.liveProject)
             result = try draft.append(ops, context: context)
-            if !dryRun, !ops.isEmpty { session.draft = draft; session.lastDraftVerdict = nil; session.reviewError = nil; nextRevision = draft.revision }
+            if !dryRun, !ops.isEmpty {
+                let previous = session.draft
+                session.draft = draft
+                do { try MCPServer.shared.review(session, watching: true) }
+                catch { session.draft = previous; throw error }
+                session.lastDraftVerdict = nil; session.reviewError = nil; nextRevision = session.draft?.revision ?? draft.revision
+                DraftPlayback.shared.invalidate(sessionID: session.id)   // a preview of the previous revision is stale
+                if active == nil, EditorWindowController.allOpen.first(where: { $0.model === model })?.window?.isKeyWindow == true {
+                    model.inspectorShowsAgent = true
+                }
+            }
         } else {
             result = try model.liveProject.applying(ops, context: context)
             if !dryRun, result.project != model.liveProject {
                 let summary = result.changes.first?.summary ?? "Edit"
                 model.edit("Claude: \(summary)\(result.changes.count > 1 ? " +\(result.changes.count - 1)" : "")") { $0 = result.project }
                 nextRevision = try revision(model.liveProject)
+                if session.shownLiveProjects.insert(model.liveProject.id).inserted,
+                   EditorWindowController.allOpen.first(where: { $0.model === model })?.window?.isKeyWindow == true {
+                    model.inspectorShowsAgent = true
+                }
             }
         }
-        return ["revision": nextRevision, "mode": level.rawValue, "changes": try json(result.changes),
-                "duration": ["before": before.exportDuration, "after": result.project.exportDuration], "warnings": warnings(result.project), "dryRun": dryRun]
+        } catch let error as EditError { throw error.remapped(origin) }
+        // Draft replay keeps lowered indices; the payload speaks the agent's original batch indices.
+        result.changes = result.changes.map { var c = $0; c.op = origin.indices.contains(c.op) ? origin[c.op] : c.op; return c }
+        if !dryRun, !(resolution.created + rendered).isEmpty {
+            keepImported = true
+            session.agentMedia.formUnion((resolution.created + rendered).map { "media/" + $0.lastPathComponent })
+            session.agentMediaPackage = model.packageURL
+        }
+        var payload: [String: Any] = ["revision": nextRevision, "mode": level.rawValue, "changes": try json(result.changes),
+                "duration": ["before": before.exportDuration, "after": result.project.exportDuration], "warnings": warnings(result.project, changes: result.changes), "dryRun": dryRun]
+        if let reportNote { payload["reportNote"] = reportNote }
+        // Pure Core work (lint dry-runs each suggestion) off the main thread so the editor stays responsive.
+        if let board { let after = result.project; payload["report"] = try json(await Task.detached { editReport(before: before, after: after, storyboard: board, profile: profile) }.value) }
+        if !lowered.isEmpty { payload["lowered"] = try json(lowered) }
+        if ops.contains(where: { if case .reframe = $0 { return true }; return false }) {
+            // Feedback run 6 #7: say whether the crop keys actually changed.
+            payload["reframe"] = ["keysBefore": before.cropKeys.count, "keysAfter": result.project.cropKeys.count,
+                                  "changed": before.cropKeys != result.project.cropKeys || before.output != result.project.output, "shots": board?.shots.count ?? 0]
+        }
+        return payload
     }
-    private static func warnings(_ project: Project) -> [String] {
+    static func warnings(_ project: Project, changes: [EditChange]) -> [String] {
         let blocks = agentTimeline(project).blocks.filter { $0.lane == "text" }
         let captions = Set(project.texts.filter { $0.style == .caption }.map(\.id))
         let thirds = Set(project.texts.filter { $0.style == .lowerThird }.map(\.id))
-        return blocks.filter { thirds.contains($0.id) }.flatMap { third in
+        return changes.filter(\.skipped).compactMap { change in change.note.map { "op \(change.op): \($0)" } } + blocks.filter { thirds.contains($0.id) }.flatMap { third in
             blocks.filter { captions.contains($0.id) && $0.from < third.to && $0.to > third.from }.map {
                 "lowerThird \(third.id) overlaps captions \(max(third.from, $0.from))–\(min(third.to, $0.to))"
             }
         }
     }
+    /// R1: a reconnecting session takes over a disconnected session's in-memory draft, else re-adopts `agent-draft.json`.
+    /// Orphans of the same client name win; with no name match any disconnected owner of this project's draft is taken
+    /// (a client restart may rename itself). A draft some connected session holds is never duplicated from the file.
+    @MainActor private static func adoptDraft(_ session: MCPSession, model: EditorModel) throws {
+        session.draftRestoreError = nil
+        let projectID = model.liveProject.id
+        guard session.draft == nil || session.draft?.verdict != nil, AgentAccess.level(for: projectID) == .draft else { return }
+        let orphans = MCPServer.shared.sessions.filter { !$0.connected && $0 !== session && $0.draft?.verdict == nil && $0.draft?.baseProject.id == projectID }
+        if let orphan = orphans.first(where: { $0.agentName == session.agentName }) ?? orphans.first {
+            session.draft = orphan.draft; orphan.draft = nil
+            session.persistedPackage = orphan.persistedPackage; orphan.persistedPackage = nil
+            session.agentMedia = orphan.agentMedia; session.agentMediaPackage = orphan.agentMediaPackage; orphan.agentMedia = []
+            if model.reviewSessionID == orphan.id { model.reviewSessionID = session.id }
+            DraftPlayback.shared.invalidate(sessionID: orphan.id)
+            MCPServer.shared.removeFinishedSessions()
+            return
+        }
+        let package = model.packageURL
+        let record: AgentDraftRecord
+        do {
+            guard let found = try AgentDraftRecord.read(from: package) else { return }
+            record = found
+        } catch {
+            AgentDraftRecord.quarantine(in: package)
+            session.draftRestoreError = "agent-draft.json could not be read (\(error.localizedDescription)); kept as agent-draft.failed.json, edit.apply starts a new draft"
+            return
+        }
+        guard !MCPServer.shared.sessions.contains(where: { $0 !== session && $0.draft?.id == record.id }) else { return }   // a live session owns it
+        do {
+            guard record.baseProject.id == projectID else { throw MCPFailure(code: "NO_PROJECT", message: "the draft belongs to another project") }
+            session.draft = try AgentDraft(record, words: model.transcript ?? [], shotTime: shotTime(model: model))
+            session.persistedPackage = package
+            session.agentMedia = Set(session.draft?.assets.keys.map { $0 } ?? []); session.agentMediaPackage = package
+            try? MCPServer.shared.review(session, watching: !record.submitted)   // shows it in the editor when the base still matches
+        } catch {
+            session.draft = nil
+            AgentDraftRecord.quarantine(in: package)
+            session.draftRestoreError = "agent-draft.json could not be restored (\(error)); kept as agent-draft.failed.json, edit.apply starts a new draft"
+        }
+    }
+    /// The `draft` block of project.open: id, status (drafting, submitted or stale) and how many changes (draft.status lists them).
+    static func draftSummary(_ draft: AgentDraft, live: Project) throws -> [String: Any] {
+        var changes = draft.changes.flatMap { $0 }
+        for index in changes.indices { changes[index].op = index }
+        let stale = draft.base != (try revision(live))
+        return ["id": draft.id, "status": stale ? "stale" : draft.submitted ? "submitted" : "drafting", "base": draft.base, "revision": draft.revision,
+                "changes": changes.count, "list": "draft.status"]   // the full list costs ~10 KB per open
+    }
     @MainActor private static func draft(_ action: String, _ args: [String: Any], model: EditorModel, session: MCPSession) async throws -> [String: Any] {
-        if action == "submit" { try requireEditable(model) }
+        if action == "submit" { try requireEditable(model, draftSession: session) }
         if action != "status", model.voiceover.isActive { throw MCPFailure(code: "PERMISSION_DENIED", message: "Recording a voiceover; stop it before reviewing") }
         if let draft = session.draft, draft.baseProject.id != model.liveProject.id, action != "discard" {
             throw MCPFailure(code: "NO_PROJECT", message: "Reopen the pending draft's project before checking or submitting it")
@@ -213,7 +522,17 @@ enum MCPTools {
         let draft = session.draft
         var changes = draft?.changes.flatMap { $0 } ?? []
         for index in changes.indices { changes[index].op = index }
-        var payload: [String: Any] = ["base": draft?.base as Any? ?? NSNull(), "ops": try json(draft?.calls.flatMap { $0 } ?? []),
+        let flatOps = draft?.calls.flatMap { $0 } ?? []
+        var ops = try json(flatOps) as? [[String: Any]] ?? []
+        if args["response_format"] as? String != "detailed" {   // ~140 crop keys per reframe are most of a 25 KB reply
+            let board = try? loadStoryboard(model: model)
+            for (i, op) in flatOps.enumerated() where i < ops.count {
+                guard case let .reframe(_, _, keys?) = op else { continue }
+                ops[i]["keys"] = keys.count
+                if let board { ops[i]["jumps"] = cropJumps(keys, storyboard: board) }
+            }
+        }
+        var payload: [String: Any] = ["base": draft?.base as Any? ?? NSNull(), "ops": ops,
                                      "changes": try json(changes), "submitted": draft?.submitted ?? false,
                                      "stale": draft.map { $0.verdict == nil && $0.base != (try? revision(model.liveProject)) } ?? false,
                                      "selected": draft?.selectedCount ?? 0]
@@ -223,6 +542,8 @@ enum MCPTools {
                 draft.skipped[row.id].map { ["op": index, "reason": $0] }
             }
         }
+        // submit only confirms the hand-off: counts instead of every op and change (~10 KB); draft.status or detailed has the lists.
+        if action == "submit", args["response_format"] as? String != "detailed" { payload["ops"] = flatOps.count; payload["changes"] = changes.count }
         if let verdict = draft?.verdict ?? session.lastDraftVerdict { payload["verdict"] = verdict }
         if let draft, draft.verdict == nil { payload["revision"] = draft.revision }
         return payload
@@ -231,34 +552,28 @@ enum MCPTools {
                                 approveExport: (@MainActor (AgentExportRequest) async throws -> Bool)? = nil,
                                 approvalTimeout: Duration = .seconds(600)) async -> [String: Any] {
         let began = Date()
-        var action = "invalid", errorCode: String?
+        let definition = list.first { $0["name"] as? String == name }
+        let properties = (definition?["inputSchema"] as? [String: Any])?["properties"] as? [String: Any] ?? [:]
+        let allowed = (properties["action"] as? [String: Any])?["enum"] as? [String] ?? []
+        let action = (args["action"] as? String).flatMap { allowed.contains($0) ? $0 : nil } ?? "invalid"
+        let loggedName = definition == nil ? "invalid" : name
+        let activityID = AgentActivity.shared.begin(.init(time: began, agent: session.agentName, tool: "\(loggedName).\(action)",
+            intent: activityIntent(loggedName, action, args), projectID: (try? model(for: session))?.liveProject.id ?? session.draft?.baseProject.id,
+            sessionID: session.id))
+        var errorCode: String?, outcome = "Completed"
         defer {
-            let loggedName = list.contains { $0["name"] as? String == name } ? name : "invalid"
+            if ["project", "edit", "draft"].contains(loggedName) { session.persistDraft() }
             let projectID = (try? model(for: session))?.liveProject.id ?? session.draft?.baseProject.id
-            AgentActivity.shared.log(.init(time: began, agent: session.agentName, tool: "\(loggedName).\(action)",
-                summary: errorCode ?? "completed", ms: Int(Date().timeIntervalSince(began) * 1000), isError: errorCode != nil, projectID: projectID))
+            AgentActivity.shared.finish(activityID, result: errorCode ?? outcome, isError: errorCode != nil, projectID: projectID)
         }
         do {
-            guard let tool = list.first(where: { $0["name"] as? String == name }),
-                  let schema = tool["inputSchema"] as? [String: Any], let properties = schema["properties"] as? [String: Any],
-                  let actionSchema = properties["action"] as? [String: Any], let allowed = actionSchema["enum"] as? [String],
-                  let requested = args["action"] as? String, allowed.contains(requested), Set(args.keys).isSubset(of: Set(properties.keys)) else {
+            guard definition != nil, action != "invalid", Set(args.keys).isSubset(of: Set(properties.keys)) else {
                 throw MCPFailure(code: "INVALID_OP", message: "Use a tool/action and arguments from tools/list, then retry")
             }
-            action = requested
-            for (key, value) in args {
-                let type = (properties[key] as? [String: Any])?["type"] as? String
-                let valid: Bool
-                switch type {
-                case "string": valid = value is String
-                case "boolean": valid = (value as? NSNumber).map { CFGetTypeID($0) == CFBooleanGetTypeID() } ?? false
-                case "number", "integer":
-                    valid = (value as? NSNumber).map { CFGetTypeID($0) != CFBooleanGetTypeID() && $0.doubleValue.isFinite && (type != "integer" || $0.doubleValue.rounded() == $0.doubleValue) } ?? false
-                case "array": valid = value is [Any]
-                case "object": valid = value is [String: Any]
-                default: valid = false
+            for (key, value) in args.sorted(by: { $0.key < $1.key }) {
+                if let schema = properties[key] as? [String: Any], let problem = schemaViolation(value, schema, path: key) {
+                    throw MCPFailure(code: problem.range ? "OUT_OF_RANGE" : "INVALID_OP", message: "\(problem.message); revise it using tools/list and retry")
                 }
-                guard valid else { throw MCPFailure(code: "INVALID_OP", message: "\(key) must be \(type ?? "a valid argument"); revise it using tools/list and retry") }
             }
             if session.projectURL != nil {
                 if let current = try? model(for: session) { try requireAccess(current.liveProject, tool: name) }
@@ -289,14 +604,19 @@ enum MCPTools {
                     throw MCPFailure(code: "NO_PROJECT", message: "Recorder could not open this package; check its media in Recorder and retry project.open")
                 }
                 session.projectURL = controller.model.packageURL.standardizedFileURL
+                try adoptDraft(session, model: controller.model)
                 let viewed = try viewedProject(controller.model, session: session)
                 payload = info(controller.model, project: viewed)
                 payload["revision"] = try revision(viewed)
+                if let draft = session.draft, draft.verdict == nil, draft.baseProject.id == controller.model.liveProject.id { payload["draft"] = try draftSummary(draft, live: controller.model.liveProject) }
+                else if let failure = session.draftRestoreError { payload["draft"] = ["status": "unrecoverable", "error": failure] }
             } else {
                 let model = try model(for: session)
                 let viewed = try viewedProject(model, session: session)
                 switch (name, action) {
                 case ("project", "info"): payload = info(model, project: viewed)
+                case ("project", "assets"): payload = MCPAssets.list(project: viewed, library: await libraryRecordings())
+                case ("project", "templates"): payload = ["templates": try json(GraphicTemplates.catalog)]
                 case ("timeline", "get"):
                     let bounds = try bounds(args, duration: viewed.exportDuration)
                     payload = try object(agentTimeline(viewed, from: bounds.0, to: bounds.1))
@@ -319,7 +639,6 @@ enum MCPTools {
                 case ("analyze", "pauses"):
                     guard model.liveProject.source.hasMic, let audio = Waveform.audioURL(in: model.packageURL, file: "mic.m4a") else { throw notTranscribed() }
                     let minimum = try number(args, "minDuration", default: 0.6), threshold = try number(args, "threshold", default: 0.02)
-                    guard minimum >= 0, (0...1).contains(threshold) else { throw MCPFailure(code: "OUT_OF_RANGE", message: "Use nonnegative minDuration and threshold between 0 and 1") }
                     let peaks = try await Waveform.peaks(for: audio)
                     let silent = silentRanges(levels: peaks, perSecond: Double(Waveform.peaksPerSecond), threshold: Float(threshold), minDuration: minimum)
                     payload = ["pauses": outputRanges(silent, project: viewed)]
@@ -339,6 +658,46 @@ enum MCPTools {
                     }.sorted()
                     payload = ["idle": outputRanges(idleRanges(events: events + [InputEvent(t: project.source.duration, k: .move)]), project: project),
                                "typing": outputRanges(typingRanges(events: events), project: project), "clicks": clicks]
+                case ("analyze", "shots"):
+                    let format = args["response_format"] as? String ?? "concise"
+                    guard ["concise", "detailed"].contains(format) else { throw MCPFailure(code: "INVALID_OP", message: "response_format must be concise or detailed") }
+                    let thresholds = try ShotAnalysis.thresholds(args["thresholds"])
+                    _ = try await ShotAnalysis.signals(package: model.packageURL, progress: progress)
+                    // The thresholds used here become the project's segmentation, so every tool reads this same shot table.
+                    let thresholdsURL = model.packageURL.appendingPathComponent(ShotAnalysis.thresholdsName)
+                    let captionsURL = model.packageURL.appendingPathComponent(ShotAnalysis.captionsName)
+                    if (try? JSONDecoder().decode(ShotThresholds.self, from: Data(contentsOf: thresholdsURL))) != thresholds { try? FileManager.default.removeItem(at: captionsURL) }   // new ids
+                    try? JSONEncoder().encode(thresholds).write(to: thresholdsURL, options: .atomic)
+                    // ponytail: no recorder:// resource mechanism exists, so shots carry no thumb; use render.frames at a shot's time.
+                    var source = try loadStoryboard(model: model)
+                    if args["captions"] as? Bool == true {
+                        source = try await AgentCaptions.captionShots(source, model: model)
+                        // Kept in the package so intent ops can protect "caption~…" shots without re-running OCR.
+                        let captions = Dictionary(source.shots.compactMap { s in s.caption.map { (s.id, $0) } }, uniquingKeysWith: { a, _ in a })
+                        try? JSONEncoder().encode(captions).write(to: captionsURL, options: .atomic)
+                    } else if Set(source.shots.compactMap(\.section)).count > 1 {
+                        // Sections are named without captions:true: OCR only each section's representative shot, once ("" = no text).
+                        var captions = (try? JSONDecoder().decode([String: String].self, from: Data(contentsOf: captionsURL))) ?? [:]
+                        let todo = source.sectionRepresentatives().filter { captions[$0.id] == nil }
+                        if !todo.isEmpty {
+                            let named = try await AgentCaptions.captionShots(Storyboard(duration: source.duration, fps: source.fps, shots: todo, summary: source.summary), model: model)
+                            for shot in named.shots { captions[shot.id] = shot.caption ?? "" }
+                            try? JSONEncoder().encode(captions).write(to: captionsURL, options: .atomic)
+                            for i in source.shots.indices { if let c = captions[source.shots[i].id], !c.isEmpty { source.shots[i].caption = c } }
+                        }
+                    }
+                    // Media-keyed table mapped through the viewed project's own clips and layers (T-901, EDITING-CORE D2).
+                    var board = try loadStoryboard(model: model, media: true).output(project: viewed)
+                    let named = Dictionary(source.shots.compactMap { s in s.caption.map { (s.id, $0) } }, uniquingKeysWith: { a, _ in a })
+                    let sections = Dictionary(source.shots.compactMap { s in s.section.map { (s.id, $0) } }, uniquingKeysWith: { a, _ in a })
+                    for i in board.shots.indices where board.shots[i].layer == nil {
+                        board.shots[i].caption = named[board.shots[i].id] ?? board.shots[i].caption
+                        board.shots[i].section = sections[board.shots[i].id]
+                    }
+                    payload = try object(board)
+                    if format == "concise", let shots = payload["shots"] as? [[String: Any]] {
+                        payload["shots"] = shots.map { $0.filter { $0.key != "reasons" } }
+                    }
                 case ("analyze", "transcribe"):
                     guard model.liveProject.source.hasMic, Waveform.audioURL(in: model.packageURL, file: "mic.m4a") != nil else { throw notTranscribed() }
                     guard !model.isTranscribing else { throw MCPFailure(code: "RENDER_BUSY", message: "Transcription is running; wait and call transcript.get") }
@@ -380,6 +739,7 @@ enum MCPTools {
                 if payload["project"] == nil { payload["project"] = current.liveProject.id }
                 if payload["revision"] == nil { payload["revision"] = try revision(viewedProject(current, session: session)) }
             } else { payload["project"] = NSNull(); payload["revision"] = NSNull() }
+            outcome = activityResult(name, action, payload)
             var reply = result(payload)
             reply["content"] = (reply["content"] as? [[String: Any]] ?? []) + extraContent
             return reply
@@ -391,7 +751,117 @@ enum MCPTools {
                 failure = MCPFailure(code: code, message: String(editError.description.dropFirst(code.count + 2)))
             } else { failure = error as? MCPFailure ?? MCPFailure(code: "INVALID_OP", message: "\(error.localizedDescription); check the project in Recorder and retry") }
             errorCode = failure.code
-            return result(["error": failure.code, "message": "\(failure.code): \(failure.message)"], isError: true)
+            // R7: every error says how to fix the call and where the project stands now.
+            var fix: [String: Any] = ["hint": hints[failure.code] ?? "Revise the call using tools/list and retry"]
+            var current: Any = NSNull()
+            if let model = try? model(for: session), let viewed = try? viewedProject(model, session: session) {
+                var state: [String: Any] = ["revision": (try? revision(viewed)) ?? "", "duration": viewed.exportDuration]
+                if failure.code == "OUT_OF_RANGE" || failure.message.contains("clip edge") {
+                    // Only the ~20 clips nearest the failing time, so a long project does not flood the error.
+                    var time = 0.0
+                    if let editError = error as? EditError, let index = editError.opIndex, let ops = try? decodeOps(args["ops"]), ops.indices.contains(index) { time = ops[index].startSeconds ?? 0 }
+                    let near = agentTimeline(viewed).clips.sorted { abs(($0.from + $0.to) / 2 - time) < abs(($1.from + $1.to) / 2 - time) }.prefix(20)
+                    state["clips"] = near.sorted { $0.from < $1.from }.map { ["from": $0.from, "to": $0.to] }
+                }
+                current = state
+                if name == "edit", let editError = error as? EditError, let index = editError.opIndex, let ops = try? decodeOps(args["ops"]),
+                   let corrected = viewed.suggestedFix(for: editError, ops: ops), let object = try? object(corrected) {
+                    fix["index"] = index; fix["op"] = object
+                }
+            }
+            return result(["error": failure.code, "message": "\(failure.code): \(failure.message)", "fix": fix, "current": current], isError: true)
+        }
+    }
+
+    private static let hints = [
+        "STALE_REVISION": "Retry edit.apply with ifRevision set to current.revision; re-read timeline.get first if times may have moved",
+        "OUT_OF_RANGE": "Use times inside 0–current.duration; clip edges are in current.clips",
+        "INVALID_OP": "Revise the op against tools/list (fields, ranges, enums) and retry",
+        "NO_PROJECT": "Call project.open with an id or .recorder path, then retry",
+        "NOT_TRANSCRIBED": "Call analyze.transcribe (needs a mic recording), then retry",
+        "TRANSCRIPT_CHANGED": "Call transcript.get for the current transcript id and word ids, then retry",
+        "PERMISSION_DENIED": "Ask the user to change this project's access in the Claude tab",
+        "REVIEW_IN_PROGRESS": "Finish or discard the current review/draft, then retry",
+        "RENDER_BUSY": "Wait for the running render or call render.cancel",
+        "NEEDS_APPROVAL": "Request the export again when the user is ready",
+        "DENIED": "Ask the user before requesting this again"]
+    // Only fixed tool/kind names and aggregate numbers enter activity, never argument or response text.
+    static func activityIntent(_ name: String, _ action: String, _ args: [String: Any]) -> String {
+        switch (name, action) {
+        case ("edit", "apply"):
+            guard let ops = try? decodeOps(args["ops"]) else { return "Applying edits" }
+            var kinds: [String] = []
+            for op in ops {
+                let kind: String
+                switch op {
+                case .captions: kind = "captions"
+                case .highlight: kind = "highlight"
+                case .set: kind = "set"
+                case .remove: kind = "remove"
+                case .style: kind = "style"
+                case .layer: kind = "layer"
+                default: kind = AgentChangeKind(op).rawValue.lowercased()
+                }
+                if !kinds.contains(kind) { kinds.append(kind) }
+            }
+            let verb = args["dryRun"] as? Bool == true ? "Checking" : "Applying"
+            if ops.isEmpty { return "\(verb) 0 ops" }
+            if kinds.count == 1 { return "\(verb) \(ops.count) \(kinds[0]) ops" }
+            return "\(verb) \(ops.count) ops · \(kinds.joined(separator: ", "))"
+        case ("edit", "undo"): return "Undoing edit"
+        case ("project", "list"): return "Reading recordings"
+        case ("project", "open"): return "Opening recording"
+        case ("project", "info"): return "Reading project"
+        case ("project", "assets"): return "Reading assets"
+        case ("project", "templates"): return "Reading templates"
+        case ("timeline", "get"): return "Reading timeline"
+        case ("transcript", "get"): return "Reading transcript"
+        case ("analyze", "pauses"): return "Finding pauses"
+        case ("analyze", "fillers"): return "Finding fillers"
+        case ("analyze", "activity"): return "Finding activity"
+        case ("analyze", "shots"): return "Segmenting shots"
+        case ("analyze", "transcribe"): return "Transcribing speech"
+        case ("render", "frames"): return "Rendering frames"
+        case ("render", "sheet"): return "Rendering contact sheet"
+        case ("render", "storyboard"): return "Rendering shot storyboard"
+        case ("render", "strip"): return "Rendering filmstrip"
+        case ("render", "compare"): return "Rendering base vs draft"
+        case ("render", "clip"): return "Rendering preview"
+        case ("render", "cancel"): return "Cancelling render"
+        case ("render", "lint"): return "Linting edit"
+        case ("draft", "submit"): return "Preparing review"
+        case ("draft", "status"): return "Checking draft"
+        case ("draft", "discard"): return "Discarding draft"
+        case ("export", "final"): return "Exporting final video"
+        case ("ui", "show"): return "Showing timeline"
+        default: return "Calling Recorder"
+        }
+    }
+    static func activityResult(_ name: String, _ action: String, _ payload: [String: Any]) -> String {
+        switch (name, action) {
+        case ("edit", "apply"):
+            let count = (payload["changes"] as? [Any])?.count ?? 0
+            let duration = payload["duration"] as? [String: Double] ?? [:]
+            let delta = (duration["after"] ?? 0) - (duration["before"] ?? 0)
+            return "\(count) ops · \(String(format: delta < 0 ? "−%.1f s" : "+%.1f s", abs(delta)))\(payload["dryRun"] as? Bool == true ? " · dry run" : "")"
+        case ("edit", "undo"): return "Undone"
+        case ("draft", "submit"): return payload["stale"] as? Bool == true ? "Stale draft" : "Ready for review · \(payload["selected"] as? Int ?? 0) changes"
+        case ("draft", "discard"): return "Discarded"
+        case ("analyze", "pauses"): return "\((payload["pauses"] as? [Any])?.count ?? 0) pauses"
+        case ("analyze", "fillers"): return "\((payload["fillers"] as? [Any])?.count ?? 0) fillers"
+        case ("analyze", "shots"): return "\(((payload["shots"] as? [Any])?.count ?? 0)) shots"
+        case ("analyze", "activity"): return "\((payload["idle"] as? [Any])?.count ?? 0) idle ranges"
+        case ("analyze", "transcribe"): return "\(payload["words"] as? Int ?? 0) words"
+        case ("render", "frames"): return "\((payload["files"] as? [Any])?.count ?? 0) frames"
+        case ("render", "sheet"): return "Contact sheet ready"
+        case ("render", "storyboard"): return "Storyboard ready"
+        case ("render", "strip"): return "Filmstrip ready"
+        case ("render", "compare"): return "Comparison ready"
+        case ("render", "clip"), ("export", "final"): return String(format: "%.1f s video ready", payload["seconds"] as? Double ?? 0)
+        case ("render", "cancel"): return payload["cancelled"] as? Bool == true ? "Cancelled" : "Nothing to cancel"
+        case ("project", "list"): return "\((payload["projects"] as? [Any])?.count ?? 0) recordings"
+        case ("transcript", "get"): return "\((payload["words"] as? [Any])?.count ?? 0) words"
+        default: return "Completed"
         }
     }
 
@@ -410,11 +880,16 @@ enum MCPTools {
         if ![24, 30, 60].contains(settings.fps) { settings.fps = 30 }
         if ![720, 1080, 2160].contains(settings.shortEdge) { settings.shortEdge = 1080 }
         let edge = try number(args, "shortEdge", default: Double(settings.shortEdge)), fps = try number(args, "fps", default: Double(settings.fps))
-        guard [720.0, 1080, 2160].contains(edge), [24.0, 30, 60].contains(fps) else {
-            throw MCPFailure(code: "OUT_OF_RANGE", message: "Use shortEdge 720, 1080 or 2160 and fps 24, 30 or 60")
-        }
         settings.shortEdge = Int(edge); settings.fps = Int(fps)
         let includeSRT = args["srt"] as? Bool ?? false
+        // T-937: optional from/to exports just that output range (MP4 only; SRT cues are whole-timeline, so not combined).
+        var range: TimeRange?
+        if args["from"] != nil || args["to"] != nil {
+            let from = try number(args, "from", default: 0), to = try number(args, "to", default: project.exportDuration)
+            guard from >= 0, to > from + 0.1, to <= project.exportDuration else { throw MCPFailure(code: "OUT_OF_RANGE", message: "export range needs 0 ≤ from < to ≤ \(project.exportDuration)") }
+            guard !includeSRT else { throw MCPFailure(code: "INVALID_OP", message: "srt covers the whole timeline; export a range without srt") }
+            range = TimeRange(start: from, end: to)
+        }
         let fm = FileManager.default
         func exists(_ url: URL) -> Bool { (try? fm.attributesOfItem(atPath: url.path)) != nil }
         func used(_ url: URL) -> Bool { exists(url) || (includeSRT && exists(url.deletingPathExtension().appendingPathExtension("srt"))) }
@@ -460,7 +935,7 @@ enum MCPTools {
             try fm.createDirectory(at: staging, withIntermediateDirectories: false)
             defer { try? fm.removeItem(at: staging) }
             let movie = staging.appendingPathComponent(destination.lastPathComponent)
-            let exporter = Exporter(model: frozen, settings: settings, destination: movie)
+            let exporter = Exporter(model: frozen, settings: settings, destination: movie, outputRange: range)
             exporter.progress = { value, _, _ in Task { @MainActor in progress(value) } }
             progress(0)
             try await withTaskCancellationHandler { try await exporter.run() } onCancel: { exporter.cancel() }
@@ -502,23 +977,64 @@ enum MCPTools {
             _ = await task?.result
             return (["cancelled": task != nil], [])
         }
-        guard session.renderTask == nil else { throw MCPFailure(code: "RENDER_BUSY", message: "A render is running; call render.cancel or wait for it to finish") }
+        // Agents fire checks in parallel: wait for the running render instead of failing (render.cancel stops only the running one).
+        while let running = session.renderTask {
+            _ = await running.result
+            if session.renderTask == running { await Task.yield() }   // let the finished render's caller clear it
+        }
         let project = args["draft"] as? Bool == false ? model.liveProject : try viewedProject(model, session: session)
+        if action == "lint" {
+            let (live, board, profile) = (model.liveProject, try loadStoryboard(model: model), try lintProfile(args["profile"]))
+            let report = await Task.detached { editReport(before: live, after: project, storyboard: board, profile: profile) }.value
+            return (["revision": try revision(project), "profile": (args["profile"] as? String) ?? "reel", "report": try json(report)], [])
+        }
         let revision = try revision(project)
         let projectID = project.id
         let frozen = AgentRender.renderModel(for: model, project: project)
         let duration = frozen.project.exportDuration
         var times: [Double] = []
-        let edge = try number(args, "longEdge", default: 640)
-        guard (2...640).contains(edge) else { throw MCPFailure(code: "OUT_OF_RANGE", message: "longEdge must be 2–640 pixels") }
-        if action == "frames" || action == "sheet" {
+        let edge = try number(args, "longEdge", default: 640)   // range comes from the tool schema
+        var labels: [String]?
+        var extra: [String: Any] = [:]
+        if action == "compare", args["draft"] as? Bool == false { throw MCPFailure(code: "INVALID_OP", message: "render.compare compares the live project with the draft; draft:false leaves nothing to compare") }
+        if action == "storyboard" {
+            let board = try loadStoryboard(model: model)
+            if args["shots"] != nil, !(args["shots"] is [String]) { throw MCPFailure(code: "INVALID_OP", message: "shots must be an array of shot id strings") }
+            let wanted = args["shots"] as? [String]
+            if let wanted, let unknown = wanted.first(where: { id in !board.shots.contains { $0.id == id } }) {
+                throw MCPFailure(code: "INVALID_OP", message: "Unknown shot id \(unknown); run analyze.shots and use its ids")
+            }
+            let map = TimeMap(frozen.project.clips)
+            let kept = board.shots.filter { wanted?.contains($0.id) ?? true }.compactMap { shot in
+                AgentRender.keyframe(shot, fps: board.fps, map: map).map { (shot, $0.output, $0.kept) }
+            }
+            let pages = max(1, (kept.count + 47) / 48)
+            let rawPage = try number(args, "page", default: 1)
+            guard rawPage >= 1, rawPage <= Double(pages), rawPage == rawPage.rounded(), case let page = Int(rawPage) else { throw MCPFailure(code: "OUT_OF_RANGE", message: "page must be 1–\(pages)") }
+            let slice = kept[(page - 1) * 48 ..< min(kept.count, page * 48)]
+            times = slice.map(\.1)
+            labels = slice.map { String(format: "%@ %.1fs", $0.0.id, $0.2) }
+            extra = ["page": page, "pages": pages, "shots": slice.map(\.0.id)]
+            guard !times.isEmpty else { throw MCPFailure(code: "OUT_OF_RANGE", message: "The draft keeps none of these shots") }
+        } else if action == "strip" {
+            let fps = try number(args, "fps", default: 6)
+            let from = try number(args, "from", default: -1), to = try number(args, "to", default: -1)
+            guard (4...8).contains(fps), fps == fps.rounded(), from >= 0, to > from, to <= duration, (to - from) * fps <= 48 else {
+                throw MCPFailure(code: "OUT_OF_RANGE", message: "render.strip needs fps 4–8 and 0 ≤ from < to ≤ \(duration) with at most 48 tiles (\(Int(48 / fps)) s at \(Int(fps)) fps)")
+            }
+            times = (0..<max(1, Int(((to - from) * fps).rounded(.down)))).map { from + Double($0) / fps }
+            labels = times.map(AgentRender.timecode)
+        }
+        if action == "frames" || action == "sheet" || action == "compare" {
             if let values = args["at"] as? [Any] {
-                guard !values.isEmpty, values.count <= (action == "frames" ? 6 : 24) else { throw MCPFailure(code: "OUT_OF_RANGE", message: "Use 1–6 frame times or 1–24 sheet times") }
+                // frames/sheet: the schema caps at 24; compare renders two frames per time, so it keeps its own 6.
+                guard !values.isEmpty, action != "compare" || values.count <= 6 else { throw MCPFailure(code: "OUT_OF_RANGE", message: "Pass 1–24 frame/sheet times or 1–6 compare times") }
                 times = try values.map { try number(["at": $0], "at", default: -1) }
             } else if action == "sheet" {
-                let count = try number(args, "count", default: 12)
-                guard (1...24).contains(count) else { throw MCPFailure(code: "OUT_OF_RANGE", message: "Contact sheet count must be 1–24") }
-                times = (0..<Int(count)).map { (Double($0) + 0.5) * duration / count }
+                // Feedback run 6 #6: sample only from…to when given.
+                let count = try number(args, "count", default: 12), lo = try number(args, "from", default: 0), hi = try number(args, "to", default: duration)
+                guard lo >= 0, hi > lo, hi <= duration else { throw MCPFailure(code: "OUT_OF_RANGE", message: "render.sheet needs 0 ≤ from < to ≤ \(duration)") }
+                times = sheetTimes(count: Int(count), from: lo, to: hi)
             } else { throw MCPFailure(code: "INVALID_OP", message: "render.frames requires at: [output seconds]") }
             guard duration > 0, times.allSatisfy({ $0 >= 0 && $0 <= duration }) else { throw MCPFailure(code: "OUT_OF_RANGE", message: "Use frame times within 0–\(duration); call project.info") }
         }
@@ -527,11 +1043,15 @@ enum MCPTools {
         let folder = AgentRender.cacheFolder(session: session.id)
         if action == "clip" { progress(0) }
         let jobID = UUID()
-        let requested = times
+        let requested = times, tileLabels = labels
+        let grid = args["grid"] as? Bool == true
+        if args["grid"] != nil, !(args["grid"] is Bool) || action != "frames" { throw MCPFailure(code: "INVALID_OP", message: "grid must be a boolean and is supported by render.frames only") }
         let task = Task { @MainActor in
             switch action {
-            case "frames": return try await AgentRender.frames(model: frozen, at: requested, longEdge: Int(edge), folder: folder)
+            case "frames": return try await AgentRender.frames(model: frozen, at: requested, longEdge: Int(edge), folder: folder, grid: grid)
             case "sheet": return [try await AgentRender.sheet(model: frozen, at: requested, folder: folder)]
+            case "storyboard", "strip": return [try await AgentRender.sheet(model: frozen, at: requested, labels: tileLabels, folder: folder)]
+            case "compare": return [try await AgentRender.compare(base: AgentRender.renderModel(for: model, project: model.liveProject), draft: frozen, at: requested, folder: folder)]
             case "clip": return [try await AgentRender.clip(model: frozen, from: from, to: to, folder: folder, progress: progress)]
             default: throw MCPFailure(code: "INVALID_OP", message: "Choose a render action from tools/list")
             }
@@ -552,7 +1072,7 @@ enum MCPTools {
         if action == "clip", let file = files.first {
             payload["seconds"] = try await AVURLAsset(url: file).load(.duration).seconds
             payload["bytes"] = (try FileManager.default.attributesOfItem(atPath: file.path)[.size] as? NSNumber)?.intValue ?? 0
-        } else { payload["at"] = times }
+        } else { payload["at"] = times; payload.merge(extra) { _, new in new } }
         try requireAccess(frozen.project, tool: "render")
         guard EditorWindowController.allOpen.contains(where: { $0.model.liveProject.id == projectID }) else {
             throw MCPFailure(code: "NO_PROJECT", message: "The editor closed during rendering; use project.open and retry")
@@ -560,6 +1080,25 @@ enum MCPTools {
         return (payload, content)
     }
 
+    /// Source-time storyboard from analyze.shots' cached signals, for storyboard/lint/intent/reframe ops.
+    /// `media: true` keeps media-file seconds (for `Storyboard.output(project:)`, which also maps layers).
+    @MainActor static func loadStoryboard(model: EditorModel, media: Bool = false) throws -> Storyboard {
+        guard let signals = ShotAnalysis.cachedSignals(package: model.packageURL) else {
+            throw MCPFailure(code: "NO_STORYBOARD", message: "run analyze.shots first (decoded once, then cached)")
+        }
+        let thresholds = (try? JSONDecoder().decode(ShotThresholds.self, from: Data(contentsOf: model.packageURL.appendingPathComponent(ShotAnalysis.thresholdsName)))) ?? ShotThresholds()
+        var board = storyboard(signals: signals, fps: ShotAnalysis.fps, events: model.events.events, thresholds: thresholds)
+        if !media { board = board.inSource(clips: model.liveProject.clips) }
+        if let captions = try? JSONDecoder().decode([String: String].self, from: Data(contentsOf: model.packageURL.appendingPathComponent(ShotAnalysis.captionsName))) {
+            for i in board.shots.indices { board.shots[i].caption = captions[board.shots[i].id].flatMap { $0.isEmpty ? nil : $0 } }
+        }
+        return board
+    }
+
+    @MainActor static func libraryRecordings() async -> [MCPAssets.LibraryRecording] {
+        await libraryItems().filter { AgentAccess.level(for: $0.projectID) != .off }
+            .map { MCPAssets.LibraryRecording(id: $0.projectID, title: $0.title, duration: $0.duration, package: $0.id.resolvingSymlinksInPath().standardizedFileURL) }
+    }
     @MainActor private static func libraryItems() async -> [ProjectStore.Item] {
         let store = ProjectStore(folder: RecordingSettings.shared.projectsFolder)
         await withCheckedContinuation { continuation in store.reload { continuation.resume() } }

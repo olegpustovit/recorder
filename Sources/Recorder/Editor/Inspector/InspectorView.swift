@@ -114,10 +114,10 @@ struct InspectorView: View {
             }.padding(12)
             Divider().overlay(Theme.strokeColor)
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    if showsAgent { AgentPanel(model: model) }
-                    else {
+            if showsAgent { AgentPanel(model: model) }
+            else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
                         if selection == nil {
                             HStack {
                                 Text(tab.title).font(Font(Theme.headingFont(28)))
@@ -130,12 +130,12 @@ struct InspectorView: View {
                         content.disabled(model.isReviewingDraft)
                             .modifier(InspectorReveal(identity: contentIdentity, order: 1, enabled: !hasSectionReveals))
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(18)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(18)
+                .id(contentIdentity)
+                .transition(.identity)
             }
-            .id(contentIdentity)
-            .transition(.identity)
             if !showsAgent && selection == nil && tab == .camera && model.project.source.hasCamera {
                 Divider()
                 VStack(alignment: .leading, spacing: 6) {

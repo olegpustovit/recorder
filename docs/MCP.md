@@ -21,18 +21,18 @@ folders need the human's approval. Nothing the agent does bypasses `EditorModel`
 
 | # | Decision | Consequence for the code |
 |---|----------|--------------------------|
-| D1 | Agent edits land in a **draft** by default; per-project access `off · read · draft · live`. | Draft = in-memory `[EditOp]` on a base revision. Live = `model.edit("Claude: …")`. |
+| D1 | Agent edits land in a **draft** by default; per-project access `off · read · draft · live`. | Draft = in-memory `[EditOp]` on a frozen base, visible read-only from the first successful apply (watching); submit makes it ready for review. Live = `model.edit("Claude: …")`. |
 | D2 | **No MCP SDK.** Hand-rolled JSON-RPC 2.0, newline-delimited, protocol `2025-06-18`. | CLAUDE.md forbids third-party packages. ~300 lines in one file. |
 | D3 | Agents never receive key characters. | No tool returns `InputEvent.ch`. Agent renders force `project.keys.show = false`. |
 | D4 | Motion graphics = **two new text styles** (`lowerThird`, `chapter`) + existing highlight masks and zooms. | Rendered by the existing `Compositor.drawText` path. No shaders/HTML from agents. |
 | D5 | Agents render freely into the cache; `export.final` outside it needs approval. | Cache: `~/Library/Caches/Recorder/Agent/<session>/`, purged at launch when older than 7 days. |
 | D6 | The **same `Recorder` binary** is the stdio shim: `Recorder --mcp`. | No new SwiftPM target, no `assemble-app.sh` change. |
 | D7 | A project an agent works on is **open in an editor window**. | One code path: tools act on `EditorWindowController`'s `EditorModel`. No headless editing. |
-| D8 | Drafts live **in memory** in the app. | Quitting the app drops pending drafts (ponytail comment). No new files in the package (SPEC §5 rule stands). |
+| D8 | Drafts are **persisted** (T-825, replaces the in-memory D8) in `agent-draft.json` inside the project package: id, base revision and base project, calls, per-call replay context (silent ranges, imported assets), exclusions, note, submitted flag. | Written atomically after each edit, review change and submit; deleted on accept or discard. `project.open` re-adopts it (or a disconnected session's in-memory draft) and returns `draft:{id,status,changes}`. One file per package, so one pending draft per project; a second concurrent draft overwrites it. The base project is stored so a stale draft replays exactly; words come from the live transcript. |
 | D9 | All times in tool I/O are **output seconds of the project at `ifRevision`** (what the agent sees in renders). | Core converts with `TimeMap` before mutating. Agents never see source time. |
 
 Out of scope (do **not** build): MCP resources/prompts, music ducking, LUFS normalisation, OCR, background music, counters,
-progress bars, end cards, agent-written graphics, multiple simultaneous drafts per project, reconnect-and-replay in the shim.
+progress bars, end cards, agent-written graphics, multiple simultaneous visible draft previews per project, (reconnect-and-replay in the shim was added in T-825/T-826 review fixes: if the app socket drops the shim relaunches the app, reconnects and replays the client's `initialize` + `notifications/initialized`, swallowing the duplicate reply; requests in flight are lost).
 
 ## 2. Architecture
 
@@ -86,23 +86,35 @@ Transport: one JSON object per line, UTF-8, `\n` terminated, both directions. Im
 
 | Method | Reply |
 |--------|-------|
-| `initialize` | `{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"recorder","version":<CFBundleShortVersionString>},"instructions":<§5.0 text>}`. Store `params.clientInfo.name` as the session's agent name. |
-| `notifications/initialized` | none (notification) |
+| `initialize` | `{"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":true}},"schemaVersion":<hash of tools/list>,"serverInfo":{"name":"recorder","version":<CFBundleShortVersionString>},"instructions":<§5.0 text>}`. Store `params.clientInfo.name` as the session's agent name. |
+| `notifications/initialized` | none; but when this client (name and version when given, else name) last initialized against a different `schemaVersion` (remembered in UserDefaults), the server then sends `notifications/tools/list_changed` once (T-825). Clients may ignore it, so until that connection calls `tools/list`, every tool result also carries `schemaNotice` naming the new argument/op fields (R4-1). |
 | `ping` | `{}` |
 | `tools/list` | `{"tools":[…§5 schemas…]}` |
 | `tools/call` | `{"content":[…],"structuredContent":{…},"isError":false}` |
 | anything else with an `id` | JSON-RPC error `-32601` |
 
 - Tool failures are **results**, not JSON-RPC errors: `isError: true`, `content: [{"type":"text","text":"STALE_REVISION: …"}]`,
-  `structuredContent: {"error":"STALE_REVISION","message":"…"}`.
+  `structuredContent: {"error":"STALE_REVISION","message":"…","fix":{…},"current":{…}}` (T-826): `fix` is always an
+  object with a `hint` and, when derivable, `{index, op}` — the corrected op (a clip-edge cut returns the range snapped to
+  the edge with `snap:true`; an out-of-range time is clamped); `current` is `{revision, duration, clips:[{from,to}]}` of
+  the project the call saw (null before `project.open`). `current.clips` is present only for range errors, capped to the
+  ~20 clips nearest the failing time; `revision` and `duration` are always there.
 - `content` always starts with one `text` item holding the JSON of `structuredContent` (clients that ignore structured
   output still work). Images: `{"type":"image","mimeType":"image/png","data":<base64>}`. Files:
   `{"type":"resource_link","uri":"file:///…","name":"proxy-0001.mp4","mimeType":"video/mp4"}`.
 - Progress: if `params._meta.progressToken` is present on a long call (`render.clip`, `export.final`, `analyze.transcribe`),
   send `{"jsonrpc":"2.0","method":"notifications/progress","params":{"progressToken":…,"progress":0.35,"total":1}}`
   at most every 0.25 s.
-- Tool annotations in `tools/list`: read tools `{"readOnlyHint":true}`; `edit`, `draft` `{"destructiveHint":false}`;
-  `export` `{"destructiveHint":false,"openWorldHint":false}`.
+- Tool annotations in `tools/list`: `project`, `timeline`, `transcript`, `render` `{"readOnlyHint":true}`; `analyze` (its `transcribe`
+  writes), `edit` (`undo` is not idempotent) and `draft` `{"destructiveHint":false}`; `export` `{"destructiveHint":false,"openWorldHint":false}`. Every tool also declares an
+  `outputSchema` (loose: known keys typed, none required, plus `project`/`revision`/`error`/`message`); results are
+  always in `structuredContent`.
+- Limits live only in the tool `inputSchema`. `tools/call` validates arguments against it server-side (`type`, `enum`,
+  `minimum`, `maximum`, `minLength`, `maxItems`, nested objects/arrays; `oneOf` unions are checked by the op decoder, which
+  also validates each op against its own schema). Out-of-range or off-enum numbers return `OUT_OF_RANGE`, wrong shapes
+  `INVALID_OP`. `render.frames at` takes up to 24 times, the same as the schema says. `MCPTools.handled` lists every
+  `tool.action` with a handler; `--selftest mcp-schema` diffs it against `tools/list` and checks annotations,
+  outputSchemas and the render limits.
 
 Error codes (exact strings): `PERMISSION_DENIED`, `NO_PROJECT`, `STALE_REVISION`, `TRANSCRIPT_CHANGED`, `NOT_TRANSCRIBED`,
 `OUT_OF_RANGE`, `INVALID_OP`, `INVARIANT`, `RENDER_BUSY`, `NEEDS_APPROVAL`, `DENIED`, `REVIEW_IN_PROGRESS`.
@@ -123,24 +135,36 @@ Nine tools, each with an `action` string (Resolve's MCP shows that grouping keep
 
 | Tool | Actions → result (all results include `project` id and `revision`) |
 |------|---------------------------------------------------------------------|
-| `project` | `list` → `[{id,title,path,duration,modified,hasMic}]` · `open {id\|path}` → opens the editor window, returns `info` · `info` → `{title,duration,size:{w,h},clips,lanes:{zoom,text,mask,…counts},hasMic,hasCamera,transcribed,access}` |
+| `project` | `list` → `[{id,title,path,duration,modified,hasMic}]` · `open {id\|path}` → opens the editor window, returns `info` plus `draft:{id,status:"drafting"\|"submitted"\|"stale",base,revision,changes}` when a pending draft was re-adopted (or `draft:{status:"unrecoverable",error}` when the file could not be read or replayed; it is then kept as
+`agent-draft.failed.json` and never overwritten). The draft attaches only to its own project. Takeover rule: a reconnecting
+client takes over a disconnected session's in-memory draft of this project, preferring the same client name and otherwise any
+(a client restart may rename itself); a draft a connected session holds is never duplicated from the file; continue with the returned `revision` · `info` → `{title,duration,size:{w,h},clips,lanes:{zoom,text,mask,…counts},hasMic,hasCamera,transcribed,access}` · `assets` → `{layers:[{asset,kind,id,track,from,to,mediaStart,mediaRate}], library:[{recording,title,duration}]}` (media a `layer` op can use) · `templates` → `{templates:[{name,summary,params,example}]}` (graphic op templates) |
 | `timeline` | `get {from?,to?}` → `AgentTimeline` (§T-801) |
 | `transcript` | `get {from?,to?,format:"words"\|"phrases"}` → `AgentTranscript` (§T-801). `NOT_TRANSCRIBED` if `model.transcript == nil`. |
-| `analyze` | `transcribe` (async, progress) · `pauses {minDuration=0.6,threshold=0.02}` → `[{from,to}]` · `fillers` → `[{word,from,to,text}]` · `activity` → `{idle:[…],typing:[…],clicks:[t…]}` (ranges only, never characters) |
-| `edit` | `apply {ifRevision, ops:[EditOp], dryRun=false}` → `{revision, mode:"draft"\|"live", changes:[EditChange], duration:{before,after}, warnings:[…]}` · `undo` (live only: `model.undo()` if the top undo name starts with `Claude:`) |
-| `draft` | `status` → `{base, ops, changes, submitted, verdict?}` · `submit {note}` → opens review in the editor · `discard` |
-| `render` | `frames {at:[t…] ≤6, draft=true, longEdge=640}` → images + links · `sheet {count=12 ≤24 \| at:[…], draft=true}` → 1 JPEG + link · `clip {from,to, draft=true}` → job, then link (async, progress) · `cancel` |
-| `export` | `final {destination?, shortEdge?, fps?, srt=false}` → waits for approval → `{path, seconds, bytes}` or `DENIED` |
+| `analyze` | `transcribe` (async, progress) · `pauses {minDuration=0.6,threshold=0.02}` → `[{from,to}]` · `fillers` → `[{word,from,to,text}]` · `activity` → `{idle:[…],typing:[…],clicks:[t…]}` (ranges only, never characters) · `shots {response_format="concise"\|"detailed", thresholds?}` → `Storyboard` `{duration,fps,shots:[{id,from,to,kind,boundary,energy,staticFrac,clicks,cursor,focus,reasons,caption}],summary}` in output seconds, `duration` = export duration; full-canvas layers are shots too (`layer:<id>`; recording layers show their media window's shots, image/video layers one `L:<id>` coverage shot) (dropped footage omitted; ids s01… come from the unedited recording so they survive cuts; concise omits `reasons` only (`focus` is kept); no `thumb` yet). Signals (10 fps, 1/8 luma diff/SSIM/changed bbox) are cached in `shots-cache.json` in the package; progress reported. `thresholds` (an object) overrides `ssim=0.985, minStable=0.3, cutSsim=0.9, motionDiff=0.01, payoffDiff=0.03, cursorSpeed=0.05, energyScale=0.1` (`energyScale`, `minStable` > 0; `ssim`, `cutSsim` within 0…1; others ≥ 0; else INVALID_OP) |
+| `edit` | `apply {ifRevision, ops:[EditOp], dryRun=false}` → `{revision, mode:"draft"\|"live", changes:[EditChange], duration:{before,after}, warnings:[…], report?:EditReport, lowered?:[LoweredIntent]}` (`lint:"reel"\|"tutorial"\|"demo"` picks the report profile) · `undo` (live only: `model.undo()` if the top undo name starts with `Claude:`) |
+| `draft` | (`submit` returns op/change counts unless `response_format:"detailed"`; `project.open`'s draft block counts changes) `status {response_format="concise"}` → `{base, ops, changes, submitted, verdict?}`; concise shows a reframe op's `keys` as a count plus `jumps`, `detailed` returns every key · `submit {note}` → opens review in the editor · `discard` |
+| `render` | `frames {at:[t…] ≤24, draft=true, longEdge=640, grid=false}` (grid: 0.1-step magenta overlay labelled 0–1, origin top-left, the coordinates zoom `center` and text `position` use) → images + links · `sheet {count=12 ≤24 \| at:[…], from?, to?, draft=true}` (from/to: sample only that range) → 1 JPEG + link · `clip {from,to, draft=true}` → job, then link (async, progress) · `storyboard {shots?:[id], page=1, draft=true}` → 1 JPEG, one 320 px tile per shot at its settled keyframe (just before `to`), labelled `id duration`, ≤48 per page (`page`/`pages` returned), shots the draft dropped are skipped; needs `analyze.shots` (else `NO_STORYBOARD`) · `strip {from,to,fps=6 (4–8)}` → 1 filmstrip JPEG, ≤48 tiles · `compare {at:[t…] ≤6}` → 1 JPEG, one row per draft time, live base left at the **same source moment** (clamped when the base lacks it), draft right; labels carry base/draft/source time · `lint {profile="reel", draft=true}` → `{revision, profile, report}` (needs a storyboard) · `cancel` |
+| `export` | `final {destination?, shortEdge?, fps?, srt=false, from?, to?}` (from/to: export only that output range; not with srt) → waits for approval → `{path, seconds, bytes}` or `DENIED` |
 | `ui` | `show {at, select?:[id]}` → moves the playhead / selection in the editor |
+
+Optional shot captions (T-832): `AgentCaptions.captionShots(storyboard, model:)` fills `Shot.caption` (6–10 words, Vision OCR on the shot's focus crop, classifier label fallback, shaped by Core `ShotCaption.shape`); `null` on any failure. New recordings write the `analyze.shots` signal cache while recording (`ShotAnalysis.Live`, 4:2:0 or BGRA window capture; older recordings decode once on first call). Opt-in with `captions:true` on `analyze.shots`; captions are kept in the package as `shots-captions.json` (id → caption, removed when the thresholds change) so `protect:["caption~regex"]` works in later edits; typing shots are never captioned.
 
 `draft=true` renders the project with the session's draft applied (or the live project when there is no draft).
 
 ### 5.2 `EditOp` (JSON, discriminated by `op`)
 
 All times are output seconds of the project at `ifRevision`. Ids come from `timeline.get`.
+`cut`, `cutWords` and `speed` accept `snap:true`; `cutPauses` defaults to it and accepts `snap:false` for strict
+behavior. Use snapping for cuts derived from idle ranges. It clamps to the timeline and moves invalid split
+points to the nearest clip edge using the editor's0.1s media/two-frame output minimums. Timed effects do not
+split clips and retain their existing range validation. Adjustments are returned in `changes[].note` with source
+ranges. A collapsed/uneditable operation returns `skipped:true`, its note and a warning; other operations proceed.
+Draft status/panel excludes these skipped operations from Accept N and preserves their replay ids.
+Zoom centers are normalized0–1 in the source frame, with the origin at the top-left corner.
 
 ```jsonc
-{"op":"cut","from":12.0,"to":14.5}                          // remove a range (video + linked audio, ripple)
+{"op":"cut","from":12.0,"to":14.5}                          // remove a range (video + linked audio, ripple); also removes empty timeline (gaps) and ripples layers after it
 {"op":"cutPauses","minDuration":0.6,"keepTail":0.12,"from":0,"to":96}   // from/to optional = whole project
 {"op":"cutWords","transcript":"t-3fa9c1d2","words":["w118","w119"]}
 {"op":"speed","from":30,"to":42,"speed":2}
@@ -149,12 +173,73 @@ All times are output seconds of the project at `ifRevision`. Ids come from `time
 {"op":"captions","maxWords":4}                               // replaces Caption-style blocks from the transcript
 {"op":"highlight","from":20,"to":24,"rect":{"x":0.5,"y":0.3,"w":0.3,"h":0.2},"opacity":0.6}
 {"op":"marker","at":31,"label":"Recording"}
-{"op":"update","id":"…","from":2,"to":6,"text":"…","position":{…},"size":44,"scale":1.8,"center":{…}}
 {"op":"remove","id":"…"}
+{"op":"set","id":"<layer>","to":30,"mediaStart":21.05,"mediaRate":2}   // generic patch by id (T-912); each timeline.get item lists the fields it takes (zoom: from,to,scale,center,follow,ease,color · text: from,to,text,position,size,color · mask: from,to,color,kind · layer: from,to,mediaStart,mediaRate,color · marker: from,text · clip c<i>: mediaStart = slip, position/length stay · audio: duck = its track drops to 25 % under other tracks' sound); a field the item doesn't take is INVALID_OP naming the valid ones. Layers: from/to also past the clips' end, mediaStart = slip, mediaRate = speed (length follows). `set` is the only patch op (`update` was removed 2026-11-17)
+{"op":"reframe","aspect":"9:16","mode":"perShot","focus":{"s12":{"x":0.7,"y":0.4}}}   // focus (optional): re-aim those shots; the result carries reframe:{keysBefore,keysAfter,changed,shots}   // "4:5"|"1:1"|"9:16"|"16:9"; sets output.aspect + time-varying crop per shot (needs analyze.shots; error "run analyze.shots first" otherwise). perShot holds the window when the next shot's is within 3 % and shows as much focus, eases over 0.3 s at non-cut shot boundaries, and only steps at `boundary:"cut"`. A shot with no usable focus (a full-screen view swap that then holds) aims at the next shot with one, within 3 s
+{"op":"graphic","from":3.4,"to":7.6,"template":{"name":"callout","params":{"text":"Add a node","x":0.62,"y":0.38}},"keys":[{"t":0,"opacity":0,"scale":0.7,"ease":"spring"},{"t":0.35,"opacity":1,"scale":1}]}   // motion graphic (T-925): template from project.templates (titleCard, callout, stepBadge, spotlight, progressBar, counter) or raw "elements"; space "screen" follows zoom; it is a graphic layer (lane "graphic"), so set/remove/animate address it by id
+{"op":"freeze","at":12.4,"duration":1.2}   // hold that frame (rendered by the app into media/), later footage moves back (T-933)
+{"op":"transition","at":9.5,"kind":"dissolve","duration":0.4}   // at the clip seam nearest at (≤ 0.5 s); dissolve = outgoing frame fades into the next clip, dip = through the background (T-934)
+{"op":"animate","id":"<graphic, layer or text id>","keys":[{"t":0,"y":0.1,"opacity":0},{"t":0.4,"y":0,"opacity":1}]}   // replace keyframes; [] clears
 {"op":"style","patch":{"background":{"kind":"color","color":"#101010"},"frame":{"padding":0.06}}}   // merge into Preset
 ```
 
 Text styles: `title`, `label`, `caption` (existing), `lowerThird`, `chapter` (new, T-803).
+
+### 5.3 Intent ops and the edit report (T-829, T-830)
+
+Core: `EditReport.swift` (`editReport`, `lint`, `LintProfile`), `IntentOps.swift` (`lowerIntents`). Both take a source-time
+`Storyboard` (analyze.shots) and map shots to output time through `TimeMap`. The MCP layer calls `MCPTools.loadStoryboard`
+(analyze.shots' cached signals, never a fresh decode; `NO_STORYBOARD` until analyze.shots ran). Without a storyboard
+`edit.apply` still works and returns `reportNote` instead of `report`; intent ops that need shots fail with `NO_STORYBOARD`.
+
+Intent ops are rewritten to `cut` / `speed` / `zoom` against the same base timeline before the batch is decoded, so the
+whole batch is one `applying` call and one undo step. Every intent reads the batch-start timeline, so **at most one** of `keepShots`/`pace`/`fitDuration` is allowed per batch (`INVALID_OP`; call `edit.apply` again for the next); `autoZoom`, `speed ramp` and explicit ops may be mixed in because they use the same base times. `changes[].op` and errors use the agent's original batch index. Speeds in lowered ops are absolute (relative factor × the clip's current speed, rounded up). Intents never delete imported clips. `autoZoom` skips clusters that overlap an existing zoom. If no storyboard is available, `edit.apply` returns `reportNote` with the reason instead of `report`. `lowered:[{op,intent,ops,dropped?,note?}]` returns the primitives.
+
+```jsonc
+{"op":"keepShots","shots":["s02","s05"],"trim":{"lead":0.1,"tail":0.2}}   // or "where":{"kind":["payoff"],"minEnergy":0.3}; trim = source seconds per kept shot; others cut (snap)
+{"op":"keepShots","where":{"kind":["payoff","motion"],"minEnergy":0.1},"protect":["caption~graph","s49"]}   // protect: always kept (ids or caption~regex, case-insensitive)
+{"op":"pace","beat":{"default":0.9,"payoff":1.3,"motion":0.8},"maxStatic":1.2,"speedFill":{"min":1.5,"max":6}}
+{"op":"fitDuration","target":30,"tolerance":2,"protect":["s02"]}          // lowered.dropped = shots removed whole
+{"op":"fitDuration","target":30,"minPerSection":2,"balance":"even","drop":[3]}   // every section keeps ≥ 2 s; even: same seconds per section, proportional: in proportion to its length (quota by bisection, last shot trimmed, ≤ 0.5 s granularity); drop cuts weak sections whole
+{"op":"autoZoom","lead":0.4,"tail":1.5,"scale":2,"from":0,"to":60}        // AutoZoom.swift click clustering → zoom ops (from/to optional output window)
+{"op":"speed","from":10,"to":14,"speed":3,"ramp":{"in":0.2,"out":0.3}}     // stepped speeds (4 per side max), no native easing
+```
+
+`pace`: static/cursorOnly shots longer than `maxStatic` (and not tagged `result`) are sped up by `d/maxStatic` when that is
+within `speedFill`, with any remainder cut; shorter overshoot is simply cut. Payoff shots are held `beat.payoff` after their last click and the tail is cut. Motion/typing shots longer than their beat are sped up to it, capped at `speedFill.min`. Pieces of one shot that abut after a cut count as one hold.
+
+`fitDuration`: drops whole segments in ascending interest (static < cursorOnly < typing < motion < payoff, energy breaks ties)
+until the length is within `tolerance` of `target`; the last one is compressed (speed ≤ 6x) or tail-trimmed to land on target.
+`pace {profile="reel"|"demo"|"tutorial"}` beat-cuts shots with clicks (keeps `[click − 0.1, click + beat]`; reel beats 0.9/1.3/0.8 s and cuts waits ≥ 0.5 s, demo 1.4/2.0/1.2 s and ≥ 1 s, tutorial 2.5/3.5/2.0 s and ≥ 2 s; `maxStatic` defaults to the profile's; never leaves a piece < 0.3 s between cuts) and speeds up only shots without clicks and holds. Intent ops are validated against the tools/list schema like primitives: an unknown field (also inside `where`, `trim`, `beat`, `speedFill`, `ramp`) is `INVALID_OP` naming the valid ones. `protect` entries (ids or `caption~regex`) are never touched; if the target is unreachable `lowered[].note` says so. Intents skip shot pieces under one analysis frame and never emit a range that rounds to zero length or a cut/speed under the 0.1 s clip minimum; `keepShots` cuts up to the end of the last footage clip (a trailing gap is left alone).
+
+`report`: `{duration, aslSec, subShotAslSec, staticSec: {before,after}, hookSec, longestStatic:{sec,at}, lint:[…], reframeJumps?}`, computed draft vs the timeline
+the batch started from. Static = `static` or `cursorOnly` shots. `hookSec` = output time of the first payoff's first kept click
+(its start when none). Lint item: `{rule, sev, at, shot?, msg, suggest?}`; `suggest` is an op for the next `edit.apply`
+(output seconds of the edited timeline). `edgeContent` suggests the T-831 `reframe` op. `aslSec` is the visual average shot: the timeline split at edit cuts (clip joins that don't continue the same footage) and `boundary:"cut"` shots; `subShotAslSec` averages analyzer shots. `tinyShot` fires for a visible piece between two cuts (edit cuts, `boundary:"cut"` shots or the timeline edges) shorter than the profile minimum, and its `suggest` is a cut that a dry run confirmed applies (else none). Pieces under one analysis frame are ignored. `reframeJumps` counts crop steps not at a cut. `sections:[{section,name?,srcFrom,srcTo,outFrom?,outTo?,shots:[first,last],keptSec}]` (src = source seconds, out/keptSec = output seconds) shows scene balance; `name` is the on-screen text of the section's representative shot (its longest non-typing shot), which `analyze.shots` reads once per section even without `captions:true`; `fitDuration` notes any section left under `minPerSection` (it only had that much footage). Every shot carries `section` (1-based): a new section where the project rearranges the recording (a clip whose media position doesn't follow from the previous clip, unlike trims or cut pauses); a recording that was only trimmed splits at `boundary:\"cut\"` shots into runs of ≥ 10 s; sections under 3 s join a neighbour. `protect` also takes `section:N`. A shot split into separate pieces by cuts carries `part:"k/n"`.
+
+| Rule | reel | demo | tutorial |
+|---|---|---|---|
+| hook (first payoff at) | ≤ 1.0 s | ≤ 2.0 s | ≤ 3.0 s |
+| maxStatic (not tag `result`) | 1.2 s | 2.5 s | 4.0 s |
+| asl | 0.8–2.0 s | 1.5–5.0 s | 2.0–8.0 s |
+| duration | 15–45 s | 20–120 s | 30–300 s |
+| tinyShot | < 0.25 s | < 0.3 s | < 0.4 s |
+| orphanEffect (zoom, non-caption text) | < 0.5 s visible, all profiles | | |
+| uncovered (only background visible: no clip, no full-canvas layer, ≥ 1 frame) | all profiles; `suggest` = `cut` of the part inside the clips | | |
+| edgeContent | shot focus box outside `project.crop`, all profiles | | |
+**Anchors (T-826).** Any `from`/`to`/`at` may be a number or an anchor object, resolved on the timeline after the
+earlier ops of the same batch: `{"marker":"<id or label>","offset":s}` (a label works when exactly one marker has it;
+two or more is an error naming the count), `{"ref":"name","offset":s}` (the start of an earlier op in this batch that
+declared `"ref":"name"`; allowed on `cut`, `speed`, `zoom`, `text`, `highlight`, `marker`, `layer`; names are unique per
+batch and do not carry across `edit.apply` calls — use marker labels for that), and `{"shot":"s07","edge":"start"|"end"}`.
+Shot anchors resolve through `EditContext.shotTime(id, isEnd) -> source seconds`, filled from analyze.shots' cached
+storyboard; before analyze.shots ran they return `INVALID_OP: unknown anchor`.
+
+**Every block is addressable.** `edit.remove` removes any block `timeline.get` emits (zoom, text, mask, layout, camera,
+keys, window, layer, audio) or marker, only that block (linked clips and audio stay). `set` covers zoom, text,
+mask, markers and layers (`from`/`to` move both ends of a layer on the output clock, either direction, and fail with the
+reachable limit when a neighbour, the media length or 0.5 s blocks it; `color`). Blocks `set` cannot change are
+emitted with `editable:false` and a `reason`, and a `set` on one says so instead of "unknown block".
 
 ---
 
@@ -213,10 +298,10 @@ nothing changes and an error says which op failed.
 
 ```swift
 public enum EditOp: Codable, Equatable, Sendable {
-    case cut(from: Double, to: Double)
-    case cutPauses(minDuration: Double, keepTail: Double, from: Double?, to: Double?)
-    case cutWords(transcript: String, words: [String])
-    case speed(from: Double, to: Double, speed: Double)
+    case cut(from: Double, to: Double, snap: Bool = false)
+    case cutPauses(minDuration: Double, keepTail: Double, from: Double?, to: Double?, snap: Bool = true)
+    case cutWords(transcript: String, words: [String], snap: Bool = false)
+    case speed(from: Double, to: Double, speed: Double, snap: Bool = false)
     case zoom(from: Double, to: Double, scale: Double, center: NormPoint?)
     case text(from: Double, to: Double, style: TextBlock.Style, text: String, position: NormPoint?, size: Double?)
     case captions(maxWords: Int)
@@ -231,7 +316,10 @@ public struct EditContext: Sendable {
     public var silent: [TimeRange]    // silentRanges over mic.m4a at the requested threshold, source seconds
     public init(words: [Word] = [], silent: [TimeRange] = [])
 }
-public struct EditChange: Codable, Equatable, Sendable { public var op: Int; public var summary: String; public var at: Double; public var delta: Double }
+public struct EditChange: Codable, Equatable, Sendable {
+    public var op: Int; public var summary: String; public var at: Double; public var delta: Double
+    public var note: String? = nil; public var skipped = false
+}
 public enum EditError: Error, Equatable, CustomStringConvertible {
     case invalidOp(index: Int, reason: String), outOfRange(index: Int, reason: String), transcriptChanged, invariant(String)
 }
@@ -256,6 +344,10 @@ Implementation notes (follow them):
 - `cutWords`: `transcriptChanged` if `transcriptID(context.words) != transcript`. Word `wN` → source `[start,end]`
   widened to half the gap to each neighbour, capped at 0.15 s per side.
 - `speed`: split at both edges, then `setSpeed` on every clip fully inside.
+- Snapped cut/speed ranges respect both media and output minimums at current playback rates. Cut snapping also
+  considers earlier cuts in the batch, preventing tiny retained seams. A snapped cut that would remove all
+  remaining media is skipped with a warning. Strict operations and invalid/nonfinite parameters still fail
+  atomically. No arbitrary snap tolerance or new duration setting is introduced.
 - `zoom`: `addZoom(atSource:length:mode:)` with `.manual` when `center` is set else `.auto`; then set `scale`/`center`.
   `addZoom` returns nil when the lane is occupied → `invalidOp(reason: "zoom overlaps <id>")`.
 - `text`: `addText(atSource:length:style:text:)`, then set `position`/`size`. `captions`: `replaceCaptions(captionPhrases(words: context.words, maxWords:))`.
@@ -388,8 +480,8 @@ enum AgentRender {
   samples and end at `from + rendered duration`. Decode video from zero to preserve frames held across idle spans;
   skip audio packets entirely before `from`. The earlier proposed `removeSourceRanges` complement cannot reliably
   trim imported clips, sub-minimum slices or connected tails, and rebuilding paths would change zooms at the cut.
-  Forward progress through a request-local token (at most every 0.25 s). One job per session; a second call →
-  `RENDER_BUSY` unless `cancel` first. The socket accepts concurrent requests so `cancel` on that connection can
+  Forward progress through a request-local token (at most every 0.25 s). One job per session; a second render call waits
+  for it (queued), `export` still gets `RENDER_BUSY`. The socket accepts concurrent requests so `cancel` on that connection can
   cancel and await the job, remove its partial MP4, then allow another render.
 - Tool result: images inline only for `frames` (≤ 6, long edge ≤ 640) and `sheet` (1); `clip` returns a `resource_link`
   plus `{seconds, bytes}`. Every file is also listed as `resource_link`.
@@ -439,7 +531,7 @@ struct AgentDraft {
   2. Build `EditContext` (transcript words; silent ranges computed only if an op is `cutPauses`).
   3. **Draft mode**: `let next = try current.applying(ops, context:)` where `current` is the draft project (or
      `model.project` when starting a draft: then set `base`/`baseProject`). Append the call and its changes. Return the
-     new draft revision. Nothing in the editor changes.
+     new draft revision. The editor shows the watching preview; its saved human base stays unchanged.
   4. **Live mode**: `let result = try model.project.applying(ops, context:)`, then
      `model.edit("Claude: \(changes[0].summary)\(n > 1 ? " +\(n-1)" : "")") { $0 = result.project }`.
   5. `dryRun`: run `applying`, return changes, store nothing.
@@ -450,8 +542,12 @@ struct AgentDraft {
 - Timeline/transcript/activity reads and renders use the session's active draft and its revision. `render` with
   `draft: false` uses the live project. Reject an apply when the human has changed the draft's base, even if the client
   passes the draft's own latest revision. Live edits require discarding any pending draft first.
-- `draft.submit {note}`: mark submitted; bring the editor window front; start review (T-807). Further applies are
-  blocked while submitted. `draft.status` returns the verdict once the human decides (`accepted`, `accepted 7 of 9`,
+- `draft.submit {note}`: mark submitted; bring the editor window front; start review (T-807). Further successful
+  nonempty applies on that pending draft return it to watching until it is submitted again, retaining its id,
+  prior checkbox exclusions, stable operation ids and nil verdict. New calls use the current checked proposal's
+  revision and output clock. Dry runs, empty batches and failed calls leave submitted review unchanged.
+  Recheck submission, exclusions and skipped operations after awaited analysis, including checkbox changes that
+  leave the project revision unchanged. `draft.status` returns the verdict once the human decides (`accepted`, `accepted 7 of 9`,
   `discarded`) and a `stale` flag when the base differs. `draft.discard` clears the draft and remembers `discarded` for
   the next status query. A session keeps its pending draft when opening another project, but must reopen the original
   project or explicitly discard before editing another one.
@@ -474,7 +570,7 @@ tab) · `EditorWindowController.swift` (document bar status) · `TimelineView.sw
 `MCPServer.swift`/`MCPTools.swift` (review replay, session observation, status) · `PreviewView.swift`, `MediaImport.swift`,
 `VoiceoverRecorder.swift` (review edit guards) · `SelfTest.swift`.
 
-Layout (inspector, 320 pt, same insets as the Canvas panel):
+Layout (inspector, 320 pt; updated by T-812 to the [panel redesign](https://artifacts.microapps.space/a/crsebftafkp3)):
 
 ```
  Whole project   Selection   [Claude]              ← existing header tabs + "Claude" (white = selected)
@@ -482,22 +578,35 @@ Layout (inspector, 320 pt, same insets as the Canvas panel):
  Claude                                Draft ▾     ← headingFont(28) · access menu Off/Read/Draft/Live
  claude-code · reviewing                           ← labelFont, textSecondary
  “Removed 6 long pauses and 3 fillers.”            ← the note, bodyFont
- Changes                                  8 of 9   ← headingFont(22)
- [x] Cut pause                0:08.3    −1.7 s     ← checkbox rows, mono, timecodes tabular
- [ ] Cut “um”                 0:14.0    −0.6 s
- …
- [ Discard ]                    [ Accept 8 ]       ← secondary + white primary button (UIComponents)
- Activity                                           ← headingFont(22)
- 14:03:02  project.open                    12 ms   ← last 50 rows, captionFont, errors in Theme.danger + "error" text
+ 8 changes                        89.0 s −9.6 s   ← selected count, resulting duration and delta
+ ▸ [-] ▪ Cuts                         6 −9.6 s    ← collapsed, native tri-state checkbox + lane swatch
+ ▸ [x] ▪ Text                         3      —
+ ▸ Activity                                  12   ← last 50 rows, newest first, collapsed
+ ───────────────────────────────────────────
+                                  [ Accept 8 ]    ← pinned outside scroll area, shared white button
 ```
 
 - The `Claude` tab appears when any session has this project open or a draft exists; otherwise hidden.
-- Document bar: left of `Saved`, `Claude · drafting|reviewing|rendering|idle` in `labelFont`/`textSecondary`; click
+- Document bar: left of `Saved`, `Claude · drafting|watching|reviewing|rendering|idle` in `labelFont`/`textSecondary`; click
   selects the Claude tab. No animation loops.
-- Review: on `draft.submit`, `model.beginReview()` and `updateReview { $0 = try draft.project(context:) }`. Toggling a
-  checkbox recomputes with that op excluded (Esc does **not** discard; only the buttons do). Accept →
-  `endReview(commit: true, name: "Claude: <note, 40 chars>")` = one undo step. Discard → `endReview(commit: false, …)`.
+- Watching/review: first successful non-dry `edit.apply` starts `beginReview(watching: true)` with the existing
+  frozen human base; each later apply updates the same preview once per call. First draft/Live apply selects
+  Claude only when the window is key. `draft.submit` changes watching to reviewing, enables inclusion/Accept
+  and focuses the editor; it does not change the proposal. Before submit the same review guards apply, with
+  the visible `Claude is editing, Esc to take over` notice in the panel/timeline footer. Toggling a
+  checkbox recomputes with that op excluded. Group toggles validate all row ids and replay once atomically.
+  Groups use fixed Cuts/Speed/Zoom/Text/Markers/Other order, omit empty kinds and start collapsed. Expanded
+  rows retain individual checkboxes/skipped reasons; a row click maps its original call's clock through the
+  current draft and seeks there, using the cut seam when its footage was removed.
+  Accept → `endReview(commit: true, name: "Claude: <note, 40 chars>")` = one undo step. Untick everything then
+  Accept 0 to close without changing the project or creating undo. `draft.discard` still restores the base;
+  Escape does not discard a submitted review. No separate Discard button in the T-812 panel.
   The session's `draft.status` reports the verdict.
+- Escape during watching restores the frozen human project and suppresses automatic preview for that session,
+  retaining its draft in memory. Subsequent agent calls stay hidden; human edits make the old base stale.
+  Explicit submit/review can show the proposal again when the base is still current. Discard/close safely ends
+  the visible watch. A second Draft client may build an invisible draft but cannot submit over the current
+  preview (`REVIEW_IN_PROGRESS`); its panel says the draft stays hidden. Live edits cannot bypass this lock.
 - Review previews replace `model.project`; `model.liveProject` retains the saved human base until acceptance.
   Autosave/Save Now/close write only that base. Other sessions and explicit `render {draft:false}` read the live
   base; the reviewing session's default reads/renders use its checked proposal. Closing the editor restores the
@@ -505,16 +614,77 @@ Layout (inspector, 320 pt, same insets as the Canvas panel):
 - Replay uses the original per-call analysis and deterministic operation ids. Unchecking an operation retries the
   retained operations in each call; invalid dependents are shown as skipped with a reason, and are retried when
   their prerequisite is checked again. `draft.status` includes flat `excluded` indices, `skipped` indices/reasons,
-  and the selected count. A stale draft stays out of preview until **Replay on current** explicitly rebases it;
+  and the selected count. Exclusion indices refer to the complete call-ordered op list; skipped entries retain
+  their per-change `reason` text. Checkboxes do not collect free-text rejection notes. Iterating a submitted
+  pending draft preserves these exclusions/reasons, disables inclusion/Accept while watching, then enables
+  them on resubmit. Acceptance still creates one undo step for the complete checked result.
+  A stale draft stays out of preview until **Replay on current** explicitly rebases it;
   discard then restores that current human base.
 - Timeline review marks while reviewing: at each cut's output position in the **draft**, a 1 pt `Theme.textPrimary`
   vertical rule across the lanes and a ruler chip `−1.7 s` (`captionFont`, `bgControl` fill); blocks added by the draft get
   a 1 pt dashed `textPrimary` outline. Pass `[(time: Double, label: String)]` and `Set<String>` (added ids) to `TimelineView`.
 - Review cut marks use each call's removed clock ranges after retiming, then map into the final draft's output
   timeline. Free-retiming gaps are retained space, not cut marks; adjacent cuts at one output position share a chip.
+- New block fills/outlines and cut marks reveal over320ms, with75ms lane staggering, through the existing
+  drawing paths. Stable added-block/source-cut identities preserve older reveals as calls arrive. Acceptance
+  closes/fades dashed outlines into normal solid block edges over220ms and removes cut marks; discard/replay
+  cancels them. Reduce Motion replaces wipes/stagger/dash movement with140ms opacity. The shared display link
+  stops when the finite animation ends. These states are UI-only, with no project JSON additions.
 - While reviewing, timeline/inspector edits are inert (EditorModel guard) and playback/scrubbing still work.
   Destructive menus, preview gestures, media imports, voiceover, crop and export entry points are also gated.
-- Accessibility: checkboxes are real `Toggle`s with labels (`"Cut pause at 0:08.3, minus 1.7 seconds"`); buttons have names.
+- The summary/error/stale content scrolls while Accept stays pinned, including in a420pt panel. Disclosures
+  open over320ms with55ms child stagger/4pt entrance, cancellable on close or motion-mode change. Reduce Motion
+  uses140ms opacity with immediate layout changes. A prototype-only environment override supplements (never
+  disables) the system Reduce Motion preference; it also permits a deterministic native reduced-motion selftest.
+- Accessibility: groups use native mixed-state NSButton checkboxes, rows use labelled Toggle checkboxes, and
+  disclosures/seek/Accept are named buttons with keyboard semantics.
+- T-814 status/activity: tool entry creates an independently identified in-flight activity; the current
+  project's latest call supplies the status intent. Completion removes only that call, appends one of the
+  last200 entries, and supplies an aggregate result (op/count/delta, render count/duration, or error code).
+  These strings use fixed names and numbers; they do not interpolate input text/labels/notes/paths/keys or
+  raw response/error text. The collapsed project feed shows the newest50 with intent/result, then time/ms.
+  The1pt rail resets at call start and draws over320ms on completion (140ms opacity for Reduce Motion);
+  it represents a completed call, not a guessed percentage of the agent's total work. Idle/ready/accepted
+  statuses are plain text. New groups wipe320ms; a2pt edge fades700ms. Existing groups keep their state
+  as counts change. Arrivals and disclosures cancel stale tasks; shared buttons retain80ms press/160ms hover.
+  Accepted groups remain readable with disabled inclusion controls and an Accepted N footer; replay resets
+  the activity disclosure and cancels unfinished child reveals.
+  `make gallery` → **Claude panel motion study / Open study…** opens a generated recording and the real
+  inspector/preview/timeline, with Replay, Stop and a preview-only Reduce Motion toggle. Its staged operations
+  now use the same production MCPTools apply/submit path; it no longer simulates propagation by swapping reviews.
+
+**T-815 Verify.** `mcp-live <fixture> [--reduce-motion]` checks three unsubmitted calls, real preview differences,
+cumulative marks and intermediate/settled timeline samples, immutable liveProject/disk/undo, pre-submit guards,
+hidden competing drafts/failed submit, in-place readiness, one undo/settlement, Escape through preview/timeline/
+controller, suppression/stale edits, background/Live focus and close. `mcp-live-client <generated-fixture> <out>`
+runs actual Claude Code with only the generated package and an isolated stdio-to-Unix-socket relay (normal
+same-binary production shim unchanged), records only its native window with `screencapture -v -l`, verifies each
+of three calls before submit and the unchanged human base, decodes three distinct recorded states, then discards.
+The relay/config/prompt, client JSONL, observations, PNGs and movie stay in the local output directory. Also run
+`mcp-edit`, `mcp-review` normal/reduced, `mcp-panel-motion`, `mcp-render`, `mcp-export`, `project-navigation`,
+`inspector-panels`, `make test` and gallery checks. The recorded study selects the Claude panel explicitly;
+conditional automatic selection is checked by `mcp-live`. Native package opening canonicalizes symlink aliases
+and file/directory URL forms so a client cannot silently open a second editor for the same human project.
+
+**T-818 Verify.** `make test` covers near-edge/base-time cuts and stable ids, short/neighboring/full-removal
+skips, media/output minima at mixed rates, imported clocks, speed, pause defaults/strict opt-out, word cuts,
+flat JSON and atomic invalid batches. `Recorder --selftest mcp-edit --headless` checks the real MCP schema and
+decoder, adjustment/warning output, frozen draft replay and skipped selection counts without creating any
+application windows. Interactive `mcp-edit` is not repeated under the user's no-window/no-focus instruction.
+
+**T-817 Verify.** `mcp-review <fixture> [--reduce-motion]` submits, unticks an operation, applies another call,
+checks the same draft/operation identities and exclusions, native disabled watching controls, status reasons,
+resubmission, the accepted3-of4 count and one undo to the base. A dependent-op case retains its excluded
+creation and skipped update/reason across iteration, then recovers the same id when re-included.
+`mcp-edit` checks successful iteration and that dry, empty or invalid calls leave submitted review unchanged.
+Run both, `mcp-live` normal/reduced, `mcp-panel-motion`, `make test` and inspect the iteration panel samples.
+
+**T-814 Verify.** `mcp-edit` asserts a3-op intent/result and absence of private recorded key/edit/marker text.
+`mcp-render` checks in-flight state during an actual cancellable proxy. `mcp-panel-motion <output-directory>`
+clicks native Replay/Stop/Reduce Motion, samples each of four calls mid/settled plus working/idle/error/ready/
+accepted states, exercises restart/cancellation,17-op counts, base/disk isolation, one undo, concurrent activity
+cleanup and sample-close cleanup. Existing `mcp-review` runs in normal/reduced motion, `inspector-panels` and
+full `make test` remain required; inspect the native renders and gallery.
 
 **Verify.** Selftest `mcp-review <package>`: submit a 3-op draft, untick one via the model API, accept → project equals
 `base.applying(2 ops)` with the same operation seeds, undo restores base, `draft.status` says `accepted 2 of 3`.
@@ -618,7 +788,7 @@ The Makefile selects Testing paths from
 - Human edits while a draft exists → next `edit.apply` with the old revision gets `STALE_REVISION`; the draft itself
   still replays on review because review applies calls to the **current** project only if `base` still equals the
   current revision; otherwise review shows `Draft is based on an older version` with `Replay on current` (replays
-  `calls` on `model.project`; ops that now throw are listed as skipped) and `Discard`.
+  `calls` on `model.project`; ops that now throw are listed as skipped). The client can still `draft.discard`.
 - Voiceover recording active → every edit/review tool returns `REVIEW_IN_PROGRESS`-style `PERMISSION_DENIED: recording a voiceover`.
 - Project without mic → `transcript`/`cutWords`/`cutPauses`/`captions` return `NOT_TRANSCRIBED` with a clear message.
 - Imported clips (`Clip.file != nil`) are never cut by `cutPauses`/`cutWords` (no transcript there).
@@ -663,8 +833,24 @@ The user waived HUMAN visual gates; these were agent-driven native checks, not a
 
 Verification limits: fresh microphone capture and positive on-device transcription were not repeated; the existing
 on-device transcription engine is reused. Lexical filler detection can only flag words present in its transcript.
-Drafts remain memory-only, the shim requires client reconnection after app exit, and long draft replay remains
+Drafts were memory-only at that time (persisted since T-825); the shim requires client reconnection after app exit, and long draft replay remains
 uncached as documented in source. The native SwiftPM build system is currently required on this toolchain and is
 deprecated upstream; the Makefile honors `DEVELOPER_DIR`, with Xcode and CLT Testing-path selection checked.
 This completion covers the prototype's MCP scope, including its explicit exclusions in §1; unrelated older
 repository milestones retain their existing status.
+
+## 10. Agent eval (T-833)
+
+`scripts/agent-eval.py` scores MCP client transcripts for the brief **"30 s reel, fast cuts, no text"** over a set of
+recordings. Run it on every MCP change. Input is JSONL, one JSON-RPC message per line, as a stdio relay logs it
+(`tools/call` requests and their responses). Label = file name without `.jsonl`.
+
+```
+scripts/agent-eval.py run1.jsonl run2.jsonl ...         # table: calls, ops, images, lint PASS/FAIL, final duration, pref
+scripts/agent-eval.py --json --pref run1=0.7 run*.jsonl  # + JSON summary; --pref is the manual human-vs-hand-edit score
+scripts/agent-eval.py --selftest                         # asserts metrics on built-in synthetic transcripts
+```
+
+Metrics: `ops` = ops of `edit.apply` calls with `dryRun` false that succeeded; `images` = image items of `render.*`
+responses, counting `at` length or `count` from the args; lint pass = the last `lint` array in a response's
+`structuredContent` has no `error`/`warn` item; the summary lint rate is passes over transcripts.

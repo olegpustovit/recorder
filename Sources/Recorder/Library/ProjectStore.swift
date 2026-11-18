@@ -58,7 +58,7 @@ import RecorderCore
                 let modified = (try? fm.attributesOfItem(atPath: url.path)[.modificationDate] as? Date) ?? .distantPast
                 let thumbURL = url.appendingPathComponent("thumbnail.jpg")
                 let thumbnail = fm.fileExists(atPath: thumbURL.path) ? NSImage(contentsOf: thumbURL) : nil
-                return Item(id: url, title: project.title, duration: TimeMap(project.clips).outputDuration,
+                return Item(id: url, title: project.title, duration: project.exportDuration,
                             modified: modified, thumbnail: thumbnail, projectID: project.id, hasMic: project.source.hasMic)
             }.sorted { $0.modified > $1.modified }
             DispatchQueue.main.async { self.items = scanned; completion?() }
@@ -120,6 +120,8 @@ import RecorderCore
         }
         _ = try stageThenMove(named: name) { staged in
             try fm.copyItem(at: url, to: staged)
+            try? fm.removeItem(at: staged.appendingPathComponent(AgentDraftRecord.fileName))   // a pending agent draft belongs to the original
+            try? fm.removeItem(at: staged.appendingPathComponent(AgentDraftRecord.failedFileName))
             let projectURL = staged.appendingPathComponent("project.json")
             var project = try Project.load(from: projectURL)
             project.id = UUID().uuidString

@@ -38,6 +38,8 @@ struct FrameState {
         var cursor: CursorSample?
         var masks: [Mask] = []
         var sourceTime: Double = 0
+        var elapsed: Double = 0      // output seconds since the layer's start (graphics: reveal/count/element keys)
+        var rotation: Double = 0     // degrees, from keys (graphics)
     }
 
     var outputSize: CGSize
@@ -83,7 +85,7 @@ func makeFrameState(model: EditorModel, outputTime: Double, screen: FrameState.T
     var project = model.project
     if clip?.file != nil, let screen {
         project.source.pixelWidth = screen.luma.width; project.source.pixelHeight = screen.luma.height; project.crop = NormRect()
-    }
+    } else { project.crop = project.cropSample(atSource: sourceTime) } // T-831: the one place both preview and export sample the crop
     let (layoutKind, layoutAmount) = layoutMix(layouts: model.project.layouts, atSource: sourceTime)
     // T-602: the active key chip, if the Keys tab's "Show keyboard shortcuts" is on and a `.key`
     // event is within `activeKeyChip`'s hold window (`RecorderCore/KeyChips.swift`, already merged).
@@ -103,7 +105,8 @@ func makeFrameState(model: EditorModel, outputTime: Double, screen: FrameState.T
                        keyChip: inTimeline ? keyChip : nil, texts: inTimeline ? texts : [],
                        layers: model.project.layerStates(atOutput: outputTime).map { sample in
                            var layer = FrameState.Layer(block: sample.block, opacity: sample.opacity, progress: sample.progress, rect: sample.rect)
-                           if layer.block.kind != .image, let transform = layerTransforms[layer.block.file] {
+                           layer.elapsed = sample.elapsed; layer.rotation = sample.rotation
+                           if layer.block.hasMedia, let transform = layerTransforms[layer.block.file] {
                                layer.texture = layerTextures[layer.block.track]
                                layer.texture?.preferredTransform = transform
                            }

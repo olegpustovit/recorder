@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import RecorderCore
 
@@ -89,4 +90,33 @@ private func emptyCursor(duration: Double) -> CursorPath {
         #expect(abs(a.cx - b.cx) < tol)
         #expect(abs(a.cy - b.cy) < tol)
     }
+}
+
+@Test func zoomEaseUsesItsOwnPresetForEntryAndExit() {
+    func path(_ ease: ZoomEase?) -> CameraPath {
+        CameraPath(zooms: [Zoom(start: 1, end: 3, scale: 2, mode: .manual, center: NormPoint(x: 0.5, y: 0.5), ease: ease)],
+                   cursor: emptyCursor(duration: 6), spring: .smooth, duration: 6)
+    }
+    let rapid = path(.rapid), slow = path(.slow), inherited = path(nil), smooth = path(.smooth)
+    // Entry: a faster preset is closer to the target scale shortly after the zoom starts.
+    #expect(rapid.sample(atSource: 1.2).scale > slow.sample(atSource: 1.2).scale)
+    // Exit uses the same zoom's preset: after the end the rapid zoom has returned closer to 1.
+    #expect(rapid.sample(atSource: 3.2).scale < slow.sample(atSource: 3.2).scale)
+    // No ease = the path's spring, i.e. identical to naming that preset explicitly.
+    #expect(inherited.sample(atSource: 1.2) == smooth.sample(atSource: 1.2) && inherited.sample(atSource: 3.2) == smooth.sample(atSource: 3.2))
+    // Every preset settles on the target and stays inside the source frame.
+    for ease in ZoomEase.allCases {
+        let p = path(ease)
+        #expect(abs(p.sample(atSource: 2.9).scale - 2) < 0.05 && abs(p.sample(atSource: 5.9).scale - 1) < 0.01)
+    }
+}
+
+@Test func zoomEaseIsOptionalInSavedProjects() throws {
+    let old = try JSONDecoder().decode(Zoom.self, from: Data(#"{"id":"z","start":1,"end":2,"scale":2,"mode":"auto","instant":false,"enabled":true}"#.utf8))
+    #expect(old.ease == nil)
+    #expect(!String(decoding: try JSONEncoder().encode(old), as: UTF8.self).contains("ease"))
+    var eased = old; eased.ease = .rapid
+    #expect(try JSONDecoder().decode(Zoom.self, from: JSONEncoder().encode(eased)) == eased)
+    let unknown = try JSONDecoder().decode(Zoom.self, from: Data(#"{"id":"z","ease":"bouncy"}"#.utf8))
+    #expect(unknown.ease == nil)
 }

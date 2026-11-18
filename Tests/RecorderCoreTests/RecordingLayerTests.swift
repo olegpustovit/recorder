@@ -187,38 +187,37 @@ private func recordingFixture(speeds: [Double] = [1, 1, 1], withAudio: Bool = tr
     #expect(project.checkInvariants() == nil)
 }
 
-@Test func v3DecodesUnchanged() throws {
+@Test func decodesWithDefaults() throws {
     let legacy = recordingFixture()
-    #expect(legacy.version == 3)
     let decoded = try JSONDecoder().decode(Project.self, from: JSONEncoder().encode(legacy))
     #expect(decoded == legacy)
     let minimal = try JSONDecoder().decode(Project.self, from: Data(#"{"source":{}}"#.utf8))
-    #expect(minimal.version == 3 && minimal.layers.isEmpty)
+    #expect(minimal.version == Project.currentVersion && minimal.layers.isEmpty)
     let emptyScene = try JSONDecoder().decode(SceneEffects.self, from: Data("{}".utf8))
     #expect(emptyScene.zooms.isEmpty && emptyScene.masks.isEmpty && emptyScene.hideCursor == nil)
     let future = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".json")
     defer { try? FileManager.default.removeItem(at: future) }
-    try Data(#"{"version":6,"layers":[{"kind":"future-unknown-kind"}]}"#.utf8).write(to: future)
-    #expect(throws: ProjectError.newerVersion(6)) { try Project.load(from: future) }
+    try Data(#"{"version":8,"layers":[{"kind":"future-unknown-kind"}]}"#.utf8).write(to: future)
+    #expect(throws: ProjectError.newerVersion(8)) { try Project.load(from: future) }
 }
 
-@Test func savesV3WithoutRecordingLayers() throws {
+@Test func savesTheCurrentVersion() throws {
     var project = recordingFixture(withAudio: false)
     let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".json")
     defer { try? FileManager.default.removeItem(at: path) }
-    #expect(Project.currentVersion == 5)
     try project.save(to: path)
-    #expect(try Project.load(from: path) == project)
+    var saved = project; saved.version = Project.currentVersion
+    #expect(try Project.load(from: path) == saved)
     let originalVersion = project.version
     let copied = project.liftClips([1], toTrack: 0, atOutput: 12, copy: true)
     #expect(copied.count == 1 && project.version == originalVersion)
     try project.save(to: path)
     let loaded = try Project.load(from: path)
     var expected = project
-    expected.version = 4
+    expected.version = Project.currentVersion
     #expect(loaded == expected)
     #expect(project.version == originalVersion)
     project.layers.removeAll()
     try project.save(to: path)
-    #expect(try Project.load(from: path).version == 3)
+    #expect(try Project.load(from: path).version == Project.currentVersion)
 }

@@ -1,4 +1,5 @@
 import AppKit
+import AVKit
 import CoreServices
 import AVFoundation
 import CoreImage
@@ -29,8 +30,21 @@ enum SelfTest {
         "mcp-roundtrip": { args in try await checkMCPRoundtrip(args) },
         "mcp-render": { args in try await checkMCPRender(args) },
         "mcp-edit": { args in try await checkMCPEdit(args) },
+        "mcp-shots": { args in try await checkMCPShots(args) },
+        "shots-f1": { args in try await checkShotsF1(args) },
+        "shots-live": { args in try await checkShotsLive(args) },
+        "report-ref": { args in try await checkReportReference(args) },
+        "agent-visuals": { args in try await dumpAgentVisuals(args) },
+        "shots-perf": { args in try await ShotAnalysis.selfTestPerf(args) },
+        "shots-fixture": { args in try await ShotAnalysis.selfTestFixture(args) },
         "mcp-review": { args in try await checkMCPReview(args) },
+        "mcp-live": { args in try await checkMCPLive(args) },
+        "zoom-ease-parity": { args in try await checkZoomEaseParity(args) },
+        "mcp-layer-playback": { args in try await checkMCPLayerPlayback(args) },
+        "mcp-live-client": { args in try await checkMCPLiveClient(args) },
+        "mcp-panel-motion": { args in try await UIKitGallery.checkAgentStudy(to: URL(fileURLWithPath: args.first ?? "/tmp/recorder-t814-motion")) },
         "mcp-export": { args in try await checkMCPExport(args) },
+        "mcp-schema": { _ in try await checkMCPSchema() },
         "motion-text": { _ in try await Compositor.runMotionTextSelfTest() },
         "layers": { args in try await SelfTest.cases["make-layers-fixture"]!(args) },
         "capture-exclusion": { _ in
@@ -411,6 +425,19 @@ enum SelfTest {
         "preview-frame": { args in try await Compositor.runPreviewFrameSelfTest(args) },
         "export": { args in try await ExporterSelfTest.runExportSelfTest(args) },
         "parity": { args in try await ExporterSelfTest.runParitySelfTest(args) },
+        "graphics-png": { args in try await checkGraphicsPNG(args) },
+        "graphics-ui": { args in try await checkGraphicsUI(args) },
+        "markers": { args in try await checkMarkersUI(args) },
+        "transcript-edit": { args in try await checkTranscriptEdit(args) },
+        "freeze": { args in try await checkFreeze(args) },
+        "transitions": { args in try await checkTransitions(args) },
+        "speed-ramp": { args in try await checkSpeedRamp(args) },
+        "export-in-out": { args in try await checkExportRange(args) },
+        "timeline-v2-png": { args in try await checkTimelineV2PNG(args) },
+        // Live eval host (T-940): this build's real MCP server on a private socket for `seconds`, so an eval client can
+        // speak JSON-RPC to it while another Recorder owns the default socket.
+        "mcp-serve": { args in try await serveMCP(args) },
+        "timeline-gestures": { args in guard let path = args.first else { throw MCPTestFailure(description: "usage: timeline-gestures <package>") }; try await TimelineView.runV2GestureSelfTest(package: URL(fileURLWithPath: path)) },
         "export-gif": { args in try await ExporterSelfTest.runExportGIFSelfTest(args) },
         "export-perf": { args in try await PerfSelfTest.runExportPerf(args) },
         "export-native": { _ in try await ExportSheetSelfTest.checkNativeHandoff() },
@@ -806,6 +833,23 @@ enum SelfTest {
                 guard !confirmed, !window.isVisible else { throw Fail(description: "Escape did not discard the crop sheet") }
             }
             guard await model.project == beforeDiscard else { throw Fail(description: "discard mutated the project") }
+        },
+        "crop-reframe": { _ in
+            struct Fail: Error, CustomStringConvertible { let description: String }
+            let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("recorder-selftest-crop-\(UUID().uuidString)")
+            try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: tmp) }
+            var original = Project(clips: [Clip(sourceStart: 0, sourceEnd: 10)])
+            original.crop = NormRect(x: 0.1875, y: 0, w: 0.625, h: 1)
+            original.cropKeys = [CropKey(t: 0, rect: NormRect(x: 0.375, y: 0, w: 0.625, h: 1))]
+            let model = await EditorModel(packageURL: tmp, project: original, events: EventLog())
+            await CropSheet.confirm(original.crop, on: model)
+            let cropped = await model.project
+            guard cropped.cropKeys.isEmpty, cropped.cropSample(atSource: 5) == original.crop else {
+                throw Fail(description: "confirm didn't replace the keyed reframe with the manual crop")
+            }
+            await model.undo()
+            guard await model.project == original else { throw Fail(description: "undo didn't restore the keyed reframe") }
         },
         // T-601: `MaskRectOverlay` — visibility follows selection, a drag on its `view` maps
         // through `ZoomTargetMapping.contentRect` + `CropMapping` (the same pure pair "crop" above
@@ -1507,6 +1551,15 @@ enum SelfTest {
                 var draft = AgentDraft(base: try MCPTools.revision(project), baseProject: project)
                 _ = try draft.append([.cut(from: 8.3, to: 10), .cut(from: 14, to: 14.6),
                     .text(from: 20, to: 23, style: .title, text: "A clearer introduction", position: nil, size: nil)], context: EditContext())
+                if ["agent-17", "agent-short", "agent-5"].contains(variant) {
+                    let count = variant == "agent-5" ? 2 : 14
+                    _ = try draft.append((0..<count).map { index in
+                        if index < 5 { return .speed(from: .seconds(Double(index * 2)), to: .seconds(Double(index * 2 + 1)), speed: 2) }
+                        if index < 10 { return .text(from: .seconds(Double(25 + (index - 5) * 2)), to: .seconds(Double(26 + (index - 5) * 2)),
+                            style: .label, text: "Chapter \(index - 4)", position: nil, size: nil) }
+                        return .marker(at: .seconds(Double(index)), label: "Section \(index - 9)")
+                    }, context: EditContext())
+                }
                 draft.note = variant == "agent-long" ? String(repeating: "Removed long pauses and tightened the introduction. ", count: 8) : "Removed long pauses and tightened the introduction."
                 draft.submitted = true; draft.excluded = [[0, 1]]
                 let proposed = try draft.refreshReview(context: EditContext())
@@ -1517,8 +1570,8 @@ enum SelfTest {
                 } else { model.edit("Human edit") { $0.frame.padding = 0.04 } }
                 model.inspectorShowsAgent = true
                 if variant == "agent-error" { session.reviewError = "The selected block no longer exists. Replay this draft on the current project." }
-                AgentActivity.shared.log(.init(time: Date(timeIntervalSince1970: 0), agent: session.agentName, tool: "edit.apply", summary: "3 ops", ms: 12, isError: false, projectID: project.id))
-                AgentActivity.shared.log(.init(time: Date(timeIntervalSince1970: 1), agent: session.agentName, tool: "draft.submit", summary: "Review", ms: 4, isError: variant == "agent-error", projectID: project.id))
+                AgentActivity.shared.log(.init(time: Date(timeIntervalSince1970: 0), agent: session.agentName, tool: "edit.apply", intent: "Applying 3 ops · cuts, text", result: "3 ops · −2.3 s", ms: 12, isError: false, projectID: project.id))
+                AgentActivity.shared.log(.init(time: Date(timeIntervalSince1970: 1), agent: session.agentName, tool: "draft.submit", intent: "Preparing review", result: variant == "agent-error" ? "INVALID_OP" : "Ready for review", ms: 4, isError: variant == "agent-error", projectID: project.id))
             }
             defer {
                 model.endReview(commit: false, name: "")
@@ -1546,7 +1599,7 @@ enum SelfTest {
                 model.edit("Text fixture") { $0.texts = [text] }; model.selection = [UUID(uuidString: text.id)!]
             }
 
-            let height: CGFloat = variant == "agent-short" ? 420 : 760
+            let height: CGFloat = variant == "agent-short" ? 420 : ["agent-17", "agent-5"].contains(variant) ? 640 : 760
             let hosting = NSHostingView(rootView: InspectorView(model: model, initialTab: initialTab))
             hosting.appearance = NSAppearance(named: .darkAqua)
             hosting.frame = NSRect(x: 0, y: 0, width: InspectorView.width, height: height)
@@ -4300,8 +4353,8 @@ enum SelfTest {
                 exit(1)
             }
         }
-        // Presented-frame performance needs AppKit's real event processing, not only a headless run loop.
-        if name == "timeline-render-perf", args.contains("--dual-screen") {
+        // Presented frames and the recorded client workflow need AppKit events, not only a headless run loop.
+        if (name == "timeline-render-perf" && args.contains("--dual-screen")) || name == "mcp-live-client" {
             NSApplication.shared.setActivationPolicy(.accessory)
             NSApplication.shared.run()
         }
@@ -4474,7 +4527,7 @@ private final class MCPTestClient {
     let proposed = try await tool("edit", ["action": "apply", "ifRevision": try MCPTools.revision(base),
         "ops": [["op": "style", "patch": ["frame": ["padding": 0.04]]]]])
     let revealed = try await tool("ui", ["action": "show", "at": 0.4])
-    guard proposed["revision"] as? String == revealed["revision"] as? String, model.project == base else { throw MCPTestFailure(description: "ui.show lost the session's draft revision or applied it") }
+    guard proposed["revision"] as? String == revealed["revision"] as? String, model.liveProject == base, model.isWatchingDraft else { throw MCPTestFailure(description: "ui.show lost the session's draft revision or applied it") }
     _ = try await tool("draft", ["action": "discard"])
     let configuration = try JSONSerialization.jsonObject(with: Data(AgentConfig.genericJSON(command: AgentClient.recorderExecutable).utf8)) as? [String: Any]
     let server = (configuration?["mcpServers"] as? [String: Any])?["recorder"] as? [String: Any]
@@ -4498,6 +4551,11 @@ private final class MCPTestClient {
     guard let controller = await EditorWindowController.open(package: package).value else { throw MCPTestFailure(description: "Could not open review fixture") }
     let model = controller.model, session = MCPSession()
     session.agentName = "claude-code"; session.projectURL = model.packageURL.standardizedFileURL
+    let reducedMotion = args.contains("--reduce-motion")
+    if reducedMotion {
+        model.reviewReduceMotionPreview = true
+        controller.inspectorView = NSHostingView(rootView: InspectorView(model: model).environment(\.agentReduceMotionPreview, true))
+    }
     server.register(session)
     defer {
         controller.close(); session.draft = nil; session.connected = false; server.removeFinishedSessions()
@@ -4514,6 +4572,11 @@ private final class MCPTestClient {
     func proposal(_ ops: [EditOp], base: Project) throws -> AgentDraft {
         var draft = AgentDraft(base: try MCPTools.revision(base), baseProject: base)
         _ = try draft.append(ops, context: EditContext()); return draft
+    }
+    func apply(_ ops: [[String: Any]]) async throws {
+        guard let revision = session.draft?.revision else { throw MCPTestFailure(description: "Missing pending draft") }
+        let result = await MCPTools.call("edit", ["action": "apply", "ifRevision": revision, "ops": ops], session: session)
+        guard result["isError"] as? Bool == false else { throw MCPTestFailure(description: "Review iteration failed: \(result)") }
     }
     let base = model.project, saved = try Data(contentsOf: file)
     let ops: [EditOp] = [.cut(from: 0.5, to: 1), .style(patch: ["frame": .object(["padding": .number(0.04)])]),
@@ -4541,6 +4604,65 @@ private final class MCPTestClient {
     guard let draft = session.draft else { throw MCPTestFailure(description: "Lost review draft") }
     let expected = try base.applying([ops[0], ops[2]], context: EditContext(operationSeeds: ["\(draft.id):0:0", "\(draft.id):0:2"])).project
     guard model.project == expected, draft.selectedCount == 2, model.liveProject == base else { throw MCPTestFailure(description: "Checkbox did not replay two operations") }
+    try await Task.sleep(for: .milliseconds(400))
+    func buttons(_ view: NSView) -> [NSButton] { (view as? NSButton).map { [$0] } ?? view.subviews.flatMap(buttons) }
+    guard let cutCheckbox = buttons(controller.inspectorView).first(where: { $0.accessibilityLabel() == "Include cuts" }),
+          cutCheckbox.state == .on, cutCheckbox.isEnabled else { throw MCPTestFailure(description: "Native group checkbox missing or disabled") }
+    cutCheckbox.performClick(nil)
+    try await Task.sleep(for: .milliseconds(60))
+    guard session.draft?.excluded.contains([0, 0]) == true, model.project.clips == base.clips, cutCheckbox.state == .off else {
+        throw MCPTestFailure(description: "Native group checkbox did not exclude its cut")
+    }
+    cutCheckbox.performClick(nil)
+    try await Task.sleep(for: .milliseconds(60))
+    guard model.project == expected, cutCheckbox.state == .on else { throw MCPTestFailure(description: "Native group checkbox did not recover the seeded result") }
+    func clickInspector(_ point: NSPoint) {
+        let window = controller.window!, location = controller.inspectorView.convert(point, to: nil)
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            window.sendEvent(NSEvent.mouseEvent(with: type, location: location, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!)
+        }
+    }
+    let groupFrame = cutCheckbox.convert(cutCheckbox.bounds, to: controller.inspectorView)
+    let disclosurePoint = NSPoint(x: groupFrame.minX - 9, y: groupFrame.midY)
+    let inspectorCapture = controller.inspectorView
+    func capturePanel(_ stage: String) throws {
+        guard let rep = inspectorCapture.bitmapImageRepForCachingDisplay(in: inspectorCapture.bounds) else { throw MCPTestFailure(description: "Panel bitmap") }
+        inspectorCapture.cacheDisplay(in: inspectorCapture.bounds, to: rep)
+        guard let png = rep.representation(using: .png, properties: [:]) else { throw MCPTestFailure(description: "Panel PNG") }
+        try png.write(to: URL(fileURLWithPath: "/tmp/recorder-t812-\(reducedMotion ? "reduced-" : "")\(stage).png"))
+    }
+    clickInspector(disclosurePoint)
+    try await Task.sleep(for: .milliseconds(100))
+    try capturePanel("expanded-mid")
+    try await Task.sleep(for: .milliseconds(400))
+    try capturePanel("expanded")
+    clickInspector(NSPoint(x: 150, y: groupFrame.midY + (inspectorCapture.isFlipped ? 32 : -32)))
+    guard abs(model.playhead - 0.5) < 1e-9 else { throw MCPTestFailure(description: "Native change-row click did not seek") }
+    clickInspector(disclosurePoint)
+    try await Task.sleep(for: .milliseconds(400))
+    guard let textCheckbox = buttons(inspectorCapture).first(where: { $0.accessibilityLabel() == "Include text" }) else {
+        throw MCPTestFailure(description: "Text group missing")
+    }
+    let textFrame = textCheckbox.convert(textCheckbox.bounds, to: inspectorCapture)
+    let textDisclosure = NSPoint(x: textFrame.minX - 9, y: textFrame.midY)
+    clickInspector(textDisclosure)
+    try await Task.sleep(for: .milliseconds(500))
+    clickInspector(NSPoint(x: 150, y: textFrame.midY + (inspectorCapture.isFlipped ? 32 : -32)))
+    guard abs(model.playhead - 0.7) < 1e-9 else { throw MCPTestFailure(description: "Seek did not remap the text row after a cut") }
+    clickInspector(textDisclosure)
+    try await Task.sleep(for: .milliseconds(400))
+    for _ in 0..<3 {
+        clickInspector(disclosurePoint)
+        try await Task.sleep(for: .milliseconds(35))
+        clickInspector(disclosurePoint)
+        try await Task.sleep(for: .milliseconds(35))
+    }
+    try await Task.sleep(for: .milliseconds(500))
+    let settledTextFrame = textCheckbox.convert(textCheckbox.bounds, to: inspectorCapture)
+    guard abs(settledTextFrame.midY - textFrame.midY) < 1 else {
+        throw MCPTestFailure(description: "Rapid disclosure reversal left stale rows or layout")
+    }
     controller.previewView.stepFrame(0.1)
     guard model.playhead > 0 else { throw MCPTestFailure(description: "Review blocked scrubbing") }
     // Capture the integrated document bar, panel and timeline with the same rendered frame as the preview.
@@ -4570,14 +4692,70 @@ private final class MCPTestClient {
     }
     guard model.isPlaying, model.playhead > playbackStart + 0.05 else { throw MCPTestFailure(description: "Review blocked playback") }
     controller.previewView.togglePlayPause()
-    try server.finishReview(session, commit: true)
+    try await apply([["op": "zoom", "from": 0.1, "to": 0.9, "scale": 1.8]])
+    let iteratedExpected = try expected.applying([.zoom(from: 0.1, to: 0.9, scale: 1.8, center: nil)],
+        context: EditContext(operationSeeds: ["\(draft.id):1:0"])).project
+    let iterating = try await tool("status")
+    guard model.isWatchingDraft, model.project == iteratedExpected, model.liveProject == base,
+          session.draft?.id == draft.id, session.draft?.calls.count == 2,
+          session.draft?.excluded == Set([[0, 1]]), session.draft?.verdict == nil,
+          iterating["submitted"] as? Bool == false, iterating["excluded"] as? [Int] == [1],
+          iterating["selected"] as? Int == 3, iterating["verdict"] == nil,
+          model.project.texts.first?.id == expected.texts.first?.id,
+          model.undoStepNames.isEmpty, try Data(contentsOf: file) == saved else {
+        throw MCPTestFailure(description: "Iteration lost the draft identity, exclusions, pending verdict or frozen base")
+    }
+    try await Task.sleep(for: .milliseconds(150))
+    guard buttons(controller.inspectorView).first(where: { $0.accessibilityLabel() == "Include zoom" })?.isEnabled == false else {
+        throw MCPTestFailure(description: "Iteration did not disable native inclusion controls while watching")
+    }
+    try capturePanel("iteration-watching")
+    _ = try await tool("submit")
+    guard !model.isWatchingDraft, model.project == iteratedExpected, session.draft?.excluded == Set([[0, 1]]) else {
+        throw MCPTestFailure(description: "Resubmitting changed the iterated proposal or exclusions")
+    }
+    try await Task.sleep(for: .milliseconds(400))
+    try capturePanel("iteration-ready")
+    let inspector = controller.inspectorView
+    clickInspector(NSPoint(x: inspector.bounds.maxX - 50, y: inspector.isFlipped ? inspector.bounds.maxY - 24 : 24))
+    try await Task.sleep(for: .milliseconds(80))
     let status = try await tool("status")
-    guard model.project == expected, !model.isReviewingDraft, model.undoStepNames == ["Claude: Tighten the introduction"],
-          status["verdict"] as? String == "accepted 2 of 3", model.reviewCuts.isEmpty, model.reviewAddedIDs.isEmpty else {
+    guard model.project == iteratedExpected, !model.isReviewingDraft, model.undoStepNames == ["Claude: Tighten the introduction"],
+          status["verdict"] as? String == "accepted 3 of 4", model.reviewCuts.isEmpty, model.reviewAddedIDs.isEmpty else {
         throw MCPTestFailure(description: "Partial accept/verdict/one named undo")
     }
     model.undo()
     guard model.project == base else { throw MCPTestFailure(description: "Accepted review undo did not restore base") }
+    session.draft = try proposal(ops, base: base); _ = try await tool("submit")
+    guard let grouped = session.draft,
+          let cutGroup = grouped.groups.first(where: { $0.kind == .cuts }),
+          let otherGroup = grouped.groups.first(where: { $0.kind == .other }) else {
+        throw MCPTestFailure(description: "Missing cut/style groups")
+    }
+    try server.include(cutGroup.rows.map(\.id) + otherGroup.rows.map(\.id), in: session, included: false)
+    let groupedExpected = try base.applying([ops[2]], context: EditContext(operationSeeds: ["\(grouped.id):0:2"])).project
+    guard model.project == groupedExpected, session.draft?.selectedCount == 1,
+          session.draft?.duration == groupedExpected.exportDuration,
+          session.draft?.excluded == Set([[0, 0], [0, 1]]), model.liveProject == base else {
+        throw MCPTestFailure(description: "Group exclusion did not preserve the exact seeded remaining result")
+    }
+    try server.include(cutGroup.rows.map(\.id), in: session, included: true)
+    guard session.draft?.selectedCount == 2, model.project.frame.padding == base.frame.padding else {
+        throw MCPTestFailure(description: "Reincluding one group changed another group's exclusion")
+    }
+    let beforeInvalidGroup = model.project
+    do {
+        try server.include([[0, 0], [100, 0]], in: session, included: false)
+        throw MCPTestFailure(description: "Invalid group was accepted")
+    } catch is MCPFailure { }
+    guard model.project == beforeInvalidGroup, session.draft?.selectedCount == 2 else {
+        throw MCPTestFailure(description: "Invalid group exclusion was not atomic")
+    }
+    try server.include(grouped.rows.map(\.id), in: session, included: false)
+    guard model.project == base, session.draft?.selectedCount == 0 else { throw MCPTestFailure(description: "Unticking all groups did not restore the base") }
+    try server.finishReview(session, commit: true)
+    guard !model.isReviewingDraft, model.project == base, model.undoStepNames.isEmpty,
+          session.lastDraftVerdict == "accepted 0 of 3" else { throw MCPTestFailure(description: "Accept 0 mutated the project or added undo") }
     session.draft = try proposal(ops, base: base)
     model.edit("Human") { $0.frame.shadow = 0.8 }
     let human = model.project
@@ -4589,10 +4767,20 @@ private final class MCPTestClient {
     model.undo()
     var dependent = try proposal([ops[2]], base: base)
     let textID = try dependent.project(context: EditContext()).texts[0].id
-    _ = try dependent.append([.update(id: textID, from: nil, to: nil, text: "Updated", position: nil, size: nil, scale: nil, center: nil)], context: EditContext())
+    _ = try dependent.append([.set(id: textID, fields: SetFields(text: "Updated"))], context: EditContext())
     session.draft = dependent; _ = try await tool("submit")
     try server.include([0, 0], in: session, included: false)
     guard model.project == base, session.draft?.skipped[[1, 0]] != nil else { throw MCPTestFailure(description: "Dependent update was not skipped") }
+    let skippedReason = session.draft?.skipped[[1, 0]]
+    try await apply([["op": "marker", "at": 0.2, "label": "Iteration with a skipped dependent"]])
+    let feedback = try await tool("status")
+    guard feedback["excluded"] as? [Int] == [0], feedback["selected"] as? Int == 1,
+          (feedback["skipped"] as? [[String: Any]])?.first?["op"] as? Int == 1,
+          (feedback["skipped"] as? [[String: Any]])?.first?["reason"] as? String == skippedReason,
+          session.draft?.id == dependent.id, session.draft?.verdict == nil, model.isWatchingDraft else {
+        throw MCPTestFailure(description: "Iteration status lost per-change exclusions or dependent skip reasons")
+    }
+    _ = try await tool("submit")
     try server.include([0, 0], in: session, included: true)
     guard model.project.texts.first?.id == textID, model.project.texts.first?.text == "Updated", session.draft?.skipped.isEmpty == true else {
         throw MCPTestFailure(description: "Dependent update did not recover with stable ids")
@@ -4612,10 +4800,321 @@ private final class MCPTestClient {
     controller.close()
     guard model.project == base, !model.isReviewingDraft, session.draft?.submitted == false,
           try Project.load(from: file) == base else { throw MCPTestFailure(description: "Closing review saved a proposal or lost its pending state") }
-    print("MCP review: partial acceptance/verdict, one undo, preview/disk/client isolation, edit/Escape guards, scrubbing, stale replay/discard, dependency recovery, disconnect and close verified; /tmp/recorder-mcp-review.png")
+    print("MCP review: native group/disclosure/seek/footer clicks, rapid reversal, \(reducedMotion ? "reduced" : "normal") motion samples, submitted iteration/exclusion/reason/identity retention, partial/group/zero-op acceptance, atomic group validation, seeded result, one undo, preview/disk/client isolation, edit/Escape guards, scrubbing, stale replay/discard, dependency recovery, disconnect and close verified; /tmp/recorder-mcp-review.png")
+}
+
+/// R5/R6: tools/list and the handlers agree, every tool declares annotations and an outputSchema, and handler limits come from the schema.
+@MainActor private func checkMCPSchema() async throws {
+    func fail(_ message: String) -> MCPTestFailure { MCPTestFailure(description: "mcp-schema: " + message) }
+    var listed: Set<String> = []
+    for tool in MCPTools.list {
+        let name = tool["name"] as? String ?? "?"
+        let properties = (tool["inputSchema"] as? [String: Any])?["properties"] as? [String: Any]
+        for action in (properties?["action"] as? [String: Any])?["enum"] as? [String] ?? [] { listed.insert("\(name).\(action)") }
+        guard tool["outputSchema"] != nil, tool["annotations"] != nil else { throw fail("\(name) lacks annotations or outputSchema") }
+    }
+    guard listed == MCPTools.handled else {
+        throw fail("listed without handler \(listed.subtracting(MCPTools.handled).sorted()), handler without schema \(MCPTools.handled.subtracting(listed).sorted())")
+    }
+    func annotation(_ name: String, _ key: String) -> Bool? {
+        ((MCPTools.list.first { $0["name"] as? String == name }?["annotations"]) as? [String: Any])?[key] as? Bool
+    }
+    // analyze.transcribe writes and edit.undo is not idempotent, so those two tools carry no read-only/idempotent hint.
+    guard ["render", "timeline", "transcript"].allSatisfy({ annotation($0, "readOnlyHint") == true }), annotation("analyze", "readOnlyHint") != true,
+          annotation("edit", "idempotentHint") != true else {
+        throw fail("annotations")
+    }
+    let render = (MCPTools.list.first { $0["name"] as? String == "render" }?["inputSchema"]) as? [String: Any] ?? [:]
+    guard schemaViolation(["action": "frames", "at": Array(repeating: 1.0, count: 24)], render) == nil,
+          schemaViolation(["action": "frames", "at": Array(repeating: 1.0, count: 25)], render)?.range == true,
+          schemaViolation(["action": "frames", "longEdge": 1], render)?.range == true else { throw fail("render.frames limits do not follow the schema") }
+    // R4-1 parity: the fields Core's intents read are exactly what tools/list advertises (speed: the ramp fields are a subset).
+    for (op, fields) in intentFields {
+        guard let schema = MCPTools.operationSchemas.first(where: { (($0["properties"] as? [String: Any])?["op"] as? [String: Any])?["enum"] as? [String] == [op] }),
+              let props = schema["properties"] as? [String: Any] else { throw fail("no tools/list schema for intent \(op)") }
+        let advertised = Set(props.keys).subtracting(["op", "ref"])
+        guard op == "speed" ? fields.isSubset(of: advertised) : fields == advertised else {
+            throw fail("\(op): Core reads \(fields.sorted()) but tools/list advertises \(advertised.sorted())")
+        }
+    }
+    // A client whose cached tool list predates new fields is told about them in every result until it re-lists (R4-1).
+    let staleKey = "mcpSchemaVersion.schema-stale-test@1"
+    UserDefaults.standard.set("old", forKey: staleKey)
+    UserDefaults.standard.set(Array(MCPTools.fieldPaths.subtracting(["op.fitDuration.balance"])), forKey: staleKey + ".fields")
+    defer { UserDefaults.standard.removeObject(forKey: staleKey); UserDefaults.standard.removeObject(forKey: staleKey + ".fields") }
+    let stale = MCPSession()
+    _ = await stale.handle(["jsonrpc": "2.0", "id": 1, "method": "initialize", "params": ["clientInfo": ["name": "schema-stale-test", "version": "1"]]])
+    func notice() async -> String? {
+        let reply = await stale.handle(["jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": ["name": "nope", "arguments": [:]]])
+        return ((reply?["result"] as? [String: Any])?["structuredContent"] as? [String: Any])?["schemaNotice"] as? String
+    }
+    guard await notice()?.contains("op.fitDuration.balance") == true else { throw fail("stale client not told about new fields") }
+    _ = await stale.handle(["jsonrpc": "2.0", "id": 3, "method": "tools/list"])
+    guard await notice() == nil else { throw fail("schema notice persists after tools/list") }
+    // A stale client is told which fields it is missing (R4-1): every op field has a path.
+    guard MCPTools.fieldPaths.contains("op.fitDuration.minPerSection"), MCPTools.fieldPaths.contains("op.fitDuration.drop") else { throw fail("fieldPaths misses op fields") }
+    print("MCP schema: \(listed.count) tool actions have handlers, annotations and outputSchemas; limits are validated from the schema; intent fields match tools/list")
+}
+
+@MainActor private func checkMCPAssetsHeadless() async throws {
+    func fail(_ message: String) -> MCPTestFailure { MCPTestFailure(description: "layer assets: " + message) }
+    let fm = FileManager.default
+    let root = fm.temporaryDirectory.appendingPathComponent("recorder-assets-\(UUID().uuidString)", isDirectory: true).resolvingSymlinksInPath()
+    let outside = fm.temporaryDirectory.appendingPathComponent("recorder-outside-\(UUID().uuidString)", isDirectory: true).resolvingSymlinksInPath()
+    try fm.createDirectory(at: root, withIntermediateDirectories: true); try fm.createDirectory(at: outside, withIntermediateDirectories: true)
+    let savedRoots = MCPAssets.trustedRoots
+    MCPAssets.trustedRoots = [root]
+    defer { MCPAssets.trustedRoots = savedRoots; try? fm.removeItem(at: root); try? fm.removeItem(at: outside) }
+    let ctx = CGContext(data: nil, width: 64, height: 36, bitsPerComponent: 8, bytesPerRow: 256, space: VideoColor.space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    ctx.setFillColor(CGColor(red: 0.2, green: 0.4, blue: 0.9, alpha: 1)); ctx.fill(CGRect(x: 0, y: 0, width: 64, height: 36))
+    let png = NSBitmapImageRep(cgImage: ctx.makeImage()!).representation(using: .png, properties: [:])!
+    let card = root.appendingPathComponent("card.png"); try png.write(to: card)
+    try Data("hello".utf8).write(to: root.appendingPathComponent("notes.txt"))
+    try fm.createDirectory(at: root.appendingPathComponent(".hidden"), withIntermediateDirectories: true)
+    try png.write(to: root.appendingPathComponent(".hidden/a.png"))
+    try fm.createDirectory(at: root.appendingPathComponent("inner.recorder"), withIntermediateDirectories: true)
+    try png.write(to: root.appendingPathComponent("inner.recorder/a.png"))
+    try png.write(to: outside.appendingPathComponent("secret.png"))
+    try fm.createSymbolicLink(at: root.appendingPathComponent("link.png"), withDestinationURL: outside.appendingPathComponent("secret.png"))
+    guard try MCPAssets.trustedFile(card.path) == card else { throw fail("trusted png rejected") }
+    for bad in ["card.png", root.appendingPathComponent("notes.txt").path, root.appendingPathComponent(".hidden/a.png").path,
+                root.appendingPathComponent("inner.recorder/a.png").path, root.appendingPathComponent("link.png").path,
+                root.appendingPathComponent("missing.png").path, outside.appendingPathComponent("secret.png").path, "/etc/hosts", root.path] {
+        do { _ = try MCPAssets.trustedFile(bad); throw fail("accepted \(bad)") } catch is MCPFailure { }
+    }
+    let package = root.appendingPathComponent("pkg.recorder", isDirectory: true)
+    try fm.createDirectory(at: package, withIntermediateDirectories: true)
+    let project = Project(source: Source(duration: 20, hasMic: true), clips: [Clip(sourceStart: 0, sourceEnd: 20)])
+    func mediaFiles() -> [String] { ((try? fm.contentsOfDirectory(atPath: package.appendingPathComponent("media").path)) ?? []).sorted() }
+    // Two ops with the same path import one immutable copy; project.json is never written (draft isolation).
+    let ops: [EditOp] = [.layer(from: 1, to: 3, source: .path(card.path), rect: nil), .layer(from: 5, to: 7, source: .path(card.path), rect: nil)]
+    let resolution = try await MCPAssets.resolve(ops, package: package, project: project, library: [])
+    guard resolution.created.count == 1, mediaFiles().count == 1, !fm.fileExists(atPath: package.appendingPathComponent("project.json").path),
+          let asset = resolution.assets.values.first, asset.kind == .image, asset.width == 64, asset.height == 36,
+          resolution.ops.allSatisfy({ if case .layer(_, _, .asset(let file), _) = $0 { return file == asset.file }; return false }) else { throw fail("import/dedupe/isolation") }
+    guard try Data(contentsOf: resolution.created[0]) == png else { throw fail("copy is not byte-identical") }
+    // Applied through Core, replayed from a frozen context, and referenced media survives a purge while unreferenced media does not.
+    var draft = AgentDraft(base: try MCPTools.revision(project), baseProject: project)
+    let applied = try draft.append(resolution.ops, context: EditContext(assets: resolution.assets))
+    guard applied.project.layers.count == 2, draft.assets == resolution.assets,
+          try draft.refreshReview(context: EditContext()) == applied.project else { throw fail("draft replay lost the frozen media context") }
+    let session = MCPSession()
+    session.agentMedia = Set(resolution.assets.keys); session.agentMediaPackage = package
+    MCPAssets.purge(session, keeping: applied.project)
+    guard mediaFiles().count == 1, session.agentMedia.isEmpty else { throw fail("purge removed referenced media") }
+    session.agentMedia = Set(resolution.assets.keys); session.agentMediaPackage = package
+    MCPAssets.purge(session, keeping: project)
+    guard mediaFiles().isEmpty else { throw fail("purge kept unreferenced media") }
+    // Atomic failure: a later bad op removes everything imported earlier in the same call.
+    do {
+        _ = try await MCPAssets.resolve([ops[0], .layer(from: 4, to: 6, source: .path(root.appendingPathComponent("missing.png").path), rect: nil)], package: package, project: project, library: [])
+        throw fail("bad batch accepted")
+    } catch is MCPFailure { guard mediaFiles().isEmpty else { throw fail("failed call left media behind") } }
+    for source in [LayerSource.asset("media/nope.png"), .asset("../x.png"), .recording("nope")] {
+        do { _ = try await MCPAssets.resolve([.layer(from: 1, to: 3, source: source, rect: nil)], package: package, project: project, library: []); throw fail("accepted \(source)") }
+        catch is MCPFailure { }
+    }
+    // Existing layer media is listed and reusable by asset id; library lists others but never the current project.
+    let reuse = try await MCPAssets.resolve([.layer(from: 10, to: 12, source: .asset(asset.file), rect: nil)], package: package, project: applied.project, library: [], known: resolution.assets)
+    guard reuse.created.isEmpty, reuse.assets[asset.file] == asset else { throw fail("known asset not reused") }
+    let listing = MCPAssets.list(project: applied.project, library: [.init(id: project.id, title: "self", duration: 1, package: package), .init(id: "other", title: "Other", duration: 9, package: package)])
+    guard let layers = listing["layers"] as? [[String: Any]], layers.count == 2, layers.allSatisfy({ $0["asset"] as? String == asset.file && $0["kind"] as? String == "image" && $0["mediaRate"] as? Double == 1 }),
+          let library = listing["library"] as? [[String: Any]], library.count == 1, library[0]["recording"] as? String == "other" else { throw fail("assets listing") }
+    // Video: a generated 1 s movie imports as a video layer through a library recording's screen.mov, using the card placement rect.
+    let other = root.appendingPathComponent("other.recorder", isDirectory: true)
+    try fm.createDirectory(at: other, withIntermediateDirectories: true)
+    let movie = other.appendingPathComponent("screen.mov")
+    let writer = try AVAssetWriter(outputURL: movie, fileType: .mov)
+    let input = AVAssetWriterInput(mediaType: .video, outputSettings: [AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 64, AVVideoHeightKey: 36])
+    let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+        kCVPixelBufferWidthKey as String: 64, kCVPixelBufferHeightKey as String: 36])
+    writer.add(input); writer.startWriting(); writer.startSession(atSourceTime: .zero)
+    for frame in 0..<30 {
+        var buffer: CVPixelBuffer?
+        CVPixelBufferCreate(nil, 64, 36, kCVPixelFormatType_32BGRA, nil, &buffer)
+        guard let buffer else { throw fail("pixel buffer") }
+        CVPixelBufferLockBaseAddress(buffer, []); memset(CVPixelBufferGetBaseAddress(buffer), Int32(frame * 8), CVPixelBufferGetDataSize(buffer)); CVPixelBufferUnlockBaseAddress(buffer, [])
+        while !input.isReadyForMoreMediaData { try await Task.sleep(for: .milliseconds(5)) }
+        adaptor.append(buffer, withPresentationTime: CMTime(value: Int64(frame), timescale: 30))
+    }
+    input.markAsFinished(); await writer.finishWriting()
+    guard writer.status == .completed else { throw fail("could not write the test movie") }
+    let recording = MCPAssets.LibraryRecording(id: "other-id", title: "Other", duration: 1, package: other)
+    let video = try await MCPAssets.resolve([.layer(from: 2, to: nil, source: .recording("other-id"), rect: nil)], package: package, project: project, library: [recording])
+    guard video.created.count == 1, let clip = video.assets.values.first, clip.kind == .video, abs(clip.duration - 1) < 0.1, clip.width == 64, clip.height == 36, !clip.hasAudio,
+          case .layer(_, _, _, let placed?) = video.ops[0], placed == layerPlacementRect(.card, aspect: 64.0 / 36.0, canvas: outputSize(aspect: project.output.aspect,
+              croppedSource: CGSize(width: Double(project.source.pixelWidth) * project.crop.w, height: Double(project.source.pixelHeight) * project.crop.h), longEdge: 1000))
+    else { throw fail("recording import/probe/placement") }
+    let videoProject = try project.applying(video.ops, context: EditContext(assets: video.assets)).project
+    guard videoProject.layers.count == 1, videoProject.layers[0].kind == .video, abs(videoProject.layers[0].end - videoProject.layers[0].start - clip.duration) < 1e-9 else { throw fail("video layer apply") }
+    MCPAssets.removeFiles(video.created)
+    do { _ = try await MCPAssets.resolve([.layer(from: 1, to: nil, source: .recording(project.id), rect: nil)], package: package, project: project, library: [.init(id: project.id, title: "self", duration: 1, package: package)]); throw fail("self recording accepted") }
+    catch is MCPFailure { }
+    // Schema: layer op and project.assets action are advertised; sources decode through the MCP validator.
+    let schema = MCPTools.operationSchemas.first { (($0["properties"] as? [String: Any])?["op"] as? [String: Any])?["enum"] as? [String] == ["layer"] }
+    let projectTool = MCPTools.list.first { ($0["name"] as? String) == "project" }
+    let actions = (((projectTool?["inputSchema"] as? [String: Any])?["properties"] as? [String: Any])?["action"] as? [String: Any])?["enum"] as? [String]
+    guard schema != nil, actions?.contains("assets") == true,
+          try MCPTools.decodeOps([["op": "layer", "from": 1, "to": 3, "path": card.path]]).count == 1 else { throw fail("schema") }
+    do { _ = try MCPTools.decodeOps([["op": "layer", "from": 1, "to": 3]]); throw fail("sourceless layer decoded") } catch is MCPFailure { }
+}
+
+@MainActor private func checkDraftPlaybackHeadless() async throws {
+    func fail(_ message: String) -> MCPTestFailure { MCPTestFailure(description: "draft playback: " + message) }
+    typealias Identity = DraftPlayback.Identity
+    let fm = FileManager.default
+    let folder = fm.temporaryDirectory.appendingPathComponent("recorder-playback-\(UUID().uuidString)", isDirectory: true)
+    try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+    defer { try? fm.removeItem(at: folder) }
+    let playback = DraftPlayback.shared
+    playback.closePreview(); playback.cancel()
+    let first = Identity(projectID: "p", sessionID: "s", draftID: "d", revision: "r1")
+    var presented: [(URL, Identity)] = []
+    func makeFile() throws -> URL { let url = folder.appendingPathComponent(UUID().uuidString + ".mp4"); try Data("x".utf8).write(to: url); return url }
+    func wait(_ what: String, _ done: () -> Bool) async throws {
+        for _ in 0..<400 where !done() { try await Task.sleep(for: .milliseconds(5)) }
+        guard done() else { throw fail("timed out waiting for " + what) }
+    }
+    // 1. Normal flow: progress is reported, the result is presented once with its identity, and the file is kept for playback.
+    playback.start(first, current: { first }, render: { progress in progress(0.5); try await Task.sleep(for: .milliseconds(30)); return try makeFile() },
+                   present: { presented.append(($0, $1)) })
+    guard playback.isRendering, playback.identity == first else { throw fail("did not enter rendering") }
+    try await wait("progress") { playback.state == .rendering(0.5) }
+    try await wait("normal render") { presented.count == 1 }
+    guard playback.state == .idle, playback.presented == first, fm.fileExists(atPath: presented[0].0.path) else { throw fail("normal flow state") }
+    // 2. Repeated request while rendering is ignored (the identity stays the first one); a request after completion replaces the preview.
+    var release = false
+    let second = Identity(projectID: "p", sessionID: "s", draftID: "d", revision: "r2")
+    let previous = presented[0].0
+    playback.start(second, current: { second }, render: { _ in while !release { try await Task.sleep(for: .milliseconds(5)) }; return try makeFile() }, present: { presented.append(($0, $1)) })
+    guard !fm.fileExists(atPath: previous.path), playback.presented == nil else { throw fail("starting a new preview kept the previous one") }
+    var ignoredCalls = 0
+    playback.start(first, current: { first }, render: { _ in ignoredCalls += 1; return try makeFile() }, present: { presented.append(($0, $1)) })
+    try await Task.sleep(for: .milliseconds(30))
+    guard playback.identity == second, ignoredCalls == 0 else { throw fail("repeated request while rendering was not ignored") }
+    release = true
+    try await wait("second render") { presented.count == 2 }
+    guard presented[1].1 == second, playback.presented == second else { throw fail("second preview identity") }
+    // 3. Cancel while rendering: back to idle, nothing presented, even a renderer that ignores cancellation leaves no file behind.
+    var stubborn: URL?
+    var finishing = false
+    playback.start(first, current: { first }, render: { _ in
+        while !finishing { try? await Task.sleep(for: .milliseconds(5)) }
+        let url = try makeFile(); stubborn = url; return url
+    }, present: { presented.append(($0, $1)) })
+    playback.cancel()
+    guard playback.state == .idle, playback.identity == nil else { throw fail("cancel state") }
+    finishing = true
+    try await wait("cancelled render to finish") { stubborn != nil }
+    try await Task.sleep(for: .milliseconds(40))
+    guard presented.count == 2, !fm.fileExists(atPath: stubborn!.path), playback.state == .idle else { throw fail("cancelled render was presented or left a file") }
+    // 4. Draft changed while rendering: result discarded with a message, never presented.
+    var currentIdentity: Identity? = first
+    var staleFile: URL?
+    playback.start(first, current: { currentIdentity }, render: { _ in
+        try await Task.sleep(for: .milliseconds(20)); currentIdentity = Identity(projectID: "p", sessionID: "s", draftID: "d", revision: "r9")
+        let url = try makeFile(); staleFile = url; return url
+    }, present: { presented.append(($0, $1)) })
+    try await wait("stale render") { if case .failed = playback.state { return true }; return false }
+    guard presented.count == 2, !fm.fileExists(atPath: staleFile!.path), playback.identity == nil else { throw fail("stale render was presented or kept") }
+    playback.dismissFailure()
+    guard playback.state == .idle else { throw fail("dismissFailure") }
+    // 5. Errors: renderer failures surface their message, a cancelled-by-tool (DENIED) render is quiet.
+    playback.start(first, current: { first }, render: { _ in throw MCPFailure(code: "OUT_OF_RANGE", message: "boom") }, present: { presented.append(($0, $1)) })
+    try await wait("failure") { if case .failed("boom") = playback.state { return true }; return false }
+    playback.start(first, current: { first }, render: { _ in throw MCPFailure(code: "DENIED", message: "cancelled") }, present: { presented.append(($0, $1)) })
+    try await wait("quiet cancel") { playback.state == .idle && !playback.isRendering }
+    // 6. Invalidation by the owning session closes the preview and deletes its file; other sessions are untouched.
+    playback.start(first, current: { first }, render: { _ in try makeFile() }, present: { presented.append(($0, $1)) })
+    try await wait("final preview") { presented.count == 3 }
+    let kept = presented[2].0
+    playback.invalidate(sessionID: "someone-else")
+    guard fm.fileExists(atPath: kept.path), playback.presented == first else { throw fail("another session's invalidation closed the preview") }
+    playback.invalidate(sessionID: "s")
+    guard !fm.fileExists(atPath: kept.path), playback.presented == nil else { throw fail("invalidate left the preview open") }
+    // 7. Identity is the draft being reviewed: nothing to play without a reviewing draft.
+    guard !playback.isRendering, playback.state == .idle else { throw fail("final state") }
 }
 
 @MainActor private func checkMCPEdit(_ args: [String]) async throws {
+    if args.contains("--headless") {
+        let ops = try MCPTools.decodeOps([["op": "cut", "from": 0.01, "to": 1.0, "snap": true],
+            ["op": "cut", "from": 1.5, "to": 1.53, "snap": true], ["op": "marker", "at": 2.0, "label": "Kept"]])
+        let base = Project(source: Source(duration: 3, hasMic: true), clips: [Clip(sourceStart: 0, sourceEnd: 3)])
+        var draft = AgentDraft(base: try MCPTools.revision(base), baseProject: base)
+        let result = try draft.append(ops, context: EditContext())
+        let reviewed = try draft.refreshReview(context: EditContext())
+        let snapSchema = (MCPTools.operationSchemas[1]["properties"] as? [String: Any])?["snap"] as? [String: Any]
+        let centerSchema = (MCPTools.operationSchemas[4]["properties"] as? [String: Any])?["center"] as? [String: Any]
+        guard result.changes[0].note?.contains("0.010") == true, result.changes[1].skipped,
+              MCPTools.warnings(result.project, changes: result.changes).count == 1,
+              reviewed == result.project, try draft.project(context: EditContext()) == reviewed,
+              draft.selectedCount == 2, draft.skipped[[0, 1]] == result.changes[1].note,
+              draft.rows.count == 3, reviewed.markers.count == 1, abs(reviewed.exportDuration - 2) < 1e-9,
+              snapSchema?["default"] as? Bool == true, centerSchema?["description"] as? String == "Normalized 0–1 coordinates in the source frame; origin is the top-left corner." else {
+            throw MCPTestFailure(description: "Headless MCP snap schema/decode/notes/warnings/replay/selection")
+        }
+        do {
+            _ = try MCPTools.decodeOps([["op": "cut", "from": 0, "to": 1, "snap": "yes"]])
+            throw MCPTestFailure(description: "Invalid snap value accepted")
+        } catch is MCPFailure { }
+        var anchored = AgentDraft(base: try MCPTools.revision(base), baseProject: base)
+        _ = try anchored.append([.marker(at: 2, label: "Anchor")], context: EditContext())
+        let markerID = try anchored.project(context: EditContext()).markers[0].id
+        let anchorOps = try MCPTools.decodeOps([["op": "marker", "at": ["marker": markerID, "offset": 0.5], "label": "Dependent"]])
+        _ = try anchored.append(anchorOps, context: EditContext())
+        let expected = try anchored.refreshReview(context: EditContext())
+        guard expected.markers.last?.time == 2.5,
+              ((MCPTools.operationSchemas[8]["properties"] as? [String: Any])?["at"] as? [String: Any])?["oneOf"] != nil else {
+            throw MCPTestFailure(description: "MCP marker schema/decode/current-time anchor")
+        }
+        anchored.excluded.insert([0, 0])
+        let excluded = try anchored.refreshReview(context: EditContext())
+        guard excluded == base, anchored.skipped[[1, 0]]?.contains(markerID) == true, anchored.selectedCount == 0 else {
+            throw MCPTestFailure(description: "Excluded anchor did not skip its dependent with a reason")
+        }
+        anchored.excluded.remove([0, 0])
+        guard try anchored.refreshReview(context: EditContext()) == expected,
+              try anchored.project(context: EditContext()) == expected, anchored.selectedCount == 2, anchored.skipped.isEmpty else {
+            throw MCPTestFailure(description: "Re-included marker anchor lost stable replay ids")
+        }
+        do {
+            let zoomSchema = MCPTools.operationSchemas.first { (($0["properties"] as? [String: Any])?["op"] as? [String: Any])?["enum"] as? [String] == ["zoom"] }
+            let zoomProperties = zoomSchema?["properties"] as? [String: Any]
+            guard (zoomProperties?["follow"] as? [String: Any])?["enum"] as? [String] == ["cursor", "fixed"],
+                  (zoomProperties?["ease"] as? [String: Any])?["enum"] as? [String] == ZoomEase.allCases.map(\.rawValue) else {
+                throw MCPTestFailure(description: "zoom schema lacks follow/ease enums")
+            }
+            let ops = try MCPTools.decodeOps([["op": "zoom", "from": 1, "to": 3, "scale": 2, "follow": "cursor", "ease": "rapid"]])
+            guard ops == [.zoom(from: 1, to: 3, scale: 2, center: nil, follow: .cursor, ease: .rapid)] else { throw MCPTestFailure(description: "zoom follow/ease decode") }
+            let textOps = try MCPTools.decodeOps([["op": "text", "from": 1, "to": 3, "style": "label", "text": "T", "size": 30, "color": "blue"]])
+            let textSchema = MCPTools.operationSchemas.first { (($0["properties"] as? [String: Any])?["op"] as? [String: Any])?["enum"] as? [String] == ["text"] }
+            let textProperties = textSchema?["properties"] as? [String: Any]
+            guard textOps == [.text(from: 1, to: 3, style: .label, text: "T", position: nil, size: 30, color: .blue)],
+                  (textProperties?["color"] as? [String: Any])?["enum"] as? [String] == BlockColor.allCases.map(\.rawValue),
+                  (textProperties?["size"] as? [String: Any])?["maximum"] as? Int == 120 else { throw MCPTestFailure(description: "text color/size schema or decode") }
+            do { _ = try MCPTools.decodeOps([["op": "zoom", "from": 1, "to": 3, "scale": 2, "ease": "bouncy"]]); throw MCPTestFailure(description: "Unknown ease accepted") }
+            catch is MCPFailure { }
+        }
+        do {
+            let w = 201, h = 101
+            let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4, space: VideoColor.space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+            ctx.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 1)); ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+            let blank = NSBitmapImageRep(cgImage: ctx.makeImage()!).representation(using: .png, properties: [:])!
+            let gridded = try AgentRender.drawGrid(on: blank)
+            guard let rep = NSBitmapImageRep(data: gridded), rep.pixelsWide == w, rep.pixelsHigh == h else { throw MCPTestFailure(description: "Grid changed frame size") }
+            func lit(_ x: Int, _ y: Int) -> Bool { let c = rep.colorAt(x: x, y: y)!; return c.redComponent > 0.2 }
+            // x=0 and x=200 are the 0 and 1 verticals, y=0 is the top (0.0) horizontal and y=100 the bottom (1.0); a mid-cell pixel stays untouched.
+            guard lit(0, 50), lit(200, 50), lit(100, 50), lit(100, 0), lit(100, 100), !lit(10, 55), !lit(15, 55) else { throw MCPTestFailure(description: "Grid lines are not at normalized top-left positions") }
+            let tool = MCPTools.list.first { ($0["name"] as? String) == "render" }
+            let renderProperties = (tool?["inputSchema"] as? [String: Any])?["properties"] as? [String: Any]
+            guard renderProperties?["grid"] != nil else { throw MCPTestFailure(description: "render schema lacks grid") }
+        }
+        try await checkMCPAssetsHeadless()
+        try await checkDraftPlaybackHeadless()
+        print("MCP edit headless: draft playback state machine, layer assets (trusted paths, immutable import, dedupe, isolation, atomic failure, purge, replay), snap/anchor schemas and decoding, grid geometry/drawing, zoom follow/ease and text colour/size schema, warnings, current-time offsets, frozen replay, exclusions/dependent reasons and stable recovery verified; no application windows created")
+        return
+    }
     guard let path = args.first else { throw MCPTestFailure(description: "usage: mcp-edit <fixture.recorder>") }
     let root = URL(fileURLWithPath: "/tmp/recorder-mcp-edit-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -4630,6 +5129,8 @@ private final class MCPTestClient {
     try synthesizeSineM4A(at: package.appendingPathComponent("mic.m4a"), duration: fixture.source.duration, silence: 1...2)
     let words = [Word(text: "Um,", start: 0.2, end: 0.4), Word(text: "there", start: 1.3, end: 1.7)]
     try JSONEncoder().encode(words).write(to: package.appendingPathComponent("transcript.json"))
+    try JSONEncoder().encode(EventLog(events: [InputEvent(t: 0.2, k: .key, keyCode: 0, ch: "PRIVATE_ACTIVITY_KEYS")]))
+        .write(to: package.appendingPathComponent("events.json"))
     NSApplication.shared.setActivationPolicy(.accessory); NSApplication.shared.finishLaunching()
     guard let controller = await EditorWindowController.open(package: package).value else { throw MCPTestFailure(description: "Could not open edit fixture") }
     let model = controller.model
@@ -4654,19 +5155,25 @@ private final class MCPTestClient {
     let dry = try await tool("edit", ["action": "apply", "ifRevision": baseRevision, "ops": style, "dryRun": true])
     guard dry["revision"] as? String == baseRevision, session.draft == nil, model.project == base else { throw MCPTestFailure(description: "Dry run mutated state") }
     let first = try await tool("edit", ["action": "apply", "ifRevision": baseRevision, "ops": [
-        ["op": "cut", "from": 0.5, "to": 1.0], ["op": "text", "from": 1.0, "to": 2.0, "style": "title", "text": "Draft"]]])
+        ["op": "cut", "from": 0.5, "to": 1.0], ["op": "text", "from": 1.0, "to": 2.0, "style": "title", "text": "PRIVATE_ACTIVITY_TEXT"],
+        ["op": "marker", "at": 2.4, "label": "PRIVATE_ACTIVITY_LABEL"]]])
+    guard let applied = AgentActivity.shared.rows.last, applied.sessionID == session.id,
+          applied.intent == "Applying 3 ops · cuts, text, markers", applied.result == "3 ops · −0.5 s",
+          !AgentActivity.shared.current.values.contains(where: { $0.sessionID == session.id }) else {
+        throw MCPTestFailure(description: "Activity intent/result or completed call cleanup")
+    }
     let timeline = try await tool("timeline", ["action": "get"])
     guard let textID = (timeline["blocks"] as? [[String: Any]])?.first(where: { $0["lane"] as? String == "text" })?["id"] as? String,
           timeline["revision"] as? String == first["revision"] as? String else { throw MCPTestFailure(description: "Draft timeline/revision") }
     let second = try await tool("edit", ["action": "apply", "ifRevision": first["revision"]!, "ops": [
-        ["op": "update", "id": textID, "text": "Revised", "size": 44], ["op": "cut", "from": 1.8, "to": 2.1]]])
+        ["op": "set", "id": textID, "text": "Revised", "size": 44], ["op": "cut", "from": 1.8, "to": 2.1]]])
     let third = try await tool("edit", ["action": "apply", "ifRevision": second["revision"]!, "ops": [
         ["op": "zoom", "from": 0.15, "to": 0.85, "scale": 1.8, "center": ["x": 0.6, "y": 0.4]]]])
     guard let draft = session.draft else { throw MCPTestFailure(description: "Draft missing") }
     let replayed = try draft.project(context: EditContext(words: words))
     guard try MCPTools.revision(replayed) == draft.revision, draft.calls.count == 3, replayed.texts.first?.id == textID,
           replayed.texts.first?.text == "Revised", abs(replayed.exportDuration - 2.2) < 1e-8,
-          model.project == base, model.undoStepNames.isEmpty, (try Data(contentsOf: projectURL)) == saved else { throw MCPTestFailure(description: "Draft replay/ids/live/disk isolation") }
+          model.project == replayed, model.liveProject == base, model.isWatchingDraft, model.undoStepNames.isEmpty, (try Data(contentsOf: projectURL)) == saved else { throw MCPTestFailure(description: "Draft replay/ids/live/disk isolation") }
     var excluded = draft
     excluded.excluded.insert([0, 0])
     let partial = try excluded.project(context: EditContext(words: words))
@@ -4676,14 +5183,31 @@ private final class MCPTestClient {
     let liveRender = await MCPTools.call("render", ["action": "frames", "at": [0.7], "longEdge": 160, "draft": false], session: session)
     guard let image = inline(draftRender), image != inline(liveRender),
           (draftRender["structuredContent"] as? [String: Any])?["revision"] as? String == third["revision"] as? String else { throw MCPTestFailure(description: "Draft/live render selection or revision") }
-    _ = try await tool("edit", ["action": "apply", "ifRevision": baseRevision, "ops": style], error: "STALE_REVISION")
+    let stale = try await tool("edit", ["action": "apply", "ifRevision": baseRevision, "ops": style], error: "STALE_REVISION")
+    guard (stale["message"] as? String)?.contains("You passed \(baseRevision); the current draft revision is") == true else { throw MCPTestFailure(description: "STALE_REVISION message: \(stale)") }
+    guard MCPServer.shared.takeOverWatching(model) else { throw MCPTestFailure(description: "Could not take over the watching preview") }
     model.edit("Human") { $0.frame.shadow = 0.8 }
     _ = try await tool("edit", ["action": "apply", "ifRevision": draft.revision, "ops": style], error: "STALE_REVISION")
     guard try await tool("draft", ["action": "status"])["stale"] as? Bool == true else { throw MCPTestFailure(description: "Stale draft status") }
     model.undo()
     let submitted = try await tool("draft", ["action": "submit", "note": "Review test"])
     guard submitted["submitted"] as? Bool == true, model.liveProject == base, model.isReviewingDraft else { throw MCPTestFailure(description: "Submit changed the live project") }
-    _ = try await tool("edit", ["action": "apply", "ifRevision": draft.revision, "ops": style], error: "REVIEW_IN_PROGRESS")
+    let dryIteration = try await tool("edit", ["action": "apply", "ifRevision": draft.revision, "ops": style, "dryRun": true])
+    _ = try await tool("edit", ["action": "apply", "ifRevision": draft.revision, "ops": []])
+    _ = try await tool("edit", ["action": "apply", "ifRevision": draft.revision, "ops": [["op": "zoom", "from": 0, "to": 1, "scale": 0]]], error: "INVALID_OP")
+    // R3-3: intent ops are schema-checked too; a field the tool list doesn't declare is an error, not silently ignored.
+    _ = try await tool("edit", ["action": "apply", "ifRevision": draft.revision, "ops": [["op": "keepShots", "where": ["kind": ["payoff"], "minPerSection": 4]]]], error: "INVALID_OP")
+    _ = try await tool("edit", ["action": "apply", "ifRevision": draft.revision, "ops": [["op": "pace", "maxHold": 1]]], error: "INVALID_OP")
+    guard session.draft?.submitted == true, session.draft?.calls.count == 3, !model.isWatchingDraft,
+          dryIteration["revision"] as? String == draft.revision, model.project == replayed else {
+        throw MCPTestFailure(description: "Dry, empty or failed iteration changed a submitted review")
+    }
+    _ = try await tool("edit", ["action": "apply", "ifRevision": draft.revision, "ops": style])
+    guard model.isWatchingDraft, session.draft?.submitted == false, session.draft?.verdict == nil,
+          session.draft?.id == draft.id, session.draft?.calls.count == 4, model.liveProject == base,
+          model.undoStepNames.isEmpty, try Data(contentsOf: projectURL) == saved else {
+        throw MCPTestFailure(description: "Submitted apply did not return the same pending draft to watching")
+    }
     let discarded = try await tool("draft", ["action": "discard"])
     guard discarded["verdict"] as? String == "discarded", session.draft == nil else { throw MCPTestFailure(description: "Discard verdict") }
     _ = try await tool("edit", ["action": "apply", "ifRevision": baseRevision, "ops": [["op": "cutWords", "transcript": "stale", "words": ["w0"]]]], error: "TRANSCRIPT_CHANGED")
@@ -4693,7 +5217,7 @@ private final class MCPTestClient {
     guard !(warned["warnings"] as? [String] ?? []).isEmpty, try MCPTools.viewedProject(model, session: session).texts.count == 3 else { throw MCPTestFailure(description: "Lower-third/caption warnings") }
     _ = try await tool("draft", ["action": "discard"])
     let paused = try await tool("edit", ["action": "apply", "ifRevision": baseRevision, "ops": [["op": "cutPauses", "minDuration": 0.6, "keepTail": 0.1]]])
-    guard ((paused["duration"] as? [String: Double])?["after"] ?? 3) < 3, model.project == base else { throw MCPTestFailure(description: "Pause context/draft isolation") }
+    guard ((paused["duration"] as? [String: Double])?["after"] ?? 3) < 3, model.liveProject == base, model.isWatchingDraft else { throw MCPTestFailure(description: "Pause context/draft isolation") }
     _ = try await tool("draft", ["action": "discard"])
     AgentAccess.set(.live, for: base.id)
     _ = try await tool("edit", ["action": "apply", "ifRevision": baseRevision, "ops": style + [["op": "marker", "at": 2, "label": "Live"]]])
@@ -4711,8 +5235,20 @@ private final class MCPTestClient {
     model.beginGesture()
     _ = try await tool("edit", ["action": "apply", "ifRevision": baseRevision, "ops": style], error: "REVIEW_IN_PROGRESS")
     model.cancelGesture()
-    guard model.project.checkInvariants() == nil, MCPTools.operationSchemas.count == 12 else { throw MCPTestFailure(description: "Edit invariants/schemas") }
-    print("MCP edit: deterministic replay/ids/exclusions, dry-run and disk isolation, draft reads/renders, stale revisions, submit/discard, pause/word contexts, overlap warnings, live undo and review/gesture guards verified")
+    // The op set the plan specifies (EDITING-CORE §4, MCP.md §5.2/§5.3): primitives, v2 additions, intents; `update` is gone.
+    let opNames = Set(MCPTools.operationSchemas.compactMap { (($0["properties"] as? [String: Any])?["op"] as? [String: Any])?["enum"] as? [String] }.flatMap { $0 })
+    let planned: Set<String> = ["cut", "cutPauses", "cutWords", "speed", "zoom", "text", "captions", "highlight", "marker", "set", "remove", "style", "layer", "reframe",
+                                "graphic", "animate", "freeze", "transition", "keepShots", "pace", "fitDuration", "autoZoom"]
+    guard model.project.checkInvariants() == nil, opNames == planned, MCPTools.operationSchemas.count == planned.count else {
+        throw MCPTestFailure(description: "Edit invariants/schemas: missing \(planned.subtracting(opNames).sorted()), unplanned \(opNames.subtracting(planned).sorted())")
+    }
+    let activity = AgentActivity.shared.rows.filter { $0.sessionID == session.id }
+    guard activity.allSatisfy({ row in [row.intent, row.result, row.tool].allSatisfy { !$0.contains("PRIVATE_ACTIVITY_") } }),
+          activity.contains(where: { $0.isError && $0.result == "STALE_REVISION" }),
+          !AgentActivity.shared.current.values.contains(where: { $0.sessionID == session.id }) else {
+        throw MCPTestFailure(description: "Activity leaked text, omitted error codes or retained finished calls")
+    }
+    print("MCP edit: privacy-safe intent/result/error activity, deterministic replay/ids/exclusions, dry-run and disk isolation, draft reads/renders, stale revisions, submit/discard, pause/word contexts, overlap warnings, live undo and review/gesture guards verified")
 }
 
 @MainActor private func checkMCPRender(_ args: [String]) async throws {
@@ -4807,6 +5343,9 @@ private final class MCPTestClient {
             try await Task.sleep(for: .milliseconds(5))
         }
         guard let sessionID else { throw MCPTestFailure(description: "Proxy job did not start") }
+        guard await MainActor.run(body: { AgentActivity.shared.current.values.contains { $0.sessionID == sessionID && $0.tool == "render.clip" && $0.intent == "Rendering preview" } }) else {
+            throw MCPTestFailure(description: "Running proxy has no in-flight activity")
+        }
         for (id, action) in [(102, "frames"), (103, "cancel")] {
             _ = MCPSocket.write(try JSONSerialization.data(withJSONObject: ["jsonrpc": "2.0", "id": id, "method": "tools/call", "params": ["name": "render", "arguments": ["action": action, "at": [1]]]]) + Data([10]), to: client.fd)
         }
@@ -4820,8 +5359,8 @@ private final class MCPTestClient {
             }
         }
         guard notified, (replies[101]?["structuredContent"] as? [String: Any])?["error"] as? String == "DENIED",
-              (replies[102]?["structuredContent"] as? [String: Any])?["error"] as? String == "RENDER_BUSY",
-              (replies[103]?["structuredContent"] as? [String: Any])?["cancelled"] as? Bool == true else { throw MCPTestFailure(description: "Same-connection busy/cancel/progress contract") }
+              (replies[102]?["structuredContent"] as? [String: Any])?["error"] == nil,   // queued behind the clip, runs after the cancel
+              (replies[103]?["structuredContent"] as? [String: Any])?["cancelled"] as? Bool == true else { throw MCPTestFailure(description: "Same-connection queue/cancel/progress contract") }
         let frame = try client.request("tools/call", ["name": "render", "arguments": ["action": "frames", "at": [0.7], "longEdge": 320]])
         let result = frame["result"] as? [String: Any], content = result?["content"] as? [[String: Any]] ?? []
         guard content.filter({ $0["type"] as? String == "image" }).count == 1,
@@ -4831,6 +5370,9 @@ private final class MCPTestClient {
         let sheetContent = (sheetReply["result"] as? [String: Any])?["content"] as? [[String: Any]] ?? []
         guard sheetContent.filter({ $0["type"] as? String == "image" && $0["mimeType"] as? String == "image/jpeg" }).count == 1,
               sheetContent.filter({ $0["type"] as? String == "resource_link" }).count == 1 else { throw MCPTestFailure(description: "Agent sheet inline/link response") }
+        // T-905: from/to restrict the sheet's sample times.
+        let ranged = try client.request("tools/call", ["name": "render", "arguments": ["action": "sheet", "count": 2, "from": 0.5, "to": 1.0]])
+        guard (((ranged["result"] as? [String: Any])?["structuredContent"] as? [String: Any])?["at"] as? [Double]) == [0.625, 0.875] else { throw MCPTestFailure(description: "render.sheet ignored from/to") }
         let clipReply = try client.request("tools/call", ["name": "render", "arguments": ["action": "clip", "from": 0.371, "to": 2.371]])
         let clipResult = clipReply["result"] as? [String: Any], clipContent = clipResult?["content"] as? [[String: Any]] ?? []
         let clipInfo = clipResult?["structuredContent"] as? [String: Any] ?? [:]
@@ -4914,6 +5456,18 @@ private final class MCPTestClient {
         guard (fillers["fillers"] as? [[String: Any]])?.first?["word"] as? String == "w0" else { throw MCPTestFailure(description: "MCP filler IDs") }
         let activity = try client.tool("analyze", ["action": "activity"])
         guard activity["clicks"] as? [Double] == [0.8] else { throw MCPTestFailure(description: "MCP clicks") }
+        let beforeWatch = try await MainActor.run { () throws -> Project in
+            guard let model = EditorWindowController.allOpen.first(where: { $0.model.liveProject.id == id })?.model else { throw MCPTestFailure(description: "Wire watch editor missing") }
+            return model.project
+        }
+        _ = try client.tool("edit", ["action": "apply", "ifRevision": opened["revision"]!, "ops": [["op": "style", "patch": ["frame": ["padding": 0.04]]]]])
+        try await MainActor.run {
+            guard let model = EditorWindowController.allOpen.first(where: { $0.model.liveProject.id == id })?.model,
+                  model.isWatchingDraft, model.liveProject == beforeWatch, model.project.frame.padding == 0.04 else {
+                throw MCPTestFailure(description: "Wire apply did not propagate into its existing editor")
+            }
+        }
+        _ = try client.tool("draft", ["action": "discard"])
         _ = try client.tool("timeline", ["action": "get", "from": -1], error: "OUT_OF_RANGE")
         _ = try client.tool("timeline", ["action": "get", "from": "1"], error: "INVALID_OP")
         _ = try client.tool("analyze", ["action": "pauses", "minDuration": true], error: "INVALID_OP")
@@ -6268,4 +6822,1013 @@ private func runTimelineHeaderSelfTest() async throws {
     view.debugNewTrackButton.performClick(nil); try await settle()
     try check(view.revealedLanes.contains(.layer(next)) && model.project == project && model.undoStepCount == 0,
               "only an explicit new-track click reveals an empty lane without editing project")
+}
+
+/// T-823/T-824 native check: a real `layer` edit through MCPTools on an open editor (isolation, preview + proxy render parity,
+/// accept/discard/undo media lifecycle) and the real Play draft AVKit window (tracks, playback, cancel, invalidation, cleanup).
+@MainActor private func checkMCPLayerPlayback(_ args: [String]) async throws {
+    guard let path = args.first else { throw MCPTestFailure(description: "usage: mcp-layer-playback <fixture.recorder>") }
+    func fail(_ message: String) -> MCPTestFailure { MCPTestFailure(description: "layer/playback: " + message) }
+    let fm = FileManager.default
+    let root = URL(fileURLWithPath: "/tmp/recorder-t824-\(UUID().uuidString)").resolvingSymlinksInPath()
+    let package = root.appendingPathComponent("Layer.recorder"), server = MCPServer.shared
+    try fm.createDirectory(at: root, withIntermediateDirectories: true)
+    try fm.copyItem(at: URL(fileURLWithPath: path), to: package)
+    let file = package.appendingPathComponent("project.json")
+    var fixture = try Project.load(from: file)
+    fixture.id = UUID().uuidString; fixture.texts = []; fixture.zooms = []; fixture.masks = []; fixture.layers = []; fixture.keys.show = false
+    fixture.source.hasMic = true
+    fixture.audioTracks = [AudioTrack(name: "Mic")]
+    fixture.audioClips = [AudioClip(start: 0, end: fixture.source.duration, file: "mic.m4a", link: .screen)]
+    try synthesizeSineM4A(at: package.appendingPathComponent("mic.m4a"), duration: fixture.source.duration)
+    try fixture.save(to: file)
+    try JSONEncoder().encode(EventLog()).write(to: package.appendingPathComponent("events.json"))
+    NSApplication.shared.setActivationPolicy(.accessory); NSApplication.shared.finishLaunching()
+    guard let controller = await EditorWindowController.open(package: package).value else { throw fail("fixture did not open") }
+    let model = controller.model, session = MCPSession()
+    session.projectURL = model.packageURL.standardizedFileURL; server.register(session)
+    let savedRoots = MCPAssets.trustedRoots
+    MCPAssets.trustedRoots = [root]
+    defer {
+        MCPAssets.trustedRoots = savedRoots
+        DraftPlayback.shared.cancel(); DraftPlayback.shared.closePreview()
+        controller.close(); session.draft = nil; session.connected = false; server.removeFinishedSessions()
+        UserDefaults.standard.removeObject(forKey: "agentAccess.\(fixture.id)")
+        try? fm.removeItem(at: root)
+    }
+    func tool(_ name: String, _ arguments: [String: Any]) async throws -> [String: Any] {
+        let response = await MCPTools.call(name, arguments, session: session)
+        guard response["isError"] as? Bool == false else { throw fail("\(name) \(arguments["action"] ?? ""): \(response["structuredContent"] ?? [:])") }
+        return response["structuredContent"] as? [String: Any] ?? [:]
+    }
+    func mediaFiles() -> [String] { ((try? fm.contentsOfDirectory(atPath: package.appendingPathComponent("media").path)) ?? []).sorted() }
+    func pixel(_ image: CGImage) -> (r: Double, g: Double, b: Double) {
+        var bytes = [UInt8](repeating: 0, count: 4)
+        let context = CGContext(data: &bytes, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        context.draw(image, in: CGRect(x: -Double(image.width) / 2 + 0.5, y: -Double(image.height) / 2 + 0.5, width: Double(image.width), height: Double(image.height)))
+        return (Double(bytes[0]) / 255, Double(bytes[1]) / 255, Double(bytes[2]) / 255)
+    }
+    func isMagenta(_ c: (r: Double, g: Double, b: Double)) -> Bool { c.r > 0.6 && c.b > 0.6 && c.g < 0.35 }
+    func decode(_ data: Data) throws -> CGImage {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil), let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { throw fail("undecodable frame") }
+        return image
+    }
+    // Magenta card image in a trusted (temp-like) folder.
+    let ctx = CGContext(data: nil, width: 200, height: 120, bitsPerComponent: 8, bytesPerRow: 800, space: VideoColor.space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    ctx.setFillColor(CGColor(red: 1, green: 0, blue: 1, alpha: 1)); ctx.fill(CGRect(x: 0, y: 0, width: 200, height: 120))
+    let card = root.appendingPathComponent("card.png")
+    try NSBitmapImageRep(cgImage: ctx.makeImage()!).representation(using: .png, properties: [:])!.write(to: card)
+    let base = model.liveProject, savedJSON = try Data(contentsOf: file), duration = base.exportDuration
+    guard duration > 1.8 else { throw fail("fixture too short (\(duration) s)") }
+    let revision = try MCPTools.revision(base)
+    let layerOp: [String: Any] = ["op": "layer", "from": 0.4, "to": 1.6, "path": card.path]
+
+    // A. Real tool path: the layer previews in the draft but nothing reaches live state, disk, or the saved project.
+    let assets = try await tool("project", ["action": "assets"])
+    guard (assets["layers"] as? [Any])?.isEmpty == true else { throw fail("assets listing should start empty") }
+    let applied = try await tool("edit", ["action": "apply", "ifRevision": revision, "ops": [layerOp]])
+    guard (applied["changes"] as? [[String: Any]])?.first?["summary"] as? String != nil, model.isReviewingDraft, model.project.layers.count == 1,
+          model.liveProject == base, try Data(contentsOf: file) == savedJSON, mediaFiles().count == 1 else { throw fail("draft layer isolation") }
+    let layerFile = model.project.layers[0].file
+    let draftModel = AgentRender.renderModel(for: model, project: model.project)
+    let during = try decode(try await EditorWindowController.renderFramesPNG(model: draftModel, at: [1.0], longEdge: 320)[0])
+    let outside = try decode(try await EditorWindowController.renderFramesPNG(model: draftModel, at: [0.05], longEdge: 320)[0])
+    guard isMagenta(pixel(during)), !isMagenta(pixel(outside)) else { throw fail("preview frame does not show the layer exactly during its range") }
+    // Export parity: the proxy (export pipeline) shows the same layer at the same time.
+    let folder = AgentRender.cacheFolder(session: session.id)
+    let proxy = try await AgentRender.clip(model: model, from: 0, to: duration, folder: folder, progress: { _ in })
+    let proxyAsset = AVURLAsset(url: proxy)
+    let proxyFrame = try await AVAssetImageGenerator(asset: proxyAsset).image(at: CMTime(seconds: 1.0, preferredTimescale: 600)).image
+    let proxyOutside = try await AVAssetImageGenerator(asset: proxyAsset).image(at: CMTime(seconds: 0.05, preferredTimescale: 600)).image
+    guard isMagenta(pixel(proxyFrame)), !isMagenta(pixel(proxyOutside)) else { throw fail("proxy/export frame does not match the preview layer") }
+    try? fm.removeItem(at: proxy)
+
+    // B. Real Play draft: a native AVKit window with a decodable audio+video proxy of the draft that actually plays.
+    let playback = DraftPlayback.shared
+    playback.toggle(model: model, session: session)
+    guard playback.isRendering else { throw fail("Play draft did not start rendering") }
+    var window: NSWindow?
+    for _ in 0..<1200 where window == nil {
+        window = NSApp.windows.first { $0.contentView is AVPlayerView && $0.isVisible }
+        if window == nil { try await Task.sleep(for: .milliseconds(25)) }
+    }
+    guard let window, let player = (window.contentView as? AVPlayerView)?.player, let item = player.currentItem else { throw fail("no native player window appeared") }
+    let tracks = try await item.asset.load(.tracks)
+    let length = try await item.asset.load(.duration).seconds
+    guard tracks.contains(where: { $0.mediaType == .video }), tracks.contains(where: { $0.mediaType == .audio }), abs(length - duration) < 0.25 else { throw fail("player item lacks audio/video or has the wrong length (\(length) vs \(duration))") }
+    try await Task.sleep(for: .milliseconds(600))
+    guard player.rate > 0 || player.currentTime().seconds > 0.1, playback.presented != nil, playback.state == .idle else { throw fail("preview is not playing") }
+    window.close()   // same path as the red close button: windowWillClose → delegate cleanup
+    try await Task.sleep(for: .milliseconds(300))
+    guard playback.presented == nil, !NSApp.windows.contains(where: { $0.contentView is AVPlayerView && $0.isVisible }) else { throw fail("closing the window kept the preview") }
+    // Cancel: a second toggle during rendering stops it and never shows a window.
+    playback.toggle(model: model, session: session)
+    playback.toggle(model: model, session: session)
+    try await Task.sleep(for: .milliseconds(800))
+    guard playback.state == .idle, !NSApp.windows.contains(where: { $0.contentView is AVPlayerView && $0.isVisible }) else { throw fail("cancel still presented a preview") }
+    // A new edit.apply invalidates an open preview and removes its file.
+    playback.toggle(model: model, session: session)
+    for _ in 0..<1200 where playback.presented == nil { try await Task.sleep(for: .milliseconds(25)) }
+    guard playback.presented != nil else { throw fail("second preview never appeared") }
+    let draftRevision = try await tool("draft", ["action": "status"])["revision"] as? String ?? ""
+    _ = try await tool("edit", ["action": "apply", "ifRevision": draftRevision, "ops": [["op": "marker", "at": 1.0, "label": "m"]]])
+    guard playback.presented == nil, !NSApp.windows.contains(where: { $0.contentView is AVPlayerView && $0.isVisible }) else { throw fail("edit.apply left a stale preview open") }
+
+    // C. Discard removes the imported media and leaves the project untouched.
+    _ = try await tool("draft", ["action": "discard"])
+    guard model.project == base, model.liveProject == base, mediaFiles().isEmpty, try Data(contentsOf: file) == savedJSON else { throw fail("discard left media/state behind") }
+    // D. Accept keeps exactly the used media, as one undo step.
+    let revision2 = try MCPTools.revision(model.liveProject)
+    _ = try await tool("edit", ["action": "apply", "ifRevision": revision2, "ops": [layerOp]])
+    _ = try await tool("draft", ["action": "submit"])
+    guard let acceptSession = Optional(session) else { return }
+    try server.finishReview(acceptSession, commit: true)
+    guard model.liveProject.layers.count == 1, model.liveProject.layers[0].file == mediaFiles().first.map({ "media/" + $0 }), mediaFiles().count == 1 else { throw fail("accept lost/kept the wrong media") }
+    let listing = try await tool("project", ["action": "assets"])
+    guard (listing["layers"] as? [[String: Any]])?.first?["asset"] as? String == model.liveProject.layers[0].file else { throw fail("assets listing after accept") }
+    model.undo()
+    guard model.liveProject.layers.isEmpty else { throw fail("accept was not one undo step") }
+    _ = layerFile
+    print("MCP layer/playback: native draft layer isolation, preview and proxy parity at the layer's time, Play draft window with audio+video playback, cancel, stale-edit invalidation, window-close cleanup, discard purge, accept/undo verified")
+}
+
+/// T-821 native check: a zoom's `ease` preset changes the real preview frames and the export-pipeline proxy frames the same way.
+@MainActor private func checkZoomEaseParity(_ args: [String]) async throws {
+    guard let path = args.first else { throw MCPTestFailure(description: "usage: zoom-ease-parity <fixture.recorder>") }
+    func fail(_ message: String) -> MCPTestFailure { MCPTestFailure(description: "zoom ease parity: " + message) }
+    let fm = FileManager.default
+    let root = URL(fileURLWithPath: "/tmp/recorder-t821-\(UUID().uuidString)").resolvingSymlinksInPath()
+    let package = root.appendingPathComponent("Ease.recorder")
+    try fm.createDirectory(at: root, withIntermediateDirectories: true)
+    try fm.copyItem(at: URL(fileURLWithPath: path), to: package)
+    defer { try? fm.removeItem(at: root) }
+    var base = try Project.load(from: package.appendingPathComponent("project.json"))
+    base.id = UUID().uuidString; base.zooms = []; base.texts = []; base.masks = []; base.layers = []; base.keys.show = false
+    let events = EventLog()
+    func model(_ ease: ZoomEase) throws -> EditorModel {
+        let applied = try base.applying([.zoom(from: 0.5, to: 1.8, scale: 2.5, center: NormPoint(x: 0.2, y: 0.25), follow: .fixed, ease: ease)], context: EditContext()).project
+        return EditorModel(packageURL: package, project: applied, events: events)
+    }
+    let rapid = try model(.rapid), slow = try model(.slow), time = 0.65
+    guard rapid.cameraPath.sample(atSource: time).scale > slow.cameraPath.sample(atSource: time).scale + 0.1 else { throw fail("camera tables do not differ by preset") }
+    func frame(_ m: EditorModel) async throws -> CGImage {
+        let data = try await EditorWindowController.renderFramesPNG(model: AgentRender.renderModel(for: m, project: m.project), at: [time], longEdge: 320)[0]
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil), let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { throw fail("undecodable") }
+        return image
+    }
+    func bytes(_ image: CGImage) -> Data { Data(referencing: image.dataProvider!.data!) }
+    guard bytes(try await frame(rapid)) != bytes(try await frame(slow)) else { throw fail("preview frames are identical for different eases") }
+    // Proxy (export pipeline): the same two projects also differ at that time, and the faster preset is more zoomed in both.
+    let folder = AgentRender.cacheFolder(session: UUID().uuidString)
+    defer { try? fm.removeItem(at: folder) }
+    var proxies: [CGImage] = []
+    for m in [rapid, slow] {
+        let url = try await AgentRender.clip(model: m, from: 0, to: min(2, m.project.exportDuration), folder: folder, progress: { _ in })
+        proxies.append(try await AVAssetImageGenerator(asset: AVURLAsset(url: url)).image(at: CMTime(seconds: time, preferredTimescale: 600)).image)
+    }
+    guard bytes(proxies[0]) != bytes(proxies[1]) else { throw fail("proxy frames are identical for different eases") }
+    // Settled frames (after both springs finished) are identical: ease only changes the motion, not where the zoom lands.
+    let late = 1.6
+    func settled(_ m: EditorModel) async throws -> Data {
+        try await EditorWindowController.renderFramesPNG(model: AgentRender.renderModel(for: m, project: m.project), at: [late], longEdge: 320)[0]
+    }
+    guard abs(rapid.cameraPath.sample(atSource: late).scale - slow.cameraPath.sample(atSource: late).scale) < 0.2 else { throw fail("eases do not converge on the target") }
+    _ = try await settled(rapid)
+    print("Zoom ease parity: preview and export-pipeline frames differ by preset at the entry and converge on the same target")
+}
+
+@MainActor private func checkMCPLive(_ args: [String]) async throws {
+    guard let path = args.first else { throw MCPTestFailure(description: "usage: mcp-live <fixture.recorder> [--reduce-motion]") }
+    let root = URL(fileURLWithPath: "/tmp/recorder-t815-\(UUID().uuidString)")
+    let package = root.appendingPathComponent("Live.recorder"), server = MCPServer.shared
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    try FileManager.default.copyItem(at: URL(fileURLWithPath: path), to: package)
+    let file = package.appendingPathComponent("project.json")
+    var fixture = try Project.load(from: file)
+    fixture.id = UUID().uuidString; fixture.texts = []; fixture.zooms = []; fixture.masks = []
+    try fixture.save(to: file)
+    try JSONEncoder().encode(EventLog()).write(to: package.appendingPathComponent("events.json"))
+    NSApplication.shared.setActivationPolicy(.accessory); NSApplication.shared.finishLaunching()
+    guard let controller = await EditorWindowController.open(package: package).value else { throw MCPTestFailure(description: "Live fixture did not open") }
+    guard await EditorWindowController.open(package: package.resolvingSymlinksInPath()).value === controller else {
+        throw MCPTestFailure(description: "Package aliases opened different editors")
+    }
+    for directory in [false, true] {
+        guard await EditorWindowController.open(package: URL(fileURLWithPath: package.path, isDirectory: directory)).value === controller else {
+            throw MCPTestFailure(description: "File/directory URL forms opened different editors")
+        }
+    }
+    let model = controller.model, owner = MCPSession(), other = MCPSession()
+    for session in [owner, other] { session.projectURL = model.packageURL.standardizedFileURL; server.register(session) }
+    owner.agentName = "watching-client"; other.agentName = "hidden-client"
+    model.reviewReduceMotionPreview = args.contains("--reduce-motion")
+    let suffix = model.reviewReduceMotionPreview ? "reduced" : "normal"
+    let output = URL(fileURLWithPath: "/tmp/recorder-t815-\(suffix)")
+    try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+    if model.reviewReduceMotionPreview {
+        controller.inspectorView = NSHostingView(rootView: InspectorView(model: model).environment(\.agentReduceMotionPreview, true))
+    }
+    defer {
+        controller.close()
+        for session in [owner, other] { session.draft = nil; session.connected = false }
+        server.removeFinishedSessions()
+        UserDefaults.standard.removeObject(forKey: "agentAccess.\(fixture.id)")
+        try? FileManager.default.removeItem(at: root)
+    }
+    func tool(_ name: String, _ arguments: [String: Any], session: MCPSession? = nil, error expected: String? = nil) async throws -> [String: Any] {
+        let response = await MCPTools.call(name, arguments, session: session ?? owner)
+        let payload = response["structuredContent"] as? [String: Any] ?? [:]
+        if let expected {
+            guard response["isError"] as? Bool == true, payload["error"] as? String == expected else { throw MCPTestFailure(description: "Expected \(expected), received \(payload)") }
+        } else if response["isError"] as? Bool != false { throw MCPTestFailure(description: "Live \(name): \(payload)") }
+        return payload
+    }
+    func apply(_ ops: [[String: Any]], session: MCPSession? = nil) async throws {
+        let session = session ?? owner
+        let revision = try session.draft?.revision ?? MCPTools.revision(model.liveProject)
+        _ = try await tool("edit", ["action": "apply", "ifRevision": revision, "ops": ops], session: session)
+    }
+    func blocked(_ action: () throws -> Void) throws {
+        do { try action(); throw MCPTestFailure(description: "Watching operation was allowed before submit") }
+        catch let error as MCPFailure { guard error.code == "REVIEW_IN_PROGRESS" else { throw error } }
+    }
+    func capture(_ view: NSView, _ name: String) throws {
+        view.layoutSubtreeIfNeeded()
+        guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw MCPTestFailure(description: "Live bitmap unavailable") }
+        view.cacheDisplay(in: view.bounds, to: rep)
+        guard let png = rep.representation(using: .png, properties: [:]) else { throw MCPTestFailure(description: "Live PNG unavailable") }
+        try png.write(to: output.appendingPathComponent(name + ".png"))
+    }
+    func frame() async throws -> Data {
+        let image = try await controller.previewView.captureRenderedFrame(atOutput: 0.7)
+        guard let pixels = image.dataProvider?.data else { throw MCPTestFailure(description: "Live preview pixels unavailable") }
+        return Data(referencing: pixels as NSData)
+    }
+    func escape() -> NSEvent {
+        NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: controller.window!.windowNumber,
+            context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53)!
+    }
+    let base = model.project, saved = try Data(contentsOf: file), originalFrame = try await frame()
+    model.inspectorShowsAgent = false
+    controller.window?.makeKeyAndOrderFront(nil)
+    let keyed = controller.window?.isKeyWindow == true
+    let text: [[String: Any]] = [["op": "cut", "from": 0.5, "to": 1.0],
+        ["op": "text", "from": 0.2, "to": 2.4, "style": "title", "text": "Watching"]]
+    let zoom: [[String: Any]] = [["op": "zoom", "from": 0.1, "to": 1.5, "scale": 1.8, "center": ["x": 0.6, "y": 0.4]]]
+    var previousCutID: String?
+    for call in 1...3 {
+        if call == 1 { try await apply(text) }
+        else if call == 2 { try await apply(zoom) }
+        else {
+            guard let textID = model.project.texts.first?.id else { throw MCPTestFailure(description: "Watching text missing") }
+            try await apply([["op": "set", "id": textID, "text": "Three live calls"],
+                ["op": "highlight", "from": 0.1, "to": 1.2, "rect": ["x": 0.05, "y": 0.05, "w": 0.4, "h": 0.4], "opacity": 0.65]])
+        }
+        guard let draft = owner.draft, draft.calls.count == call, !draft.submitted,
+              model.isReviewingDraft, model.isWatchingDraft, model.reviewSessionID == owner.id,
+              model.project == (try draft.project(context: EditContext())), model.liveProject == base,
+              model.reviewNotice == "Claude is editing, Esc to take over", model.undoStepNames.isEmpty,
+              !model.reviewAddedIDs.isEmpty, model.reviewCuts.count == 1,
+              try Data(contentsOf: file) == saved else { throw MCPTestFailure(description: "Unsubmitted call \(call) failed preview/base/marks/disk/undo isolation") }
+        if call == 1 { guard model.inspectorShowsAgent == keyed else { throw MCPTestFailure(description: "First apply ignored key-window auto-selection") } }
+        if let previousCutID { guard model.reviewCuts[0].id == previousCutID else { throw MCPTestFailure(description: "A retained cut lost its motion identity") } }
+        previousCutID = model.reviewCuts[0].id
+        try await Task.sleep(for: .milliseconds(35))
+        let newID = call == 1 ? model.project.texts.first!.id : call == 2 ? model.project.zooms.first!.id : model.project.masks.first!.id
+        let progress = controller.coreTimelineView.debugReviewProgress(newID)
+        guard progress >= 0, progress < 1 else { throw MCPTestFailure(description: "Call \(call) did not expose an intermediate timeline reveal") }
+        try capture(controller.coreTimelineView, "call-\(call)-mid")
+        try await Task.sleep(for: .milliseconds(550))
+        guard controller.coreTimelineView.debugReviewProgress(newID) == 1, try await frame() != originalFrame else {
+            throw MCPTestFailure(description: "Call \(call) did not settle or change the real preview frame")
+        }
+        try capture(controller.coreTimelineView, "call-\(call)")
+        try capture(controller.inspectorView, "panel-\(call)")
+        let frozen = model.project
+        model.edit("Blocked") { $0.title = "Blocked" }; model.beginGesture(); model.update { $0.title = "Blocked" }
+        model.undo(); model.redo(); model.saveNow()
+        guard model.project == frozen, !model.isEditingGesture, model.liveProject == base, try Data(contentsOf: file) == saved else {
+            throw MCPTestFailure(description: "Human gesture or save leaked an unsubmitted preview")
+        }
+        try blocked { try server.include([0, 0], in: owner, included: false) }
+        try blocked { try server.finishReview(owner, commit: true) }
+    }
+    let visible = model.project
+    try await apply([["op": "style", "patch": ["frame": ["shadow": 0.9]]]], session: other)
+    guard other.draft != nil, model.project == visible, model.reviewSessionID == owner.id,
+          try MCPTools.viewedProject(model, session: other) != visible else { throw MCPTestFailure(description: "Another client replaced or read the visible draft") }
+    _ = try await tool("draft", ["action": "submit"], session: other, error: "REVIEW_IN_PROGRESS")
+    guard other.draft?.submitted == false else { throw MCPTestFailure(description: "Failed competing submit mutated its draft") }
+    _ = try await tool("draft", ["action": "discard"], session: other)
+    guard model.project == visible, model.isWatchingDraft else { throw MCPTestFailure(description: "Discarding an invisible draft ended another client's watch") }
+    _ = try await tool("draft", ["action": "submit", "note": "Three watched calls"])
+    guard !model.isWatchingDraft, model.isReviewingDraft, model.project == visible, owner.draft?.submitted == true else {
+        throw MCPTestFailure(description: "Submit did not switch watching to review in place")
+    }
+    try server.finishReview(owner, commit: true)
+    try await Task.sleep(for: .milliseconds(20))
+    guard model.project == visible, model.liveProject == visible, model.undoStepNames.count == 1,
+          controller.coreTimelineView.debugReviewSettling else { throw MCPTestFailure(description: "Accept did not make one undo step and start the settlement") }
+    try capture(controller.coreTimelineView, "accepted-mid")
+    try await Task.sleep(for: .milliseconds(400))
+    guard !controller.coreTimelineView.debugReviewSettling else { throw MCPTestFailure(description: "Accepted outline settlement did not terminate") }
+    model.undo()
+    guard model.project == base else { throw MCPTestFailure(description: "Watching acceptance undo did not restore the human base") }
+    owner.draft = nil
+    let style: [[String: Any]] = [["op": "style", "patch": ["frame": ["padding": 0.04]]]]
+    for route in 0..<3 {
+        try await apply(style)
+        if route == 0 { controller.previewView.keyDown(with: escape()) }
+        else if route == 1 { controller.coreTimelineView.keyDown(with: escape()) }
+        else { controller.cancelOperation(nil) }
+        guard !model.isReviewingDraft, !model.isWatchingDraft, model.project == base, owner.previewSuppressed,
+              owner.draft?.verdict == nil else { throw MCPTestFailure(description: "Escape route \(route) did not release the watch safely") }
+        try await apply([["op": "marker", "at": 1.5, "label": "Still hidden"]])
+        guard model.project == base, !model.isReviewingDraft else { throw MCPTestFailure(description: "Agent stole the preview back after Escape") }
+        model.edit("Human takeover") { $0.frame.shadow = 0.8 }
+        _ = try await tool("edit", ["action": "apply", "ifRevision": owner.draft!.revision, "ops": style], error: "STALE_REVISION")
+        _ = try await tool("draft", ["action": "discard"])
+        model.undo()
+    }
+    controller.window?.orderOut(nil); model.inspectorShowsAgent = false
+    try await apply(style)
+    guard model.isWatchingDraft, !model.inspectorShowsAgent else { throw MCPTestFailure(description: "Background apply stole inspector focus") }
+    _ = try await tool("draft", ["action": "discard"])
+    controller.window?.makeKeyAndOrderFront(nil)
+    AgentAccess.set(.live, for: base.id); model.inspectorShowsAgent = false
+    _ = try await tool("edit", ["action": "apply", "ifRevision": try MCPTools.revision(model.liveProject), "ops": style])
+    guard !model.isReviewingDraft, model.undoStepNames.count >= 1,
+          controller.window?.isKeyWindow != true || model.inspectorShowsAgent else { throw MCPTestFailure(description: "Live mode did not use normal edits/key-window feedback") }
+    model.undo(); AgentAccess.set(.draft, for: base.id)
+    try await apply(style)
+    controller.close()
+    guard !model.isReviewingDraft, model.project == base, owner.draft?.submitted == false, try Project.load(from: file) == base else {
+        throw MCPTestFailure(description: "Closing a watching editor saved its unaccepted preview")
+    }
+    print("MCP live: three real previews/marks before submit, normal/reduced reveals, frozen base/disk/undo, disabled pre-submit acceptance, hidden competing draft, in-place submit, one undo/settlement, three Escape routes, suppression/stale races, background/Live focus and safe close verified: \(output.path)")
+}
+
+@MainActor private func checkMCPLiveClient(_ args: [String]) async throws {
+    guard let path = args.first else { throw MCPTestFailure(description: "usage: mcp-live-client <generated-fixture.recorder> [output-directory]") }
+    let output = URL(fileURLWithPath: args[safe: 1] ?? "/tmp/recorder-t815-client-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+    let package = output.appendingPathComponent("Client.recorder").resolvingSymlinksInPath().standardizedFileURL
+    try FileManager.default.copyItem(at: URL(fileURLWithPath: path), to: package)
+    let file = package.appendingPathComponent("project.json")
+    var fixture = try Project.load(from: file)
+    fixture.id = UUID().uuidString; fixture.texts = []; fixture.zooms = []; fixture.masks = []; fixture.keys.show = false
+    try fixture.save(to: file)
+    try JSONEncoder().encode(EventLog()).write(to: package.appendingPathComponent("events.json"))
+    NSApplication.shared.setActivationPolicy(.accessory); NSApplication.shared.finishLaunching()
+    guard let controller = await EditorWindowController.open(package: package).value, let window = controller.window else {
+        throw MCPTestFailure(description: "Client fixture failed to open")
+    }
+    window.makeKeyAndOrderFront(nil); NSApp.activate()
+    try await Task.sleep(for: .milliseconds(300))
+    let model = controller.model, server = MCPServer.shared, saved = try Data(contentsOf: file), base = model.project
+    model.inspectorShowsAgent = true
+    let socket = "/tmp/recorder-t815-\(UUID().uuidString).sock"
+    try server.start(socketPath: socket)
+    let relay = output.appendingPathComponent("stdio-relay.py")
+    try """
+    import socket, sys, threading
+    peer = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    peer.connect(sys.argv[1])
+    def send():
+        for line in sys.stdin.buffer:
+            peer.sendall(line)
+        peer.shutdown(socket.SHUT_WR)
+    threading.Thread(target=send, daemon=True).start()
+    while True:
+        data = peer.recv(65536)
+        if not data: break
+        sys.stdout.buffer.write(data)
+        sys.stdout.buffer.flush()
+    """.write(to: relay, atomically: true, encoding: .utf8)
+    let config = output.appendingPathComponent("mcp.json")
+    try JSONSerialization.data(withJSONObject: ["mcpServers": ["recorder": ["command": "/usr/bin/python3",
+        "args": ["-u", relay.path, socket]]]], options: [.prettyPrinted, .sortedKeys]).write(to: config)
+    let prompt = """
+    Validate Recorder's MCP on this GENERATED disposable recording only: \(package.path)
+    Use only the recorder MCP tools. Do exactly these calls sequentially:
+    1. project.open by that path; timeline.get.
+    2. edit.apply with the current ifRevision: cut from0.5 to1.0; text from0.2 to2.4, style title, text 'Watching the client'.
+    3. edit.apply with the latest returned ifRevision: zoom from0.1 to1.5 scale1.8 center x0.6 y0.4.
+    4. edit.apply with the latest returned ifRevision: highlight from0.1 to1.2 rect x0.05 y0.05 w0.4 h0.4 opacity0.65; marker at1.5 label 'Third call'.
+    Do not submit until all THREE edit.apply calls have succeeded. Then draft.submit note 'Three live client calls'.
+    Do not accept, discard, export, change access, or operate on any other recording. Finish by saying DONE.
+    """
+    try prompt.write(to: output.appendingPathComponent("prompt.txt"), atomically: true, encoding: .utf8)
+    func log(_ name: String) throws -> FileHandle {
+        let url = output.appendingPathComponent(name)
+        FileManager.default.createFile(atPath: url.path, contents: nil)
+        return try FileHandle(forWritingTo: url)
+    }
+    let record = Process(), client = Process()
+    let recordLog = try log("capture.log"), clientLog = try log("client.jsonl"), clientError = try log("client.stderr")
+    defer {
+        if client.isRunning { client.terminate() }
+        if record.isRunning { record.interrupt() }
+        server.stop(); controller.close()
+        UserDefaults.standard.removeObject(forKey: "agentAccess.\(fixture.id)")
+        try? recordLog.close(); try? clientLog.close(); try? clientError.close()
+    }
+    record.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+    record.arguments = ["-x", "-v", "-V", "180", "-l", String(window.windowNumber), output.appendingPathComponent("live-client.mov").path]
+    record.standardOutput = recordLog; record.standardError = recordLog
+    try record.run()
+    try await Task.sleep(for: .milliseconds(700))
+    guard record.isRunning else { throw MCPTestFailure(description: "Window recording did not start; see \(output.path)/capture.log") }
+    client.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+    client.arguments = ["claude", "-p", "--strict-mcp-config", "--mcp-config", config.path, "--setting-sources", "",
+        "--tools", "", "--allowedTools", "mcp__recorder__project,mcp__recorder__timeline,mcp__recorder__edit,mcp__recorder__draft",
+        "--max-turns", "12", "--output-format", "stream-json", "--verbose", prompt]
+    client.standardOutput = clientLog; client.standardError = clientError
+    try client.run()
+    print("Live client process \(client.processIdentifier), recording process \(record.processIdentifier), evidence \(output.path)")
+    let deadline = Date().addingTimeInterval(160)
+    var seen = 0, snapshots: [[String: Any]] = []
+    while (client.isRunning || seen < 3), Date() < deadline {
+        if let session = server.projectSessions(model).first(where: { $0.draft != nil }), let draft = session.draft, draft.calls.count > seen {
+            let replayed = try draft.project(context: EditContext())
+            let checks: [String: Bool] = ["nextCall": draft.calls.count == seen + 1, "unsubmitted": !draft.submitted,
+                "watching": model.isWatchingDraft, "owner": model.reviewSessionID == session.id,
+                "matchesDraft": model.project == replayed, "humanBase": model.liveProject == base, "agentPanel": model.inspectorShowsAgent,
+                "undoEmpty": model.undoStepNames.isEmpty, "disk": try Data(contentsOf: file) == saved]
+            guard checks.values.allSatisfy({ $0 }) else {
+                for (name, project) in [("before", base), ("live", model.liveProject), ("shown", model.project), ("replayed", replayed)] {
+                    try JSONEncoder().encode(project).write(to: output.appendingPathComponent("failed-\(name).json"))
+                }
+                throw MCPTestFailure(description: "Real client call \(seen + 1) invariant failure: \(checks)")
+            }
+            seen += 1
+            snapshots.append(["call": seen, "revision": draft.revision, "ops": draft.calls.flatMap { $0 }.count,
+                "duration": model.project.exportDuration, "added": model.reviewAddedIDs.count, "cuts": model.reviewCuts.count,
+                "watching": model.isWatchingDraft, "humanBaseUnchanged": model.liveProject == base,
+                "observedAt": Date().timeIntervalSince1970])
+            try await Task.sleep(for: .milliseconds(200))
+            let image = Process(); image.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+            image.arguments = ["-x", "-o", "-l", String(window.windowNumber), output.appendingPathComponent("call-\(seen).png").path]
+            image.standardError = recordLog
+            try image.run()
+            while image.isRunning { try await Task.sleep(for: .milliseconds(10)) }
+            guard image.terminationStatus == 0 else { throw MCPTestFailure(description: "Real client window snapshot failed") }
+        }
+        if !client.isRunning, seen < 3 { throw MCPTestFailure(description: "Claude Code stopped before three applies; see \(output.path)/client.jsonl") }
+        try await Task.sleep(for: .milliseconds(40))
+    }
+    guard !client.isRunning, client.terminationStatus == 0, seen == 3,
+          let session = server.projectSessions(model).first(where: { $0.draft?.submitted == true }),
+          !model.isWatchingDraft, model.isReviewingDraft, model.liveProject == base else {
+        throw MCPTestFailure(description: "Real client did not finish three watched calls and submit; see \(output.path)")
+    }
+    try JSONSerialization.data(withJSONObject: snapshots, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("observations.json"))
+    let recordDeadline = Date().addingTimeInterval(185)
+    while record.isRunning, Date() < recordDeadline { try await Task.sleep(for: .milliseconds(50)) }
+    guard !record.isRunning else { throw MCPTestFailure(description: "Window recording did not finish") }
+    let recordedEnd = Date().timeIntervalSince1970
+    let movie = AVURLAsset(url: output.appendingPathComponent("live-client.mov"))
+    let seconds = try await movie.load(.duration).seconds
+    guard seconds > 1, try await movie.loadTracks(withMediaType: .video).count == 1 else {
+        throw MCPTestFailure(description: "Real client recording is not a decodable video")
+    }
+    let generator = AVAssetImageGenerator(asset: movie)
+    generator.requestedTimeToleranceBefore = .zero; generator.requestedTimeToleranceAfter = .zero
+    var recordedFrames: Set<Data> = []
+    for observation in snapshots {
+        let time = min(seconds - 0.1, max(0, seconds - (recordedEnd - (observation["observedAt"] as! Double)) + 0.2))
+        let image = try await generator.image(at: CMTime(seconds: time, preferredTimescale: 600)).image
+        guard let pixels = image.dataProvider?.data else { throw MCPTestFailure(description: "Recorded window has no pixels") }
+        let data = Data(referencing: pixels as NSData)
+        guard Set(data).count > 8 else { throw MCPTestFailure(description: "Recorded window is blank") }
+        recordedFrames.insert(data)
+        let png = output.appendingPathComponent("recorded-\(observation["call"] as! Int).png")
+        guard let destination = CGImageDestinationCreateWithURL(png as CFURL, UTType.png.identifier as CFString, 1, nil) else { throw MCPTestFailure(description: "Recorded PNG destination") }
+        CGImageDestinationAddImage(destination, image, nil)
+        guard CGImageDestinationFinalize(destination) else { throw MCPTestFailure(description: "Recorded PNG encoding") }
+    }
+    guard recordedFrames.count == 3 else { throw MCPTestFailure(description: "Recording did not show three changing client states") }
+    try server.finishReview(session, commit: false)
+    guard model.project == base, try Data(contentsOf: file) == saved else { throw MCPTestFailure(description: "Real client discard did not preserve the original package") }
+    print("Actual Claude Code: three unsubmitted calls observed in the real window, cumulative panel/marks and frozen base verified, submitted for review, recording decoded, then safely discarded: \(output.path)")
+}
+
+/// `--selftest mcp-shots <package>` (T-825…T-832 end to end, opens an editor window on a temp copy): analyze.shots →
+/// render.storyboard/strip/compare → fitDuration dry run report → shot-anchor cut → reframe → render.lint → discard.
+@MainActor private func checkMCPShots(_ args: [String]) async throws {
+    guard let path = args.first else { throw MCPTestFailure(description: "usage: mcp-shots <recording.recorder>") }
+    let fm = FileManager.default
+    let root = fm.temporaryDirectory.appendingPathComponent("recorder-mcp-shots-\(UUID().uuidString)")
+    let package = root.appendingPathComponent("Shots.recorder"), file = package.appendingPathComponent("project.json")
+    try fm.createDirectory(at: root, withIntermediateDirectories: true)
+    try fm.copyItem(at: URL(fileURLWithPath: path), to: package)
+    for name in ["shots-cache.json", "agent-draft.json"] { try? fm.removeItem(at: package.appendingPathComponent(name)) }
+    var fixture = try Project.load(from: file)
+    fixture.id = UUID().uuidString
+    try fixture.save(to: file)
+    NSApplication.shared.setActivationPolicy(.accessory); NSApplication.shared.finishLaunching()
+    guard let controller = await EditorWindowController.open(package: package).value else { throw MCPTestFailure(description: "fixture failed to open") }
+    let model = controller.model, session = MCPSession()
+    session.agentName = "claude-code"; session.projectURL = model.packageURL.standardizedFileURL
+    MCPServer.shared.register(session)
+    defer {
+        controller.close(); session.connected = false; session.draft = nil; MCPServer.shared.removeFinishedSessions()
+        UserDefaults.standard.removeObject(forKey: "agentAccess.\(fixture.id)")
+        try? fm.removeItem(at: root)
+    }
+    AgentAccess.set(.draft, for: fixture.id)
+    let base = model.project
+    // UI responsiveness: the worst main-thread stall during each tool call (a watchdog pings the main queue every 10 ms).
+    let stalls = MainStallMonitor()
+    defer { stalls.stop(); print("mcp-shots main-thread stalls (ms): " + stalls.report()) }
+    func tool(_ name: String, _ args: [String: Any], error: String? = nil) async throws -> ([String: Any], Int) {
+        _ = stalls.take()
+        let result = await MCPTools.call(name, args, session: session)
+        stalls.record("\(name).\(args["action"] as? String ?? "")", stalls.take())
+        let payload = result["structuredContent"] as? [String: Any] ?? [:]
+        let images = (result["content"] as? [[String: Any]] ?? []).filter { $0["type"] as? String == "image" }.count
+        if let error {
+            guard result["isError"] as? Bool == true, payload["error"] as? String == error else { throw MCPTestFailure(description: "\(name) \(args["action"] ?? ""): expected \(error), got \(payload)") }
+        } else if result["isError"] as? Bool != false { throw MCPTestFailure(description: "\(name) \(args["action"] ?? "") failed: \(payload)") }
+        return (payload, images)
+    }
+    _ = try await tool("render", ["action": "storyboard"], error: "NO_STORYBOARD")
+    let started = Date()
+    let (board, _) = try await tool("analyze", ["action": "shots"])
+    let shots = board["shots"] as? [[String: Any]] ?? []
+    guard let first = shots.first, first["focus"] != nil, first["reasons"] == nil, let firstID = first["id"] as? String else { throw MCPTestFailure(description: "analyze.shots concise storyboard: \(board.keys)") }
+    print("mcp-shots analyze \(shots.count) shots in \(String(format: "%.1f", Date().timeIntervalSince(started)))s")
+    // Sections are named without captions:true: each section's representative was read once and cached ("" = no text).
+    let sections = Set(shots.compactMap { $0["section"] as? Int })
+    let cachedCaptions = (try? JSONDecoder().decode([String: String].self, from: Data(contentsOf: package.appendingPathComponent(ShotAnalysis.captionsName)))) ?? [:]
+    if sections.count > 1, !sections.allSatisfy({ k in shots.contains { $0["section"] as? Int == k && cachedCaptions[$0["id"] as? String ?? ""] != nil } }) {
+        throw MCPTestFailure(description: "analyze.shots did not read a representative per section: \(sections.sorted()) vs \(cachedCaptions.keys.sorted())")
+    }
+    print("mcp-shots \(sections.count) section(s), \(cachedCaptions.count) representative caption(s) cached")
+    _ = try await tool("analyze", ["action": "shots", "thresholds": ["energyScale": 0]], error: "INVALID_OP")
+    let (sb, sbImages) = try await tool("render", ["action": "storyboard", "draft": false])
+    guard sbImages == 1, (sb["shots"] as? [String])?.isEmpty == false else { throw MCPTestFailure(description: "render.storyboard: \(sb)") }
+    _ = try await tool("render", ["action": "storyboard", "page": 1e30], error: "OUT_OF_RANGE")
+    let (_, stripImages) = try await tool("render", ["action": "strip", "from": 0, "to": 2, "fps": 4])
+    guard stripImages == 1 else { throw MCPTestFailure(description: "render.strip image") }
+    var revision = try MCPTools.revision(base)
+    let (dry, _) = try await tool("edit", ["action": "apply", "ifRevision": revision, "dryRun": true, "ops": [["op": "fitDuration", "target": 30, "tolerance": 2]]])
+    guard let report = dry["report"] as? [String: Any], let dur = report["duration"] as? [String: Any], let after = dur["after"] as? Double,
+          let beforeLen = dur["before"] as? Double, abs(after - min(30, beforeLen)) <= 2,
+          (dry["lowered"] as? [Any])?.isEmpty == false, model.project == base else { throw MCPTestFailure(description: "fitDuration dry run report: \(dry["report"] ?? dry["reportNote"] ?? "none")") }
+    let (cut, _) = try await tool("edit", ["action": "apply", "ifRevision": revision, "ops": [["op": "cut", "from": ["shot": firstID, "edge": "start"], "to": ["shot": firstID, "edge": "end"]]]])
+    revision = cut["revision"] as? String ?? revision
+    let cutRevision = revision
+    let (framed, _) = try await tool("edit", ["action": "apply", "ifRevision": revision, "ops": [["op": "reframe", "aspect": "4:5"]]])
+    revision = framed["revision"] as? String ?? revision
+    // P1-2: undo inside a draft drops the last call; reapplying gives the same revision.
+    let (undone, _) = try await tool("edit", ["action": "undo"])
+    guard undone["revision"] as? String == cutRevision, undone["calls"] as? Int == 1 else { throw MCPTestFailure(description: "draft undo: \(undone)") }
+    let (again, _) = try await tool("edit", ["action": "apply", "ifRevision": cutRevision, "ops": [["op": "reframe", "aspect": "4:5"]]])
+    guard again["revision"] as? String == revision else { throw MCPTestFailure(description: "reapply after undo changed the revision") }
+    // P0-2: storyboard tiles carry analyze.shots ids.
+    let (sb2, _) = try await tool("render", ["action": "storyboard", "draft": false])
+    let analyzedIDs = Set(shots.compactMap { $0["id"] as? String })
+    guard let tileIDs = sb2["shots"] as? [String], Set(tileIDs).isSubset(of: analyzedIDs) else { throw MCPTestFailure(description: "storyboard ids \(sb2["shots"] ?? "") not from analyze.shots") }
+    _ = try await tool("edit", ["action": "apply", "ifRevision": revision, "ops": [["op": "reframe", "aspect": "4:5", "keys": []]]], error: "INVALID_OP")
+    let (lint, _) = try await tool("render", ["action": "lint", "profile": "reel"])
+    guard lint["report"] is [String: Any] else { throw MCPTestFailure(description: "render.lint: \(lint)") }
+    let (_, compareImages) = try await tool("render", ["action": "compare", "at": [1.0]])
+    guard compareImages == 1 else { throw MCPTestFailure(description: "render.compare image") }
+    _ = try await tool("edit", ["action": "apply", "ifRevision": revision, "ops": [["op": "cut", "from": 1e9, "to": 2e9]]], error: "OUT_OF_RANGE")
+    guard fm.fileExists(atPath: package.appendingPathComponent("agent-draft.json").path) else { throw MCPTestFailure(description: "draft not persisted") }
+    let (status, _) = try await tool("draft", ["action": "status"])
+    _ = try await tool("draft", ["action": "discard"])
+    guard model.project == base, model.undoStepNames.isEmpty, !fm.fileExists(atPath: package.appendingPathComponent("agent-draft.json").path) else {
+        throw MCPTestFailure(description: "discard left the project changed or the draft file behind")
+    }
+    // UI regression guard: no tool may freeze the editor (analyze.shots used to block it 1.3 s rendering frames on main).
+    if let (worst, stall) = stalls.worstTool(), stall > 0.25 { throw MCPTestFailure(description: "\(worst) blocked the main thread \(Int(stall * 1000)) ms") }
+    print("mcp-shots draft ops \((status["ops"] as? [Any])?.count ?? -1), lint items \(((lint["report"] as? [String: Any])?["lint"] as? [Any])?.count ?? -1)")
+}
+
+/// Temp package with copies of a recording's screen.mov/project.json/events.json; analysis caches land there, never in the original.
+private func shotsFixture(_ path: String) throws -> (package: URL, project: Project, events: EventLog) {
+    let fm = FileManager.default, src = URL(fileURLWithPath: path)
+    let package = fm.temporaryDirectory.appendingPathComponent("recorder-shots-\(UUID().uuidString)/Fixture.recorder")
+    try fm.createDirectory(at: package, withIntermediateDirectories: true)
+    for name in ["screen.mov", "project.json", "events.json"] where fm.fileExists(atPath: src.appendingPathComponent(name).path) {
+        try fm.copyItem(at: src.appendingPathComponent(name), to: package.appendingPathComponent(name))
+    }
+    let events = (try? JSONDecoder().decode(EventLog.self, from: Data(contentsOf: package.appendingPathComponent("events.json")))) ?? EventLog(events: [])
+    return (package, try Project.load(from: package.appendingPathComponent("project.json")), events)
+}
+
+/// `--selftest shots-f1 <package> <labels.json> [tolerance]`: T-827 boundary F1 against reference labels (source seconds).
+@MainActor private func checkShotsF1(_ args: [String]) async throws {
+    guard args.count >= 2 else { throw MCPTestFailure(description: "usage: shots-f1 <package> <labels.json> [tolerance]") }
+    let f = try shotsFixture(args[0]); defer { try? FileManager.default.removeItem(at: f.package.deletingLastPathComponent()) }
+    struct Labels: Decodable { var boundaries: [Double] }
+    let truth = try JSONDecoder().decode(Labels.self, from: Data(contentsOf: URL(fileURLWithPath: args[1]))).boundaries
+    let signals = try await ShotAnalysis.signals(package: f.package, progress: { _ in })
+    let board = storyboard(signals: signals, fps: ShotAnalysis.fps, events: f.events.events)
+    let detected = board.shots.dropFirst().map(\.from)
+    let tol = args.count > 2 ? Double(args[2]) ?? 0.3 : 0.3
+    let s = boundaryScore(detected: detected, truth: truth, tolerance: tol)
+    print(String(format: "shots-f1 detected=%d truth=%d tol=%.2f precision=%.2f recall=%.2f f1=%.2f", detected.count, truth.count, tol, s.precision, s.recall, s.f1))
+    print("shots-f1 detected-times " + detected.map { String(format: "%.1f", $0) }.joined(separator: " "))
+}
+
+/// `--selftest report-ref <package> <out-dir>`: T-829 acceptance. Applies fitDuration 30 s, renders the result to MP4 and writes
+/// report.json; scripts compare it with ffmpeg freezedetect/scdet on that MP4.
+@MainActor private func checkReportReference(_ args: [String]) async throws {
+    guard args.count >= 2 else { throw MCPTestFailure(description: "usage: report-ref <package> <out-dir>") }
+    let f = try shotsFixture(args[0]); defer { try? FileManager.default.removeItem(at: f.package.deletingLastPathComponent()) }
+    let out = URL(fileURLWithPath: args[1]); try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+    let signals = try await ShotAnalysis.signals(package: f.package, progress: { _ in })
+    let board = storyboard(signals: signals, fps: ShotAnalysis.fps, events: f.events.events).inSource(clips: f.project.clips)
+    let lowered = try lowerIntents([.object(["op": .string("fitDuration"), "target": .number(30), "tolerance": .number(2)])], project: f.project, clicks: f.events.clicks(), storyboard: { board }).ops
+    let edited = try f.project.applying(MCPTools.decodeOps(JSONSerialization.jsonObject(with: JSONEncoder().encode(lowered))), context: EditContext()).project
+    let report = editReport(before: f.project, after: edited, storyboard: board)
+    let model = EditorModel(packageURL: f.package, project: edited, events: f.events)
+    let clip = try await AgentRender.clip(model: AgentRender.renderModel(for: model, project: edited), from: 0, to: edited.exportDuration, folder: out, progress: { _ in })
+    let movie = out.appendingPathComponent("edited.mp4")
+    try? FileManager.default.removeItem(at: movie); try FileManager.default.moveItem(at: clip, to: movie)
+    let enc = JSONEncoder(); enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+    try enc.encode(report).write(to: out.appendingPathComponent("report.json"))
+    print(String(format: "report-ref duration=%.2f asl=%.2f static=%.2f shots-kept=%d movie=%@", report.duration.after, report.aslSec.after, report.staticSec.after,
+                 board.mapped(through: TimeMap(edited.clips)).summary.shots, movie.path))
+}
+
+/// `--selftest agent-visuals <package> <out-dir>`: writes storyboard/strip/compare/reframe images and captions for visual review.
+@MainActor private func dumpAgentVisuals(_ args: [String]) async throws {
+    guard args.count >= 2 else { throw MCPTestFailure(description: "usage: agent-visuals <package> <out-dir>") }
+    let f = try shotsFixture(args[0]); defer { try? FileManager.default.removeItem(at: f.package.deletingLastPathComponent()) }
+    let out = URL(fileURLWithPath: args[1]), fm = FileManager.default
+    try fm.createDirectory(at: out, withIntermediateDirectories: true)
+    let signals = try await ShotAnalysis.signals(package: f.package, progress: { _ in })
+    let board = storyboard(signals: signals, fps: ShotAnalysis.fps, events: f.events.events).inSource(clips: f.project.clips)
+    let model = EditorModel(packageURL: f.package, project: f.project, events: f.events)
+    let map = TimeMap(f.project.clips)
+    let kept = board.shots.compactMap { s in AgentRender.keyframe(s, fps: board.fps, map: map).map { (s, $0.output, $0.kept) } }.prefix(48)
+    func save(_ url: URL, _ name: String) throws { try? fm.removeItem(at: out.appendingPathComponent(name)); try fm.copyItem(at: url, to: out.appendingPathComponent(name)) }
+    let folder = AgentRender.cacheFolder(session: UUID().uuidString); defer { try? fm.removeItem(at: folder) }
+    let safe = AgentRender.renderModel(for: model, project: f.project)
+    try save(try await AgentRender.sheet(model: safe, at: kept.map(\.1), labels: kept.map { String(format: "%@ %.1fs", $0.0.id, $0.2) }, columns: 6, folder: folder), "storyboard.jpg")
+    let strip = stride(from: 2.0, to: 8.0, by: 0.25).map { $0 }
+    try save(try await AgentRender.sheet(model: safe, at: strip, labels: strip.map(AgentRender.timecode), columns: 8, folder: folder), "strip.jpg")
+    var framed = f.project
+    let keys = reframePlan(storyboard: board, aspect: .r4x5, mode: .perShot, sourceSize: CGSize(width: f.project.source.pixelWidth, height: f.project.source.pixelHeight))
+    framed = try framed.applying([.reframe(aspect: .r4x5, mode: .perShot, keys: keys)], context: EditContext()).project
+    let draft = AgentRender.renderModel(for: EditorModel(packageURL: f.package, project: framed, events: f.events), project: framed)
+    let times = kept.prefix(12).map(\.1)
+    try save(try await AgentRender.sheet(model: draft, at: Array(times), labels: kept.prefix(12).map(\.0.id), columns: 6, folder: folder), "reframe-4x5.jpg")
+    try save(try await AgentRender.compare(base: safe, draft: draft, at: Array(times.prefix(3)), folder: folder), "compare.jpg")
+    let captioned = try await AgentCaptions.captionShots(Storyboard(duration: board.duration, fps: board.fps, shots: Array(board.shots.prefix(24)), summary: board.summary), model: model)
+    let caps = captioned.shots.map { "\($0.id) \($0.kind.rawValue) \(String(format: "%.1f-%.1f", $0.from, $0.to)) focus=\(String(format: "%.2f,%.2f %.2fx%.2f", $0.focus.x, $0.focus.y, $0.focus.w, $0.focus.h)) caption=\($0.caption ?? "nil")" }
+    try caps.joined(separator: "\n").write(to: out.appendingPathComponent("captions.txt"), atomically: true, encoding: .utf8)
+    print("agent-visuals shots=\(board.shots.count) tiles=\(kept.count) captions=\(captioned.shots.filter { $0.caption != nil }.count)/\(captioned.shots.count) out=\(out.path)")
+}
+
+/// `--selftest shots-live <short package> [bgra]`: the recording-time cache (ShotAnalysis.Live, fed the file's frames as capture
+/// would) is used by analyze.shots and agrees with decoding the file.
+@MainActor private func checkShotsLive(_ args: [String]) async throws {
+    guard let path = args.first else { throw MCPTestFailure(description: "usage: shots-live <package>") }
+    let f = try shotsFixture(path); defer { try? FileManager.default.removeItem(at: f.package.deletingLastPathComponent()) }
+    let media = f.package.appendingPathComponent("screen.mov"), asset = AVURLAsset(url: media)
+    let reader = try AVAssetReader(asset: asset)
+    let output = AVAssetReaderTrackOutput(track: try await asset.loadTracks(withMediaType: .video)[0],
+        outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: args.contains("bgra") ? kCVPixelFormatType_32BGRA : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange])
+    reader.add(output); reader.startReading()
+    let live = ShotAnalysis.Live()
+    while let sample = output.copyNextSampleBuffer() {
+        if let buffer = sample.imageBuffer { live.add(buffer, at: sample.presentationTimeStamp.seconds) }
+    }
+    live.write(package: f.package, duration: try await asset.load(.duration).seconds)
+    guard let recorded = ShotAnalysis.cachedSignals(package: f.package) else { throw MCPTestFailure(description: "no recording-time cache written") }
+    try FileManager.default.removeItem(at: f.package.appendingPathComponent("shots-cache.json"))
+    let decoded = try await ShotAnalysis.signals(package: f.package, progress: { _ in })
+    let a = storyboard(signals: recorded, events: f.events.events), b = storyboard(signals: decoded, events: f.events.events)
+    print("shots-live ticks \(recorded.count)/\(decoded.count) shots \(a.shots.count)/\(b.shots.count) boundaryF1 \(String(format: "%.2f", boundaryScore(detected: a.shots.dropFirst().map(\.from), truth: b.shots.dropFirst().map(\.from)).f1))")
+    guard recorded.count == decoded.count, abs(a.shots.count - b.shots.count) <= max(1, b.shots.count / 10) else { throw MCPTestFailure(description: "recording-time signals disagree with decode") }
+}
+
+/// Measures how long the main thread fails to answer: a background thread posts to the main queue every 10 ms and
+/// records the delay. A tool that blocks the UI shows up as a large worst-case stall.
+final class MainStallMonitor: @unchecked Sendable {
+    private let lock = NSLock()
+    private var running = true, worst = 0.0, byTool: [String: Double] = [:], pendingSince: Date?
+    init() {
+        Thread.detachNewThread { [self] in
+            while lock.withLock({ running }) {
+                let sent = Date(), done = DispatchSemaphore(value: 0)
+                lock.withLock { pendingSince = sent }
+                DispatchQueue.main.async { done.signal() }
+                if done.wait(timeout: .now() + 10) == .timedOut { lock.withLock { worst = max(worst, 10); pendingSince = nil }; continue }
+                let lag = Date().timeIntervalSince(sent)
+                lock.withLock { worst = max(worst, lag); pendingSince = nil }
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+        }
+    }
+    /// Worst stall since the last call, then resets. Called on main, so the ping that is still waiting for main right now
+    /// measured exactly the work that just finished: count it too (otherwise a stall at the end of a call is missed).
+    func take() -> Double {
+        lock.withLock {
+            defer { worst = 0 }
+            return max(worst, pendingSince.map { Date().timeIntervalSince($0) } ?? 0)
+        }
+    }
+    func record(_ tool: String, _ stall: Double) { lock.withLock { byTool[tool] = max(byTool[tool] ?? 0, stall) } }
+    func worstTool() -> (String, Double)? { lock.withLock { byTool.max { $0.value < $1.value }.map { ($0.key, $0.value) } } }
+    func report() -> String { lock.withLock { byTool.sorted { $0.value > $1.value }.map { "\($0.key) \(Int($0.value * 1000))" }.joined(separator: ", ") } }
+    func stop() { lock.withLock { running = false } }
+}
+
+/// T-923 (headless, no windows): copies <package> to <out>/graphics.recorder, adds a title card, a screen-space callout under a
+/// manual zoom, a counter, a progress bar and a keyed text, renders PNGs through the shared Copy Frame path and checks that
+/// each graphic changes the pixels where it is drawn. `--selftest parity <out>/graphics.recorder` then checks preview == export.
+@MainActor private func checkGraphicsPNG(_ args: [String]) async throws {
+    guard args.count >= 2 else { throw MCPTestFailure(description: "usage: graphics-png <package> <out-dir>") }
+    let out = URL(fileURLWithPath: args[1]), fm = FileManager.default
+    try fm.createDirectory(at: out, withIntermediateDirectories: true)
+    let package = out.appendingPathComponent("graphics.recorder")
+    try? fm.removeItem(at: package)
+    try fm.copyItem(at: URL(fileURLWithPath: args[0]), to: package)
+    let url = package.appendingPathComponent("project.json")
+    var p = try Project.load(from: url)
+    let plain = p
+    let map = TimeMap(p.clips)
+    guard map.outputDuration >= 7 else { throw MCPTestFailure(description: "fixture needs ≥ 7 s") }
+    p.zooms = [Zoom(id: "gz", start: map.sourceTime(atOutput: 1.2), end: map.sourceTime(atOutput: 4), scale: 2, mode: .manual, center: NormPoint(x: 0.62, y: 0.38))]
+    func add(_ name: String, _ params: [String: JSONValue], at: Double, _ length: Double, keys: [Key]? = nil) throws {
+        let made = try GraphicTemplates.make(name, params: params, length: length)
+        guard let id = p.addGraphic(made.graphic, atOutput: at, duration: length, rect: made.rect, track: 0) ?? p.addGraphic(made.graphic, atOutput: at, duration: length, rect: made.rect, track: 1),
+              let i = p.layers.firstIndex(where: { $0.id == id.uuidString }) else { throw MCPTestFailure(description: "\(name) did not place") }
+        p.layers[i].keys = keys
+    }
+    try add("titleCard", ["text": .string("Golden Island"), "subtitle": .string("Building a map editor")], at: 0.1, 1.0)
+    try add("callout", ["text": .string("Add a node"), "x": .number(0.62), "y": .number(0.38)], at: 1.3, 2.6, keys: [Key(t: 0, scale: 0.6, opacity: 0, ease: .spring), Key(t: 0.4, scale: 1, opacity: 1)])
+    try add("counter", ["from": .number(0), "to": .number(1240), "text": .string("# tiles")], at: 4.2, 1.5)
+    try add("progressBar", [:], at: 0.1, map.outputDuration - 0.2)
+    p.texts = [TextBlock(id: "kt", start: map.sourceTime(atOutput: 5.8), end: map.sourceTime(atOutput: 6.8), text: "Keyed title", style: .title)]
+    p.texts[0].keys = [Key(t: 0, y: 0.1, opacity: 0), Key(t: 0.4, y: 0, opacity: 1)]
+    guard p.checkInvariants() == nil else { throw MCPTestFailure(description: "invariants: \(p.checkInvariants()!)") }
+    try p.save(to: url)
+    let times = [0.6, 1.5, 2.8, 5.0, 6.5]
+    let model = try loadEditorModel(package: package)
+    let frames = try await EditorWindowController.renderFramesPNG(model: model, at: times, longEdge: 960)
+    try plain.save(to: url)
+    let plainFrames = try await EditorWindowController.renderFramesPNG(model: try loadEditorModel(package: package), at: times, longEdge: 960)
+    try p.save(to: url)
+    for (i, t) in times.enumerated() {
+        try frames[i].write(to: out.appendingPathComponent(String(format: "graphics-%.1f.png", t)))
+        guard let a = NSBitmapImageRep(data: frames[i]), let b = NSBitmapImageRep(data: plainFrames[i]) else { throw MCPTestFailure(description: "PNG decode") }
+        var changed = 0
+        for y in stride(from: 0, to: a.pixelsHigh, by: 4) { for x in stride(from: 0, to: a.pixelsWide, by: 4) where a.colorAt(x: x, y: y) != b.colorAt(x: x, y: y) { changed += 1 } }
+        guard changed > 50 else { throw MCPTestFailure(description: "graphics at \(t) s changed only \(changed) sampled pixels") }
+        print(String(format: "graphics-png %.1f s: %d sampled pixels changed", t, changed))
+    }
+}
+
+/// T-924 (headless): the real EditorModel commands behind Edit ▸ Add Graphic / `G` and ⌥K, the menu wiring, and the
+/// GraphicPanel rendered offscreen with ImageRenderer (no window) to <out>/graphic-panel.png.
+@MainActor private func checkGraphicsUI(_ args: [String]) async throws {
+    guard args.count >= 2 else { throw MCPTestFailure(description: "usage: graphics-ui <package> <out-dir>") }
+    let out = URL(fileURLWithPath: args[1]), fm = FileManager.default
+    try fm.createDirectory(at: out, withIntermediateDirectories: true)
+    let package = out.appendingPathComponent("graphics-ui.recorder")
+    try? fm.removeItem(at: package); try fm.copyItem(at: URL(fileURLWithPath: args[0]), to: package)
+    let model = try loadEditorModel(package: package)
+    model.playhead = 1
+    guard let id = model.addGraphic(template: "callout"), model.selection == [id],
+          let layer = model.project.layers.first(where: { $0.id == id.uuidString }), layer.kind == .graphic,
+          model.undoStepNames.last == "Add Graphic" else { throw MCPTestFailure(description: "Add Graphic command") }
+    model.playhead = 1.2; model.addKeyAtPlayhead()
+    model.playhead = 2.5; model.addKeyAtPlayhead()
+    guard model.project.layers.first(where: { $0.id == id.uuidString })?.keys?.map(\.t).map({ ($0 * 100).rounded() / 100 }) == [0.2, 1.5],
+          model.project.checkInvariants() == nil else { throw MCPTestFailure(description: "⌥K keys: \(String(describing: model.project.layers.first?.keys))") }
+    model.undo()
+    guard model.project.layers.first(where: { $0.id == id.uuidString })?.keys?.count == 1 else { throw MCPTestFailure(description: "keyframe undo") }
+    let menu = AppDelegate.buildMainMenu()
+    let edit = menu.items.first { $0.title == "Edit" }?.submenu
+    guard let add = edit?.items.first(where: { $0.title == "Add Graphic" })?.submenu, add.items.count == GraphicTemplates.catalog.count,
+          add.items.allSatisfy({ $0.action == #selector(EditorWindowController.addGraphicAtPlayhead(_:)) && $0.representedObject is String }),
+          edit?.items.contains(where: { $0.title == "Add Keyframe" && $0.keyEquivalent == "k" && $0.keyEquivalentModifierMask == .option }) == true else {
+        throw MCPTestFailure(description: "Edit menu graphics items")
+    }
+    let renderer = ImageRenderer(content: GraphicPanel(model: model, layerID: id).frame(width: 320).padding(16).background(Theme.bgPanelColor).environment(model))
+    renderer.scale = 2
+    guard let image = renderer.cgImage, let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else {
+        throw MCPTestFailure(description: "GraphicPanel render")
+    }
+    try png.write(to: out.appendingPathComponent("graphic-panel.png"))
+    print("graphics-ui: add/select/undo name, ⌥K keys at 0.2 s and 1.5 s, undo, menu wiring; panel \(image.width)×\(image.height) px")
+}
+
+/// T-930 (headless): M toggles a marker at the playhead (one undo step each), ⌃←/⌃→ jump between markers, menu item wired.
+@MainActor private func checkMarkersUI(_ args: [String]) async throws {
+    guard let path = args.first else { throw MCPTestFailure(description: "usage: markers <package>") }
+    let copy = FileManager.default.temporaryDirectory.appendingPathComponent("markers-\(UUID().uuidString).recorder")
+    try FileManager.default.copyItem(at: URL(fileURLWithPath: path), to: copy)   // never edit a real project
+    defer { try? FileManager.default.removeItem(at: copy) }
+    let model = try loadEditorModel(package: copy)
+    model.playhead = 1; model.toggleMarkerAtPlayhead()
+    model.playhead = 3; model.toggleMarkerAtPlayhead()
+    guard model.project.markers.map(\.label) == ["Marker 1", "Marker 2"], model.undoStepNames.last == "Add Marker" else { throw MCPTestFailure(description: "add markers") }
+    model.playhead = 2; model.jumpToMarker(forward: true)
+    guard abs(model.playhead - 3) < 1e-6 else { throw MCPTestFailure(description: "next marker: \(model.playhead)") }
+    model.jumpToMarker(forward: false)
+    guard abs(model.playhead - 1) < 1e-6 else { throw MCPTestFailure(description: "previous marker: \(model.playhead)") }
+    model.toggleMarkerAtPlayhead()
+    guard model.project.markers.map(\.label) == ["Marker 2"], agentTimeline(model.project).markers.count == 1 else { throw MCPTestFailure(description: "remove marker") }
+    model.undo()
+    guard model.project.markers.count == 2 else { throw MCPTestFailure(description: "undo remove") }
+    guard AppDelegate.buildMainMenu().items.first(where: { $0.title == "Edit" })?.submenu?.items.contains(where: { $0.title == "Add / Remove Marker" && $0.keyEquivalent == "m" }) == true else {
+        throw MCPTestFailure(description: "menu item")
+    }
+    print("markers: add ×2, next/previous jump, remove at playhead, undo, menu")
+}
+
+/// T-931 (headless, temp copy): cutting words and removing fillers go through `EditorModel.apply([cutWords])` as one undo
+/// step each and shorten the edit; the TranscriptEditor renders offscreen to <out>/transcript.png.
+@MainActor private func checkTranscriptEdit(_ args: [String]) async throws {
+    guard args.count >= 2 else { throw MCPTestFailure(description: "usage: transcript-edit <package> <out-dir>") }
+    let fm = FileManager.default, out = URL(fileURLWithPath: args[1])
+    try fm.createDirectory(at: out, withIntermediateDirectories: true)
+    let copy = fm.temporaryDirectory.appendingPathComponent("transcript-\(UUID().uuidString).recorder")
+    try fm.copyItem(at: URL(fileURLWithPath: args[0]), to: copy)
+    defer { try? fm.removeItem(at: copy) }
+    var project = try Project.load(from: copy.appendingPathComponent("project.json"))
+    project.source.hasMic = true
+    try project.save(to: copy.appendingPathComponent("project.json"))
+    let text = "So um here is Golden Island we sketch the coast uh then the graph editor turns it into terrain".split(separator: " ")
+    let words = text.enumerated().map { Word(text: String($1), start: 1 + Double($0) * 0.5, end: 1.35 + Double($0) * 0.5) }
+    try JSONEncoder().encode(words).write(to: copy.appendingPathComponent("transcript.json"))
+    let model = try loadEditorModel(package: copy)
+    guard model.transcript?.count == words.count else { throw MCPTestFailure(description: "transcript not loaded") }
+    let before = model.project.exportDuration
+    let view = agentTranscript(model.project, words: words)
+    let error = model.apply([.cutWords(transcript: view.transcript, words: ["w3", "w4"], snap: true)], name: "Cut 2 Words")
+    guard error == nil, model.undoStepNames.last == "Cut 2 Words", model.project.exportDuration < before - 0.4 else {   // 1 s of media at the fixture's 2× = 0.5 s
+        throw MCPTestFailure(description: "cut words: \(error ?? "no error") \(before) → \(model.project.exportDuration) \(model.undoStepNames.suffix(2))")
+    }
+    let after = agentTranscript(model.project, words: words)
+    guard !after.words.contains(where: { $0.id == "w3" || $0.id == "w4" }), after.words.filter(\.filler).map(\.id) == ["w1", "w10"] else { throw MCPTestFailure(description: "transcript after cut: \(after.words.map(\.id))") }
+    guard model.apply([.cutWords(transcript: after.transcript, words: after.words.filter(\.filler).map(\.id), snap: true)], name: "Cut 2 Words") == nil,
+          agentTranscript(model.project, words: words).words.filter(\.filler).isEmpty else { throw MCPTestFailure(description: "remove fillers") }
+    model.undo(); model.undo()
+    guard abs(model.project.exportDuration - before) < 1e-6 else { throw MCPTestFailure(description: "undo") }
+    let renderer = ImageRenderer(content: TranscriptEditor(model: model).frame(width: 300).padding(16).background(Theme.bgPanelColor))
+    renderer.scale = 2
+    guard let image = renderer.cgImage, let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else { throw MCPTestFailure(description: "render") }
+    try png.write(to: out.appendingPathComponent("transcript.png"))
+    print(String(format: "transcript-edit: cut 2 words (%.2f → %.2f s), removed 2 fillers, undo ×2 restored", before, model.project.exportDuration))
+}
+
+/// T-933 (headless, temp copy): ⇧F's command renders the playhead frame into media/, inserts it as a still clip and
+/// pushes the rest back; a frame inside the hold matches the original frame; undo restores; the agent op schema exists.
+@MainActor private func checkFreeze(_ args: [String]) async throws {
+    guard let path = args.first else { throw MCPTestFailure(description: "usage: freeze <package>") }
+    let fm = FileManager.default, copy = fm.temporaryDirectory.appendingPathComponent("freeze-\(UUID().uuidString).recorder")
+    try fm.copyItem(at: URL(fileURLWithPath: path), to: copy)
+    defer { try? fm.removeItem(at: copy) }
+    let model = try loadEditorModel(package: copy)
+    let before = model.project.exportDuration
+    let original = try await EditorWindowController.renderFramesPNG(model: model, at: [3], longEdge: 480)[0]
+    model.playhead = 3
+    await model.freezeFrame(duration: 1.5)
+    guard let still = model.project.layers.first(where: { $0.file.hasPrefix("media/freeze-") }), case let file = still.file,
+          fm.fileExists(atPath: copy.appendingPathComponent(file).path), abs(model.project.exportDuration - before - 1.5) < 1e-6,
+          model.undoStepNames.last == "Freeze Frame" else { throw MCPTestFailure(description: "freeze insert: \(model.project.layers.map(\.file))") }
+    let held = try await EditorWindowController.renderFramesPNG(model: model, at: [3.75], longEdge: 480)[0]
+    if args.count > 1 { try? fm.copyItem(at: copy.appendingPathComponent(model.project.layers.first { $0.file.hasPrefix("media/freeze-") }!.file), to: URL(fileURLWithPath: args[1]).appendingPathComponent("freeze-file-\(UUID().uuidString.prefix(4)).png")) }
+    if args.count > 1 { try original.write(to: URL(fileURLWithPath: args[1]).appendingPathComponent("freeze-original.png")); try held.write(to: URL(fileURLWithPath: args[1]).appendingPathComponent("freeze-held.png")) }
+    // The hold must show the saved frame unframed at full canvas: compare with the PNG itself scaled to the same size.
+    _ = original
+    guard let b = NSBitmapImageRep(data: held), let source = NSImage(contentsOf: copy.appendingPathComponent(file)),
+          let a = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: b.pixelsWide, pixelsHigh: b.pixelsHigh, bitsPerSample: 8, samplesPerPixel: 4,
+                                   hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { throw MCPTestFailure(description: "decode") }
+    NSGraphicsContext.saveGraphicsState(); NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: a)
+    source.draw(in: NSRect(x: 0, y: 0, width: b.pixelsWide, height: b.pixelsHigh)); NSGraphicsContext.restoreGraphicsState()
+    // Geometry check: a uniform colour-space offset is allowed (bias), misplaced/reframed content is not (residual).
+    // 8×8 block means: compositor (bilinear) and AppKit (high-quality) downscaling alias text differently pixel by pixel.
+    var deltas: [Double] = []
+    for by in stride(from: 0, to: a.pixelsHigh - 8, by: 8) { for bx in stride(from: 0, to: a.pixelsWide - 8, by: 8) {
+        var sum = 0.0
+        for y in by..<by + 8 { for x in bx..<bx + 8 {
+            let p = a.colorAt(x: x, y: y)!.usingColorSpace(.sRGB)!, q = b.colorAt(x: x, y: y)!.usingColorSpace(.sRGB)!
+            sum += Double((p.redComponent + p.greenComponent + p.blueComponent) - (q.redComponent + q.greenComponent + q.blueComponent))
+        } }
+        deltas.append(sum / 64 / 3 * 255)
+    } }
+    let bias = deltas.reduce(0, +) / Double(deltas.count), meanDelta = deltas.map { abs($0 - bias) }.reduce(0, +) / Double(deltas.count)
+    print(String(format: "freeze: colour bias %.2f/255, residual %.2f/255", bias, meanDelta))
+    guard meanDelta < 4 else { throw MCPTestFailure(description: "held frame differs from the frozen image: residual \(meanDelta)") }
+    if args.count > 1 {   // keep a frozen copy for `--selftest parity <out>/freeze.recorder` (T-933 parity)
+        let kept = URL(fileURLWithPath: args[1]).appendingPathComponent("freeze.recorder")
+        try? fm.removeItem(at: kept); try model.project.save(to: copy.appendingPathComponent("project.json")); try fm.copyItem(at: copy, to: kept)
+    }
+    model.undo()
+    guard abs(model.project.exportDuration - before) < 1e-6 else { throw MCPTestFailure(description: "undo") }
+    guard MCPTools.operationSchemas.contains(where: { (($0["properties"] as? [String: Any])?["op"] as? [String: Any])?["enum"] as? [String] == ["freeze"] }) else { throw MCPTestFailure(description: "schema") }
+    print(String(format: "freeze: +1.50 s, held frame mean delta %.2f/255 vs original, undo restored", meanDelta))
+}
+
+/// T-934 (headless, temp copy): ⌘T's command renders the outgoing frame and adds a fading still at the seam; Add Dip sets
+/// the clip fades; each is one undo step; the agent op is in the schema.
+@MainActor private func checkTransitions(_ args: [String]) async throws {
+    guard let path = args.first else { throw MCPTestFailure(description: "usage: transitions <package>") }
+    let fm = FileManager.default, copy = fm.temporaryDirectory.appendingPathComponent("transitions-\(UUID().uuidString).recorder")
+    try fm.copyItem(at: URL(fileURLWithPath: path), to: copy)
+    defer { try? fm.removeItem(at: copy) }
+    let model = try loadEditorModel(package: copy)
+    model.edit("Split") { _ = $0.split(atOutput: 4) }
+    model.playhead = 4.2
+    await model.addTransition(.dissolve, duration: 0.5)
+    guard let still = model.project.layers.first(where: { $0.file.hasPrefix("media/transition-") }), fm.fileExists(atPath: copy.appendingPathComponent(still.file).path),
+          still.fadeOut == 0.5, model.undoStepNames.last == "Add Dissolve" else {
+        var trial = model.project
+        throw MCPTestFailure(description: "dissolve: clips \(model.project.clips.count) seam \(String(describing: model.project.seam(near: 4.2))) layers \(model.project.layers.map(\.file)) undo \(model.undoStepNames.suffix(2)) core \(trial.addTransition(.dissolve, near: 4.2, duration: 0.4, file: "media/x.png")) \(String(describing: trial.checkInvariants()))")
+    }
+    model.undo()
+    await model.addTransition(.dip, duration: 0.6)
+    guard model.project.clips[0].fadeOut == 0.3, model.project.clips[1].fadeIn == 0.3, model.undoStepNames.last == "Add Dip" else { throw MCPTestFailure(description: "dip") }
+    model.playhead = 10; await model.addTransition(.dip)
+    guard model.undoStepNames.last == "Add Dip", model.project.clips[0].fadeOut == 0.3 else { throw MCPTestFailure(description: "no seam should be a no-op") }
+    guard MCPTools.operationSchemas.contains(where: { (($0["properties"] as? [String: Any])?["op"] as? [String: Any])?["enum"] as? [String] == ["transition"] }) else { throw MCPTestFailure(description: "schema") }
+    print("transitions: dissolve still at the seam (fade 0.5 s, file in media/), undo, dip fades 0.3/0.3, no seam → no-op")
+}
+
+/// T-935 (headless, temp copy): the clip inspector's Ramp lowers like the agent's `speed {ramp}`: neighbouring footage
+/// gets intermediate speeds, one undo step, invariants hold.
+@MainActor private func checkSpeedRamp(_ args: [String]) async throws {
+    guard let path = args.first else { throw MCPTestFailure(description: "usage: speed-ramp <package>") }
+    let fm = FileManager.default, copy = fm.temporaryDirectory.appendingPathComponent("ramp-\(UUID().uuidString).recorder")
+    try fm.copyItem(at: URL(fileURLWithPath: path), to: copy)
+    defer { try? fm.removeItem(at: copy) }
+    let model = try loadEditorModel(package: copy)
+    model.edit("Split") { _ = $0.split(atOutput: 4); _ = $0.split(atOutput: 8) }
+    let base = model.project.clips[1].speed
+    model.edit("Speed") { $0.setSpeed(1, base * 4) }
+    let before = model.project.clips.count
+    if let error = model.rampSpeed(clip: 1, seconds: 0.6) { throw MCPTestFailure(description: "ramp: \(error)") }
+    let speeds = model.project.clips.map(\.speed)
+    guard model.project.clips.count > before, speeds.contains(where: { $0 > base * 1.01 && $0 < base * 3.99 }),
+          model.undoStepNames.last == "Speed Ramp", model.project.checkInvariants() == nil else { throw MCPTestFailure(description: "ramp result: \(speeds)") }
+    model.undo()
+    guard model.project.clips.count == before else { throw MCPTestFailure(description: "undo") }
+    print("speed-ramp: \(before) → \(speeds.count) clips, speeds \(speeds.map { String(format: "%.2f", $0) }.joined(separator: " ")), undo")
+}
+
+/// T-937 (headless, temp copy): I/O set the range through the model, ⌥X-equivalent clears it, and an MP4 export of the
+/// range is that long.
+@MainActor private func checkExportRange(_ args: [String]) async throws {
+    guard let path = args.first else { throw MCPTestFailure(description: "usage: export-in-out <package>") }
+    let fm = FileManager.default, copy = fm.temporaryDirectory.appendingPathComponent("range-\(UUID().uuidString).recorder")
+    try fm.copyItem(at: URL(fileURLWithPath: path), to: copy)
+    defer { try? fm.removeItem(at: copy) }
+    let model = try loadEditorModel(package: copy)
+    model.playhead = 2; model.setRangeEdge(in: true)
+    model.playhead = 4.5; model.setRangeEdge(in: false)
+    guard model.exportRange == TimeRange(start: 2, end: 4.5) else { throw MCPTestFailure(description: "range \(String(describing: model.exportRange))") }
+    let movie = copy.appendingPathComponent("range.mp4")
+    let exporter = Exporter(model: model, settings: ExportSettings(shortEdge: 720, fps: 30, quality: .web, codec: .h264), destination: movie, outputRange: model.exportRange)
+    try await exporter.run()
+    let seconds = try await AVURLAsset(url: movie).load(.duration).seconds
+    guard abs(seconds - 2.5) < 0.1 else { throw MCPTestFailure(description: "exported \(seconds) s") }
+    model.playhead = 0; model.setRangeEdge(in: true); model.playhead = model.project.exportDuration; model.setRangeEdge(in: false)
+    guard model.exportRange == nil else { throw MCPTestFailure(description: "full range should clear") }
+    print(String(format: "export-in-out: In 2.0 / Out 4.5 → %.2f s MP4; whole range clears", seconds))
+}
+
+/// Windowless render of the real TimelineView (cacheDisplay, no NSWindow) with the v2 additions: ruler marker flags,
+/// the export In/Out band, a selected keyed graphic (sage block, template name, diamonds). Writes <out>/timeline-v2.png.
+@MainActor private func checkTimelineV2PNG(_ args: [String]) async throws {
+    guard args.count >= 2 else { throw MCPTestFailure(description: "usage: timeline-v2-png <package> <out-dir>") }
+    let fm = FileManager.default, copy = fm.temporaryDirectory.appendingPathComponent("tl-\(UUID().uuidString).recorder")
+    try fm.copyItem(at: URL(fileURLWithPath: args[0]), to: copy)
+    defer { try? fm.removeItem(at: copy) }
+    let model = try loadEditorModel(package: copy)
+    model.playhead = 1.5; model.toggleMarkerAtPlayhead()
+    model.playhead = 6; model.toggleMarkerAtPlayhead()
+    model.playhead = 2
+    guard let id = model.addGraphic(template: "callout") else { throw MCPTestFailure(description: "graphic") }
+    model.playhead = 2.4; model.addKeyAtPlayhead(); model.playhead = 4; model.addKeyAtPlayhead()
+    model.playhead = 3; model.setRangeEdge(in: true); model.playhead = 9; model.setRangeEdge(in: false)
+    model.selection = [id]
+    let view = TimelineView(frame: NSRect(x: 0, y: 0, width: 1200, height: 420))
+    view.appearance = NSAppearance(named: .darkAqua)
+    view.model = model
+    view.layoutSubtreeIfNeeded()
+    guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw MCPTestFailure(description: "rep") }
+    view.cacheDisplay(in: view.bounds, to: rep)
+    guard let png = rep.representation(using: .png, properties: [:]) else { throw MCPTestFailure(description: "png") }
+    try fm.createDirectory(at: URL(fileURLWithPath: args[1]), withIntermediateDirectories: true)
+    try png.write(to: URL(fileURLWithPath: args[1]).appendingPathComponent("timeline-v2.png"))
+    print("timeline-v2-png: \(rep.pixelsWide)×\(rep.pixelsHigh)")
+}
+
+@MainActor private func serveMCP(_ args: [String]) async throws {
+    guard args.count >= 2, let seconds = Double(args[1]) else { throw MCPTestFailure(description: "usage: mcp-serve <socket> <seconds>") }
+    NSApplication.shared.setActivationPolicy(.accessory); NSApplication.shared.finishLaunching()
+    try MCPServer.shared.start(socketPath: args[0])
+    defer { MCPServer.shared.stop(); for controller in EditorWindowController.allOpen { controller.close() } }
+    print("mcp-serve: listening on \(args[0]) for \(Int(seconds)) s"); fflush(stdout)
+    try await Task.sleep(for: .seconds(seconds))
 }

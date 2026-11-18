@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Recorder Editor v2</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@300;400;500&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#080808;--panel:#0B0B0B;--control:#141414;--hover:#252525;--sel:#292929;--grid:#202020;--stroke:#383838;--strokeS:#808080;
+  --t1:#F4F3EE;--t2:#B8B8B2;--t3:#93938E;--accent:#F4F3EE;
+  --clip:#ECE6CE;--zoom:#D7EAF0;--layout:#DCE8D7;--mask:#E5DCEC;--text:#EFDCCF;--audio:#D3DEE8;--graphic:#E8E2F2;--warn:#D8C86A;--danger:#E38276;
+  --ink:#141414;
+  --mono:"JetBrains Mono",ui-monospace,Menlo,monospace;--sans:"Barlow Semi Condensed",system-ui,sans-serif;
+}
+:root[data-theme="light"]{--bg:#EDECE7;--panel:#F4F3EE;--control:#E4E3DD;--hover:#D9D8D2;--sel:#D0CFC9;--grid:#DAD9D3;--stroke:#BDBCB6;--strokeS:#6E6E69;--t1:#121212;--t2:#3F3F3B;--t3:#5E5E59;--accent:#121212}
+@media (prefers-color-scheme:light){:root:not([data-theme="dark"]){--bg:#EDECE7;--panel:#F4F3EE;--control:#E4E3DD;--hover:#D9D8D2;--sel:#D0CFC9;--grid:#DAD9D3;--stroke:#BDBCB6;--strokeS:#6E6E69;--t1:#121212;--t2:#3F3F3B;--t3:#5E5E59;--accent:#121212}}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--t1);font:14px/1.35 var(--sans)}
+button{font:inherit;color:inherit;background:var(--control);border:1px solid var(--stroke);padding:4px 10px;cursor:pointer;border-radius:0}
+button:hover{background:var(--hover)} button:focus-visible{outline:1px solid var(--t1);outline-offset:1px}
+button.primary{background:var(--accent);color:var(--bg);border-color:var(--accent)}
+.mono{font-family:var(--mono);font-size:11px;color:var(--t3)}
+header{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--stroke)}
+header h1{font-weight:300;font-size:22px;margin:0 auto 0 0}
+.app{display:grid;grid-template-columns:260px 1fr 320px;grid-template-rows:minmax(300px,1fr) auto;height:calc(100vh - 49px);min-height:640px}
+.left{border-right:1px solid var(--stroke);overflow:auto;padding:16px}
+.stage{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:16px;gap:10px;min-width:0}
+.right{border-left:1px solid var(--stroke);overflow:auto;padding:16px}
+.tl{grid-column:1/4;border-top:1px solid var(--stroke);background:var(--panel)}
+h2{font-weight:300;font-size:20px;margin:0 0 10px}
+h3{font-weight:400;font-size:14px;color:var(--t2);margin:16px 0 6px}
+canvas#view{background:#000;max-width:100%;aspect-ratio:16/9;width:min(100%,760px);border:1px solid var(--stroke)}
+.transport{display:flex;gap:8px;align-items:center}
+.tabs{display:flex;gap:0;margin-bottom:12px}.tabs button{border-right:none}.tabs button:last-child{border-right:1px solid var(--stroke)}
+.tabs button.on{background:var(--accent);color:var(--bg)}
+/* transcript */
+.words{line-height:1.9;font-size:15px}
+.w{cursor:pointer;padding:1px 2px}.w:hover{background:var(--hover)}
+.w.filler{text-decoration:underline dotted var(--warn);text-underline-offset:3px}
+.w.cut{text-decoration:line-through;color:var(--t3)}
+.w.now{background:var(--sel);outline:1px solid var(--strokeS)}
+/* gallery */
+.gallery{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.tpl{border:1px solid var(--stroke);padding:8px;background:var(--control);cursor:pointer;text-align:left}
+.tpl canvas{width:100%;height:56px;display:block;background:#111;margin-bottom:6px}
+.tpl:hover{border-color:var(--strokeS)}
+/* inspector */
+.field{display:grid;grid-template-columns:90px 1fr 46px;gap:8px;align-items:center;margin:6px 0}
+.field label{color:var(--t2)} input[type=range]{width:100%;accent-color:var(--t1)}
+input[type=text],select{width:100%;background:var(--control);color:var(--t1);border:1px solid var(--stroke);padding:4px 6px;font:inherit}
+.keys{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.diamond{width:10px;height:10px;transform:rotate(45deg);background:var(--t1);display:inline-block}
+.op{border-left:2px solid var(--stroke);padding:4px 8px;margin:4px 0;font-family:var(--mono);font-size:11px;color:var(--t2);display:flex;gap:6px;align-items:flex-start}
+.op input{margin-top:2px}
+.empty{color:var(--t3);border:1px dashed var(--stroke);padding:12px}
+/* timeline */
+.tlbar{display:flex;gap:8px;align-items:center;padding:8px 16px;border-bottom:1px solid var(--grid)}
+.tlbar .tool.on{background:var(--accent);color:var(--bg)}
+.lanes{position:relative;padding:4px 16px 12px 96px;user-select:none}
+.ruler{height:20px;position:relative;border-bottom:1px solid var(--grid)}
+.tick{position:absolute;top:2px;font:10px var(--mono);color:var(--t3)}
+.lane{position:relative;height:28px;border-bottom:1px solid var(--grid)}
+.lane .name{position:absolute;left:-84px;top:6px;width:76px;color:var(--t3);font-size:12px}
+.blk{position:absolute;top:3px;height:22px;color:var(--ink);font-size:12px;padding:3px 6px;white-space:nowrap;overflow:hidden;cursor:grab;border:1px solid transparent}
+.blk.sel{outline:2px solid var(--t1);outline-offset:1px}
+.blk.draft{background-image:repeating-linear-gradient(135deg,transparent 0 6px,rgba(0,0,0,.12) 6px 8px);border:1px dashed var(--ink)}
+.blk .kd{position:absolute;top:7px;width:8px;height:8px;background:var(--ink);transform:rotate(45deg);margin-left:-4px;cursor:ew-resize}
+.blk .h{position:absolute;top:0;bottom:0;width:6px;cursor:ew-resize}.blk .h.l{left:0}.blk .h.r{right:0}
+.gap{position:absolute;top:3px;height:22px;border:1px dashed var(--danger);color:var(--danger);font-size:11px;padding:3px 4px}
+.seam{position:absolute;top:2px;height:24px;width:14px;margin-left:-7px;background:var(--panel);border:1px solid var(--strokeS);font:10px var(--mono);text-align:center;line-height:22px;color:var(--t1);cursor:pointer}
+.marker{position:absolute;top:0;width:0;height:100%;border-left:1px solid var(--warn)}
+.marker span{position:absolute;top:2px;left:3px;font:10px var(--mono);color:var(--warn);white-space:nowrap}
+.playhead{position:absolute;top:0;bottom:0;width:0;border-left:1px solid var(--t1);pointer-events:none}
+.playhead:before{content:"";position:absolute;top:0;left:-5px;border:5px solid transparent;border-top:7px solid var(--t1)}
+.hint{font-size:12px;color:var(--t3);padding:0 16px 10px}
+.toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:var(--t1);color:var(--bg);padding:6px 12px;opacity:0;transition:opacity .2s}
+.toast.on{opacity:1}
+@media (max-width:900px){.app{grid-template-columns:1fr;grid-template-rows:auto;height:auto}.left,.right{border:none;border-bottom:1px solid var(--stroke)}.tl{grid-column:1}.lanes{overflow-x:auto}}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<header>
+  <h1>Golden Island · reel</h1>
+  <span class="mono" id="rev">rev 4f1c02 · 1:1</span>
+  <button id="themeBtn" aria-label="Toggle theme">◐</button>
+  <button class="primary">Export…</button>
+</header>
+<div class="app">
+  <aside class="left">
+    <div class="tabs" role="tablist">
+      <button class="on" data-tab="transcript">Transcript</button><button data-tab="graphics">Graphics</button>
+    </div>
+    <section id="tab-transcript">
+      <h2>Transcript</h2>
+      <p class="mono">Click a word to cut it (cutWords). Dotted = filler.</p>
+      <div class="words" id="words"></div>
+      <p style="margin-top:12px"><button id="fillers">Remove 3 fillers</button></p>
+    </section>
+    <section id="tab-graphics" hidden>
+      <h2>Templates</h2>
+      <p class="mono">Adds at the playhead (G). Screen-space callouts follow zooms.</p>
+      <div class="gallery" id="gallery"></div>
+    </section>
+  </aside>
+
+  <main class="stage">
+    <canvas id="view" width="1280" height="720" aria-label="Preview"></canvas>
+    <div class="transport">
+      <button id="play" aria-label="Play">▶</button>
+      <span class="mono" id="tc">00:00.00 / 00:30.00</span>
+      <label class="mono"><input type="checkbox" id="grid"> grid</label>
+    </div>
+  </main>
+
+  <aside class="right">
+    <div class="tabs"><button class="on" data-rtab="insp">Inspector</button><button data-rtab="claude">Claude</button></div>
+    <section id="rtab-insp"><div id="insp"></div></section>
+    <section id="rtab-claude" hidden>
+      <h2>Claude draft</h2>
+      <p class="mono">submitted · 6 ops · 30.0 s (−61.7 s)</p>
+      <div id="ops"></div>
+      <p><button class="primary" id="accept">Accept 6</button> <button id="discard">Discard</button></p>
+      <h3>Lint</h3>
+      <div class="op" style="border-color:var(--warn)">uncovered 28.4–28.9 s: background shows. suggest {"op":"cut","from":28.4,"to":28.9}</div>
+    </section>
+  </aside>
+
+  <section class="tl" aria-label="Timeline">
+    <div class="tlbar">
+      <button class="tool on" data-tool="select" title="V">Select</button>
+      <button class="tool" data-tool="roll" title="⌥-drag seam">Roll</button>
+      <button class="tool" data-tool="slip" title="⌘-drag body">Slip</button>
+      <span style="flex:1"></span>
+      <button id="addMarker" title="M">Marker</button>
+      <button id="addKey" title="⌥K">◆ Key at playhead</button>
+      <button id="freeze" title="⇧F">Freeze</button>
+      <span class="mono">I/O: 0.0–30.0</span>
+    </div>
+    <div class="lanes" id="lanes"></div>
+    <div class="hint" id="hint">Drag blocks and edges · drag ◆ to retime a key · click a seam for transition · click the red gap to cut it.</div>
+  </section>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const DUR = 30, $ = s => document.querySelector(s);
+const state = {
+  t: 4.2, playing: false, sel: "g1", tool: "select",
+  clips: [{id:"c1",from:0,to:9.5,label:"Sketches"},{id:"c2",from:9.5,to:19,label:"Graph editor 2×",speed:2},{id:"c3",from:19,to:28.4,label:"Atlas"},{id:"lay1",from:28.9,to:30,label:"Layer · ledger"}],
+  seams: [{at:9.5,kind:"dissolve"},{at:19,kind:null}],
+  freeze: [{from:6.0,to:6.8}],
+  zooms: [{id:"z1",from:3,to:8,scale:1.8,cx:.62,cy:.38,label:"Zoom 1.8× · follow"},{id:"z2",from:21,to:25,scale:2,cx:.35,cy:.55,label:"Zoom 2×"}],
+  texts: [{id:"tx1",from:0.2,to:2.6,label:"Title · Golden Island"}],
+  graphics: [
+    {id:"g1",from:3.4,to:7.6,tpl:"callout",space:"screen",label:"Callout · Add node",p:{x:.62,y:.38,text:"Add a node"},keys:[{t:0,opacity:0,scale:.7},{t:.35,opacity:1,scale:1},{t:3.9,opacity:1},{t:4.2,opacity:0}],draft:true},
+    {id:"g2",from:12,to:15,tpl:"stepBadge",space:"screen",label:"Step 2",p:{x:.3,y:.3,text:"2"},keys:[{t:0,scale:0},{t:.3,scale:1}],draft:true},
+    {id:"g3",from:25.5,to:28.2,tpl:"progressBar",space:"canvas",label:"Progress",p:{x:.5,y:.94,text:""},keys:[]}],
+  markers: [{t:9.5,label:"Graph"},{t:19,label:"Atlas"}],
+  words: "So um here's Golden Island . We sketch the coast , uh then the graph editor turns it into terrain . Like basically the atlas stitches every tile .".split(" "),
+  cut: new Set(), fillers: ["um","uh","basically"]
+};
+const LANES = [
+  {key:"clips",name:"Video",color:"--clip"},{key:"zooms",name:"Zoom",color:"--zoom"},
+  {key:"graphics",name:"Graphics",color:"--graphic"},{key:"texts",name:"Text",color:"--text"},
+  {key:"audio",name:"Audio",color:"--audio"}];
+state.audio=[{id:"a1",from:0,to:28.4,label:"Mic · ducked music under"}];
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+
+/* ---------- keyframes (D5): per-property neighbours, ease ---------- */
+const ease = x => x<.5?2*x*x:1-Math.pow(-2*x+2,2)/2;
+function evalKeys(keys, t, base){
+  const out = {...base};
+  for (const prop of ["opacity","scale","x","y"]) {
+    const ks = keys.filter(k => k[prop] !== undefined);
+    if (!ks.length) continue;
+    if (t <= ks[0].t) { out[prop] = ks[0][prop]; continue }
+    if (t >= ks.at(-1).t) { out[prop] = ks.at(-1)[prop]; continue }
+    const i = ks.findIndex(k => k.t > t), a = ks[i-1], b = ks[i];
+    out[prop] = a[prop] + (b[prop]-a[prop]) * ease((t-a.t)/(b.t-a.t));
+  }
+  return out;
+}
+
+/* ---------- preview ---------- */
+const cv = $("#view"), g = cv.getContext("2d");
+function zoomAt(t){
+  for (const z of state.zooms) if (t>=z.from && t<=z.to){
+    const k = Math.min(1,(t-z.from)/.5, (z.to-t)/.5), e = ease(Math.max(0,k));
+    return {s:1+(z.scale-1)*e, cx:.5+(z.cx-.5)*e, cy:.5+(z.cy-.5)*e};
+  }
+  return {s:1,cx:.5,cy:.5};
+}
+function drawScreen(t){
+  const W=cv.width,H=cv.height, pad=70, sw=W-pad*2, sh=H-pad*2, z=zoomAt(t);
+  const grd=g.createLinearGradient(0,0,W,H); grd.addColorStop(0,"#2b2a26"); grd.addColorStop(1,"#121212");
+  g.fillStyle=grd; g.fillRect(0,0,W,H);
+  const covered = state.clips.some(c=>t>=c.from&&t<c.to);
+  if(!covered){ g.fillStyle=css("--danger"); g.font="24px "+css("--mono"); g.fillText("uncovered: background only",pad,H/2); return z }
+  g.save(); g.beginPath(); g.roundRect(pad,pad,sw,sh,14); g.clip();
+  g.translate(pad+sw/2,pad+sh/2); g.scale(z.s,z.s); g.translate(-sw*z.cx,-sh*z.cy);
+  const scene = t<9.5?0:t<19?1:2;
+  g.fillStyle=["#1d2b2e","#221f2c","#2b2618"][scene]; g.fillRect(0,0,sw,sh);
+  g.fillStyle="#0e0e0e"; g.fillRect(0,0,sw,34); g.fillStyle="#3a3a3a";
+  for(let i=0;i<3;i++){g.beginPath();g.arc(20+i*18,17,6,0,7);g.fill()}
+  g.strokeStyle="rgba(244,243,238,.18)"; g.lineWidth=1;
+  for(let x=0;x<sw;x+=48){g.beginPath();g.moveTo(x,34);g.lineTo(x,sh);g.stroke()}
+  g.fillStyle="rgba(244,243,238,.75)"; g.font="28px "+css("--sans");
+  g.fillText(["Sketch: coastline","Graph editor","Atlas"][scene],40,80);
+  g.fillStyle="#ECE6CE"; g.fillRect(sw*.58,sh*.33,120,40); g.fillStyle="#141414"; g.font="18px "+css("--sans"); g.fillText("+ Add node",sw*.58+14,sh*.33+26);
+  g.restore();
+  return {...z,pad,sw,sh};
+}
+function toCanvas(p, z, space){
+  const W=cv.width,H=cv.height;
+  if(space==="canvas") return [p.x*W,p.y*H];
+  const {pad,sw,sh}=z; // screen space: follow zoom, pinned to recorded pixels
+  return [pad+sw/2+(p.x*sw-sw*z.cx)*z.s, pad+sh/2+(p.y*sh-sh*z.cy)*z.s];
+}
+function drawGraphic(gr,t,z){
+  const local=t-gr.from, tr=evalKeys(gr.keys,local,{opacity:1,scale:1});
+  const [x,y]=toCanvas(gr.p,z,gr.space);
+  g.save(); g.globalAlpha=Math.max(0,Math.min(1,tr.opacity)); g.translate(x,y); g.scale(tr.scale,tr.scale);
+  const ink="#141414", paper="#F4F3EE";
+  if(gr.tpl==="callout"){
+    g.strokeStyle=paper; g.lineWidth=4; g.beginPath(); g.arc(0,0,46,0,7); g.stroke();
+    g.beginPath(); g.moveTo(-40,-40); g.lineTo(-150,-120); g.stroke();
+    g.fillStyle=paper; g.fillRect(-360,-150,210,52); g.fillStyle=ink; g.font="500 28px "+css("--sans"); g.fillText(gr.p.text,-344,-114);
+  } else if(gr.tpl==="stepBadge"){
+    g.fillStyle=paper; g.beginPath(); g.arc(0,0,34,0,7); g.fill(); g.fillStyle=ink; g.font="500 36px "+css("--sans"); g.textAlign="center"; g.fillText(gr.p.text,0,13);
+  } else if(gr.tpl==="progressBar"){
+    const w=cv.width*.8, f=Math.min(1,local/(gr.to-gr.from));
+    g.fillStyle="rgba(244,243,238,.25)"; g.fillRect(-w/2,-4,w,8); g.fillStyle=paper; g.fillRect(-w/2,-4,w*f,8);
+  } else if(gr.tpl==="titleCard"){
+    g.fillStyle="rgba(8,8,8,.86)"; g.fillRect(-420,-90,840,180); g.fillStyle=paper; g.font="300 64px "+css("--sans"); g.textAlign="center"; g.fillText(gr.p.text,0,22);
+  } else if(gr.tpl==="spotlight"){
+    g.strokeStyle=paper; g.setLineDash([10,8]); g.lineWidth=3; g.strokeRect(-130,-60,260,120);
+  } else if(gr.tpl==="counter"){
+    const n=Math.round(1240*Math.min(1,local/1.5)); g.fillStyle=paper; g.font="300 72px "+css("--mono"); g.textAlign="center"; g.fillText(n.toLocaleString()+" tiles",0,24);
+  }
+  g.restore();
+  if(gr.id===state.sel){ g.save(); g.strokeStyle=paper; g.setLineDash([4,4]); g.strokeRect(x-60,y-60,120,120); g.restore() }
+}
+function render(){
+  const t=state.t, z=drawScreen(t);
+  if(z.pad!==undefined) for(const tx of state.texts) if(t>=tx.from&&t<tx.to){
+    const a=Math.min(1,(t-tx.from)/.3,(tx.to-t)/.3); g.globalAlpha=a; g.fillStyle="#F4F3EE"; g.font="300 72px "+css("--sans"); g.textAlign="center"; g.fillText("Golden Island",cv.width/2,cv.height/2); g.textAlign="left"; g.globalAlpha=1 }
+  if(z.pad!==undefined) for(const gr of state.graphics) if(t>=gr.from&&t<gr.to) drawGraphic(gr,t,z);
+  if($("#grid").checked){ g.strokeStyle="rgba(255,0,200,.5)"; for(let i=1;i<10;i++){g.beginPath();g.moveTo(i*cv.width/10,0);g.lineTo(i*cv.width/10,cv.height);g.moveTo(0,i*cv.height/10);g.lineTo(cv.width,i*cv.height/10);g.stroke()} }
+  $("#tc").textContent=fmt(t)+" / "+fmt(DUR);
+  document.querySelectorAll(".w").forEach(w=>w.classList.toggle("now", +w.dataset.t<=t && t<+w.dataset.t+.45));
+  const ph=$("#playhead"); if(ph) ph.style.left=x(t)+"px";
+}
+const fmt=s=>String(Math.floor(s/60)).padStart(2,"0")+":"+(s%60).toFixed(2).padStart(5,"0");
+
+/* ---------- timeline ---------- */
+const lanesEl=$("#lanes"); let PX=1;
+const x=t=>t*PX;
+function buildTimeline(){
+  const w=lanesEl.clientWidth-112; PX=w/DUR;
+  let h=`<div class="ruler">`; for(let s=0;s<=DUR;s+=5) h+=`<span class="tick" style="left:${x(s)}px">${s}s</span>`;
+  for(const m of state.markers) h+=`<div class="marker" style="left:${x(m.t)}px"><span>${m.label}</span></div>`;
+  h+=`</div>`;
+  for(const L of LANES){
+    h+=`<div class="lane" data-lane="${L.key}"><span class="name">${L.name}</span>`;
+    for(const b of state[L.key]){
+      const kd=(b.keys||[]).map((k,i)=>`<span class="kd" data-ki="${i}" style="left:${x(k.t)}px"></span>`).join("");
+      h+=`<div class="blk ${b.draft?"draft":""} ${b.id===state.sel?"sel":""}" data-id="${b.id}" data-lane="${L.key}" style="left:${x(b.from)}px;width:${x(b.to-b.from)}px;background:var(${L.color})"><span class="h l"></span>${b.label}${b.id===state.sel?kd:""}<span class="h r"></span></div>`;
+    }
+    if(L.key==="clips"){
+      for(let i=0;i<state.clips.length-1;i++){const a=state.clips[i],b=state.clips[i+1]; if(b.from-a.to>0.01) h+=`<div class="gap" data-gap="${i}" style="left:${x(a.to)}px;width:${x(b.from-a.to)}px" title="uncovered — click to cut">gap</div>`}
+      for(const s of state.seams) h+=`<div class="seam" data-seam="${s.at}" style="left:${x(s.at)}px" title="transition">${s.kind?"⧓":"+"}</div>`;
+      for(const f of state.freeze) h+=`<div class="blk" style="left:${x(f.from)}px;width:${x(f.to-f.from)}px;background:var(--hover);color:var(--t1);border:1px solid var(--strokeS)">❚❚</div>`;
+    }
+    h+=`</div>`;
+  }
+  h+=`<div class="playhead" id="playhead"></div>`;
+  lanesEl.innerHTML=h; render();
+}
+let drag=null;
+lanesEl.addEventListener("pointerdown",e=>{
+  const kd=e.target.closest(".kd"), blk=e.target.closest(".blk[data-id]"), gap=e.target.closest(".gap"), seam=e.target.closest(".seam");
+  if(gap){ cutGap(+gap.dataset.gap); return }
+  if(seam){ const s=state.seams.find(s=>s.at==seam.dataset.seam); s.kind=s.kind?null:"dissolve"; toast(s.kind?"Dissolve 0.4 s on seam (transition)":"Transition removed"); buildTimeline(); return }
+  if(blk){
+    state.sel=blk.dataset.id; const item=find(state.sel);
+    const mode = kd?"key": e.target.classList.contains("l")?"l": e.target.classList.contains("r")?"r": state.tool==="slip"?"slip":"move";
+    drag={id:state.sel,mode,ki:kd?+kd.dataset.ki:-1,x0:e.clientX,from:item.from,to:item.to,kt:kd?item.keys[+kd.dataset.ki].t:0};
+    lanesEl.setPointerCapture(e.pointerId); buildTimeline(); inspector(); return;
+  }
+  const r=lanesEl.getBoundingClientRect(); state.t=clamp((e.clientX-r.left-96)/PX,0,DUR); drag={mode:"scrub"}; lanesEl.setPointerCapture(e.pointerId); render();
+});
+lanesEl.addEventListener("pointermove",e=>{
+  if(!drag) return;
+  if(drag.mode==="scrub"){const r=lanesEl.getBoundingClientRect(); state.t=clamp((e.clientX-r.left-96)/PX,0,DUR); render(); return}
+  const it=find(drag.id), d=(e.clientX-drag.x0)/PX, snap=v=>{for(const m of [...state.markers.map(m=>m.t),state.t]) if(Math.abs(v-m)<.15) return m; return Math.round(v*10)/10};
+  if(drag.mode==="move"){const len=drag.to-drag.from; it.from=clamp(snap(drag.from+d),0,DUR-len); it.to=it.from+len}
+  if(drag.mode==="l") it.from=clamp(snap(drag.from+d),0,it.to-.3);
+  if(drag.mode==="r") it.to=clamp(snap(drag.to+d),it.from+.3,DUR);
+  if(drag.mode==="key") it.keys[drag.ki].t=clamp(drag.kt+d,0,it.to-it.from);
+  if(drag.mode==="slip") $("#hint").textContent=`Slip: media in ${(21.05+d).toFixed(2)} s · position and length unchanged`;
+  buildTimeline(); inspector();
+});
+lanesEl.addEventListener("pointerup",()=>{ if(drag&&drag.mode!=="scrub"&&drag.mode!=="slip"){const it=find(drag.id); it.keys&&it.keys.sort((a,b)=>a.t-b.t)} drag=null });
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+const find=id=>LANES.flatMap(L=>state[L.key]).find(b=>b.id===id);
+
+function cutGap(i){
+  const a=state.clips[i], b=state.clips[i+1], d=b.from-a.to;
+  for(const c of state.clips.slice(i+1)){c.from-=d;c.to-=d}
+  toast(`cut ${a.to.toFixed(1)}–${(a.to+d).toFixed(1)}: gap removed, layer rippled (T-904)`);
+  $("#ops").insertAdjacentHTML("beforeend",`<div class="op"><input type="checkbox" checked>{"op":"cut","from":${a.to.toFixed(1)},"to":${(a.to+d).toFixed(1)}}</div>`);
+  buildTimeline();
+}
+
+/* ---------- inspector ---------- */
+const TPL={titleCard:{text:"Golden Island"},callout:{text:"Add a node"},stepBadge:{text:"1"},spotlight:{text:""},progressBar:{text:""},counter:{text:""}};
+function inspector(){
+  const it=find(state.sel), el=$("#insp");
+  if(!it){el.innerHTML=`<p class="empty">Select a block on the timeline or a graphic in the preview.</p>`;return}
+  if(!it.tpl){el.innerHTML=`<h2>${it.label}</h2><p class="mono">${it.from.toFixed(2)}–${it.to.toFixed(2)} s · output</p><p class="empty">Existing panel (unchanged in v2).</p>`;return}
+  el.innerHTML=`<h2>Graphic</h2>
+  <p class="mono">${it.id} · ${it.from.toFixed(2)}–${it.to.toFixed(2)} s · track 0</p>
+  <h3>Template</h3><select id="tplSel">${Object.keys(TPL).map(k=>`<option ${k===it.tpl?"selected":""}>${k}</option>`).join("")}</select>
+  ${it.p.text!==""?`<div class="field"><label>Text</label><input type="text" id="ptext" value="${it.p.text}"><span></span></div>`:""}
+  <div class="field"><label>X</label><input type="range" min="0" max="1" step=".01" value="${it.p.x}" id="px"><span class="mono">${it.p.x.toFixed(2)}</span></div>
+  <div class="field"><label>Y</label><input type="range" min="0" max="1" step=".01" value="${it.p.y}" id="py"><span class="mono">${it.p.y.toFixed(2)}</span></div>
+  <div class="field"><label>Space</label><select id="space"><option ${it.space==="screen"?"selected":""} value="screen">Screen (follows zoom)</option><option ${it.space==="canvas"?"selected":""} value="canvas">Canvas</option></select><span></span></div>
+  <h3>Keyframes</h3>
+  <div class="keys">${it.keys.map(k=>`<span class="mono"><span class="diamond"></span> ${k.t.toFixed(2)}s ${Object.entries(k).filter(([n])=>n!=="t").map(([n,v])=>n+" "+v).join(" ")}</span>`).join("")||'<span class="mono">none — ⌥K adds one at the playhead</span>'}</div>
+  <h3>As an op</h3><div class="op" style="display:block;white-space:pre-wrap">${JSON.stringify({op:"graphic",from:+it.from.toFixed(2),to:+it.to.toFixed(2),space:it.space,template:{name:it.tpl,params:it.p}})}</div>
+  <p><button id="detach">Detach to elements</button></p>`;
+  $("#tplSel").onchange=e=>{it.tpl=e.target.value;it.label=it.tpl;it.p={...it.p,...TPL[it.tpl]};buildTimeline();inspector()};
+  if($("#ptext")) $("#ptext").oninput=e=>{it.p.text=e.target.value;render()};
+  $("#px").oninput=e=>{it.p.x=+e.target.value;render()}; $("#py").oninput=e=>{it.p.y=+e.target.value;render()};
+  $("#space").onchange=e=>{it.space=e.target.value;render()};
+  $("#detach").onclick=()=>toast("Template dropped; 3 elements (ellipse, line, text) now editable");
+}
+
+/* ---------- gallery ---------- */
+function gallery(){
+  const el=$("#gallery");
+  el.innerHTML=Object.keys(TPL).map(k=>`<button class="tpl" data-tpl="${k}"><canvas width="200" height="56"></canvas>${k}</button>`).join("");
+  el.querySelectorAll(".tpl").forEach(b=>{const c=b.querySelector("canvas").getContext("2d");c.fillStyle="#F4F3EE";c.strokeStyle="#F4F3EE";c.lineWidth=2;
+    const k=b.dataset.tpl; if(k==="titleCard"){c.fillRect(40,20,120,16)} if(k==="callout"){c.beginPath();c.arc(150,30,12,0,7);c.stroke();c.fillRect(20,12,80,14)}
+    if(k==="stepBadge"){c.beginPath();c.arc(100,28,16,0,7);c.fill()} if(k==="spotlight"){c.setLineDash([5,4]);c.strokeRect(60,12,80,32)}
+    if(k==="progressBar"){c.globalAlpha=.3;c.fillRect(20,26,160,5);c.globalAlpha=1;c.fillRect(20,26,90,5)} if(k==="counter"){c.font="20px monospace";c.fillText("1,240",70,36)}
+    b.onclick=()=>{const id="g"+(state.graphics.length+1); state.graphics.push({id,from:+state.t.toFixed(1),to:Math.min(DUR,state.t+2.5),tpl:k,space:k==="callout"||k==="stepBadge"||k==="spotlight"?"screen":"canvas",label:k,p:{x:.5,y:k==="progressBar"?.94:.5,...TPL[k]},keys:[{t:0,opacity:0},{t:.3,opacity:1}]}); state.sel=id; buildTimeline(); inspector(); toast(`Added ${k} at ${state.t.toFixed(1)} s`)};
+  });
+}
+
+/* ---------- transcript ---------- */
+function words(){
+  let t=0; $("#words").innerHTML=state.words.map((w,i)=>{const s=t; t+=w==="."||w===","?.15:.42; return `<span class="w ${state.fillers.includes(w.toLowerCase())?"filler":""} ${state.cut.has(i)?"cut":""}" data-i="${i}" data-t="${s.toFixed(2)}">${w}</span>`}).join(" ");
+  $("#words").querySelectorAll(".w").forEach(w=>w.onclick=()=>{const i=+w.dataset.i; state.cut.has(i)?state.cut.delete(i):state.cut.add(i); state.t=+w.dataset.t; words(); render(); toast(state.cut.has(i)?`cutWords w${i} (one undo step)`:`Restored w${i}`)});
+}
+$("#fillers").onclick=()=>{state.words.forEach((w,i)=>state.fillers.includes(w.toLowerCase())&&state.cut.add(i)); words(); toast("Removed 3 fillers via cutWords")};
+
+/* ---------- Claude ops ---------- */
+const OPS=[
+ '{"op":"fitDuration","target":30,"balance":"even"} → 14 cuts, 2 speeds',
+ '{"op":"graphic","from":3.4,"to":7.6,"space":"screen","template":{"name":"callout","params":{"text":"Add a node","x":0.62,"y":0.38}}}',
+ '{"op":"animate","id":"g1","keys":[{"t":0,"opacity":0,"scale":0.7},{"t":0.35,"opacity":1,"scale":1}]}',
+ '{"op":"graphic","from":12,"to":15,"template":{"name":"stepBadge","params":{"text":"2"}}}',
+ '{"op":"set","id":"lay1","to":30,"mediaStart":21.05,"mediaRate":2}',
+ '{"op":"transition","at":9.5,"kind":"dissolve","duration":0.4}'];
+$("#ops").innerHTML=OPS.map(o=>`<div class="op"><input type="checkbox" checked aria-label="include op">${o}</div>`).join("");
+$("#accept").onclick=()=>{state.graphics.forEach(g=>g.draft=false);buildTimeline();toast("Accepted as one undo step")};
+$("#discard").onclick=()=>toast("Draft discarded (prototype: no-op)");
+
+/* ---------- chrome ---------- */
+document.querySelectorAll("[data-tab]").forEach(b=>b.onclick=()=>{document.querySelectorAll("[data-tab]").forEach(x=>x.classList.toggle("on",x===b));$("#tab-transcript").hidden=b.dataset.tab!=="transcript";$("#tab-graphics").hidden=b.dataset.tab!=="graphics"});
+document.querySelectorAll("[data-rtab]").forEach(b=>b.onclick=()=>{document.querySelectorAll("[data-rtab]").forEach(x=>x.classList.toggle("on",x===b));$("#rtab-insp").hidden=b.dataset.rtab!=="insp";$("#rtab-claude").hidden=b.dataset.rtab!=="claude"});
+document.querySelectorAll(".tool").forEach(b=>b.onclick=()=>{state.tool=b.dataset.tool;document.querySelectorAll(".tool").forEach(x=>x.classList.toggle("on",x===b));$("#hint").textContent={select:"Drag blocks and edges · drag ◆ to retime a key · click a seam for transition · click the red gap to cut it.",roll:"Roll: drag a seam between clips — one clip grows, the other shrinks, length unchanged.",slip:"Slip: drag a clip body — its media in/out moves, position and length unchanged."}[state.tool]});
+$("#addMarker").onclick=()=>{state.markers.push({t:state.t,label:"M"+(state.markers.length+1)});buildTimeline();toast("Marker at "+state.t.toFixed(2)+" s")};
+$("#addKey").onclick=()=>{const it=find(state.sel);if(!it||!it.keys)return toast("Select a graphic first");const t=+(state.t-it.from).toFixed(2);if(t<0||t>it.to-it.from)return toast("Playhead outside the block");it.keys.push({t,scale:1.15});it.keys.sort((a,b)=>a.t-b.t);buildTimeline();inspector();toast("Key ◆ scale 1.15 at "+t+" s")};
+$("#freeze").onclick=()=>{state.freeze.push({from:state.t,to:state.t+.8});buildTimeline();toast("Freeze 0.8 s at "+state.t.toFixed(2)+" s")};
+$("#grid").onchange=render;
+$("#themeBtn").onclick=()=>{const r=document.documentElement;r.dataset.theme=r.dataset.theme==="light"?"dark":"light";buildTimeline()};
+let last=0; function tick(ts){ if(state.playing){ state.t+=(ts-last)/1000; if(state.t>=DUR) state.t=0; render() } last=ts; requestAnimationFrame(tick) }
+$("#play").onclick=()=>{state.playing=!state.playing;$("#play").textContent=state.playing?"❚❚":"▶"};
+document.addEventListener("keydown",e=>{ if(e.target.tagName==="INPUT") return;
+  if(e.key===" "){e.preventDefault();$("#play").click()} if(e.key==="m")$("#addMarker").click(); if(e.key==="g")document.querySelector('[data-tab="graphics"]').click(); if(e.altKey&&e.code==="KeyK")$("#addKey").click() });
+let tt; function toast(m){const t=$("#toast");t.textContent=m;t.classList.add("on");clearTimeout(tt);tt=setTimeout(()=>t.classList.remove("on"),1800)}
+addEventListener("resize",buildTimeline);
+words(); gallery(); buildTimeline(); inspector(); requestAnimationFrame(tick);
+</script>
+</body>
+</html>

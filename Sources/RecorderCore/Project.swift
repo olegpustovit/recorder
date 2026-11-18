@@ -96,6 +96,20 @@ public struct Source: Codable, Equatable, Sendable {
     }
 }
 
+/// Per-zoom camera easing: the existing `Spring` presets, no new curves. `nil` on a zoom means the project's screen animation.
+public enum ZoomEase: String, Codable, CaseIterable, Sendable {
+    case focused, smooth, rapid, medium, slow
+    public var spring: Spring {
+        switch self {
+        case .focused: return .focused
+        case .smooth: return .smooth
+        case .rapid: return .cursorRapid
+        case .medium: return .cursorMedium
+        case .slow: return .cursorSmooth
+        }
+    }
+}
+
 public struct Zoom: Codable, Equatable, Sendable {
     public enum Mode: String, Codable, Sendable { case auto, manual }
     public var id: String
@@ -107,12 +121,13 @@ public struct Zoom: Codable, Equatable, Sendable {
     public var instant: Bool
     public var enabled: Bool
     public var color: BlockColor? = nil
+    public var ease: ZoomEase? = nil
     public init(id: String = makeProjectID().uuidString, start: Double = 0, end: Double = 3, scale: Double = 2,
-                mode: Mode = .manual, center: NormPoint = NormPoint(), instant: Bool = false, enabled: Bool = true) {
+                mode: Mode = .manual, center: NormPoint = NormPoint(), instant: Bool = false, enabled: Bool = true, ease: ZoomEase? = nil) {
         self.id = id; self.start = start; self.end = end; self.scale = scale
-        self.mode = mode; self.center = center; self.instant = instant; self.enabled = enabled
+        self.mode = mode; self.center = center; self.instant = instant; self.enabled = enabled; self.ease = ease
     }
-    enum CodingKeys: String, CodingKey { case id, start, end, scale, mode, center, instant, enabled, color }
+    enum CodingKeys: String, CodingKey { case id, start, end, scale, mode, center, instant, enabled, color, ease }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.value(.id, default: makeProjectID().uuidString)
@@ -124,6 +139,7 @@ public struct Zoom: Codable, Equatable, Sendable {
         instant = try c.value(.instant, default: false)
         enabled = try c.value(.enabled, default: true)
         color = try? c.decodeIfPresent(BlockColor.self, forKey: .color)
+        ease = try? c.decodeIfPresent(ZoomEase.self, forKey: .ease)
     }
 }
 
@@ -221,13 +237,15 @@ public struct TextBlock: Codable, Equatable, Sendable {
     public var position: NormPoint
     public var size: Double
     public var color: BlockColor? = nil
+    /// Keyframed transform (T-920), seconds since `start` on the spine clock; nil = the style's built-in motion only.
+    public var keys: [Key]? = nil
 
     public init(id: String = makeProjectID().uuidString, start: Double = 0, end: Double = 0, text: String = "Text", words: [Word]? = nil,
                 style: Style = .title, position: NormPoint? = nil, size: Double = 48) {
         self.id = id; self.start = start; self.end = end; self.text = text; self.words = words; self.style = style
         self.position = position ?? (style == .lowerThird ? NormPoint(x: 0.05, y: 0.8) : NormPoint(x: 0.5, y: style == .caption ? 0.8 : 0.5)); self.size = size
     }
-    enum CodingKeys: String, CodingKey { case id, start, end, text, words, style, position, size, color }
+    enum CodingKeys: String, CodingKey { case id, start, end, text, words, style, position, size, color, keys }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.value(.id, default: makeProjectID().uuidString)
@@ -239,6 +257,7 @@ public struct TextBlock: Codable, Equatable, Sendable {
         position = try c.value(.position, default: style == .lowerThird ? NormPoint(x: 0.05, y: 0.8) : NormPoint())
         size = try c.value(.size, default: 48)
         color = try? c.decodeIfPresent(BlockColor.self, forKey: .color)
+        keys = try c.decodeIfPresent([Key].self, forKey: .keys)
     }
 
     /// Index into `words` of the word being spoken at source time `t` (the last one that has started).
@@ -316,17 +335,20 @@ public struct AudioTrack: Codable, Equatable, Sendable {
     public var name: String
     public var volume: Double
     public var muted: Bool
+    /// Ducks (to 25 %) wherever another, un-ducked track plays — music under speech (T-936). nil = off.
+    public var duck: Bool? = nil
 
     public init(id: String = makeProjectID().uuidString, name: String, volume: Double = 1, muted: Bool = false) {
         self.id = id; self.name = name; self.volume = volume; self.muted = muted
     }
-    enum CodingKeys: String, CodingKey { case id, name, volume, muted }
+    enum CodingKeys: String, CodingKey { case id, name, volume, muted, duck }
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.value(.id, default: makeProjectID().uuidString)
         name = try container.value(.name, default: "Audio 1")
         volume = try container.value(.volume, default: 1)
         muted = try container.value(.muted, default: false)
+        duck = try container.decodeIfPresent(Bool.self, forKey: .duck)
     }
 }
 
@@ -431,7 +453,7 @@ public struct SceneEffects: Codable, Equatable, Sendable {
 }
 
 public struct LayerBlock: Codable, Equatable, Sendable {
-    public enum Kind: String, Codable, Sendable { case image, video, recording }
+    public enum Kind: String, Codable, Sendable { case image, video, recording, graphic }
     public enum Backdrop: String, Codable, Sendable { case none, dim, blur }
     public enum Motion: String, Codable, Sendable { case fade, scale, slide }
     public var id: String
@@ -450,6 +472,12 @@ public struct LayerBlock: Codable, Equatable, Sendable {
     public var fadeOut: Double?
     public var aboveCamera: Bool
     public var color: BlockColor? = nil
+    /// Keyframed transform (T-920), output seconds since `start`; when set it replaces the `motion` entrance (fades still apply).
+    public var keys: [Key]? = nil
+    /// `kind == .graphic` only: shapes/text drawn by the compositor (T-921, EDITING-CORE D6). `rect` is the graphic's box.
+    public var graphic: Graphic? = nil
+    /// Video and recording layers play a file; image and graphic layers are stills or drawn.
+    public var hasMedia: Bool { kind == .video || kind == .recording }
 
     public init(id: String = makeProjectID().uuidString, kind: Kind, start: Double, end: Double, file: String,
                 mediaStart: Double = 0, track: Int = 0, rect: NormRect, backdrop: Backdrop = .dim,
@@ -460,7 +488,7 @@ public struct LayerBlock: Codable, Equatable, Sendable {
         self.motion = motion; self.fadeIn = fadeIn; self.fadeOut = fadeOut; self.aboveCamera = aboveCamera
     }
     enum CodingKeys: String, CodingKey {
-        case id, kind, start, end, file, mediaStart, track, rect, backdrop, motion, fadeIn, fadeOut, aboveCamera, color, mediaRate, scene
+        case id, kind, start, end, file, mediaStart, track, rect, backdrop, motion, fadeIn, fadeOut, aboveCamera, color, mediaRate, scene, keys, graphic
     }
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -480,6 +508,8 @@ public struct LayerBlock: Codable, Equatable, Sendable {
         fadeOut = container.contains(.fadeOut) ? try container.decodeIfPresent(Double.self, forKey: .fadeOut) : 0.3
         aboveCamera = try container.value(.aboveCamera, default: false)
         color = try? container.decodeIfPresent(BlockColor.self, forKey: .color)
+        keys = try container.decodeIfPresent([Key].self, forKey: .keys)
+        graphic = try container.decodeIfPresent(Graphic.self, forKey: .graphic)
     }
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
@@ -492,6 +522,8 @@ public struct LayerBlock: Codable, Equatable, Sendable {
         try container.encode(aboveCamera, forKey: .aboveCamera)
         try container.encodeIfPresent(mediaRate, forKey: .mediaRate); try container.encodeIfPresent(scene, forKey: .scene)
         try container.encodeIfPresent(color, forKey: .color)
+        try container.encodeIfPresent(keys, forKey: .keys)
+        try container.encodeIfPresent(graphic, forKey: .graphic)
     }
 }
 
@@ -705,6 +737,19 @@ public struct Output: Codable, Equatable, Sendable {
         case r1x1 = "1:1"
         case r4x3 = "4:3"
         case r16x10 = "16:10"
+        case r4x5 = "4:5"
+        /// Width / height; `nil` = `auto` (the cropped source's own aspect).
+        public var ratio: Double? {
+            switch self {
+            case .auto: nil
+            case .r16x9: 16.0 / 9
+            case .r9x16: 9.0 / 16
+            case .r1x1: 1
+            case .r4x3: 4.0 / 3
+            case .r16x10: 16.0 / 10
+            case .r4x5: 4.0 / 5
+            }
+        }
     }
     public var aspect: Aspect
     public init(aspect: Aspect = .auto) { self.aspect = aspect }
@@ -733,7 +778,7 @@ public struct Marker: Codable, Equatable, Sendable {
 }
 
 public struct Project: Codable, Equatable, Sendable {
-    public static let currentVersion = 5
+    public static let currentVersion = 7
 
     public var framingEnabled: Bool { frame.enabled ?? true }
 
@@ -764,6 +809,8 @@ public struct Project: Codable, Equatable, Sendable {
     public var windowShots: [WindowShot]
     public var cursorHidden: [TimeRange]
     public var crop: NormRect
+    /// Time-varying crop (T-831 reframe), source seconds; empty = the static `crop`. Additive key, no version bump.
+    public var cropKeys: [CropKey] = []
     public var output: Output
     public var background: Background
     public var frame: Frame
@@ -774,7 +821,7 @@ public struct Project: Codable, Equatable, Sendable {
     public var keys: Keys
 
     public init(
-        version: Int = 3,
+        version: Int = Project.currentVersion,
         id: String = makeProjectID().uuidString,
         title: String = "Untitled",
         createdAt: String = ISO8601DateFormatter().string(from: Date()),
@@ -815,13 +862,13 @@ public struct Project: Codable, Equatable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case version, id, title, createdAt, source, linkVideoEdits, rippleDelete, clips, zooms, layouts, cameraClips, keystrokeClips, masks, texts, windowShots, cursorHidden, crop, output,
+        case version, id, title, createdAt, source, linkVideoEdits, rippleDelete, clips, zooms, layouts, cameraClips, keystrokeClips, masks, texts, windowShots, cursorHidden, crop, cropKeys, output,
              background, frame, cursor, animation, camera, audio, keys, audioTracks, audioClips, layers, markers
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        version = try c.value(.version, default: 3)
+        version = try c.value(.version, default: Project.currentVersion)
         id = try c.value(.id, default: makeProjectID().uuidString)
         title = try c.value(.title, default: "Untitled")
         createdAt = try c.value(.createdAt, default: ISO8601DateFormatter().string(from: Date()))
@@ -840,6 +887,7 @@ public struct Project: Codable, Equatable, Sendable {
         windowShots = try c.value(.windowShots, default: [])
         cursorHidden = try c.value(.cursorHidden, default: [])
         crop = try c.value(.crop, default: NormRect())
+        cropKeys = try c.value(.cropKeys, default: [])
         output = try c.value(.output, default: Output())
         background = try c.value(.background, default: Background())
         frame = try c.value(.frame, default: Frame())
@@ -874,7 +922,7 @@ public struct Project: Codable, Equatable, Sendable {
     public static func load(from url: URL) throws -> Project {
         let data = try Data(contentsOf: url)
         struct Header: Decodable { var version: Int? }
-        let version = try JSONDecoder().decode(Header.self, from: data).version ?? 3
+        let version = try JSONDecoder().decode(Header.self, from: data).version ?? currentVersion
         guard version <= currentVersion else { throw ProjectError.newerVersion(version) }
         return try JSONDecoder().decode(Project.self, from: data)
     }
@@ -883,8 +931,7 @@ public struct Project: Codable, Equatable, Sendable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         var saved = self
-        if texts.contains(where: { $0.style == .lowerThird || $0.style == .chapter }) { saved.version = 5 }
-        else { saved.version = layers.contains { $0.kind == .recording } || clips.contains { $0.file != nil } ? 4 : 3 }
+        saved.version = Self.currentVersion   // one format: no per-feature minimum versions (user, 2026-11-17)
         try encoder.encode(saved).write(to: url, options: .atomic)
     }
 }

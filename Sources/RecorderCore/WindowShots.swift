@@ -14,8 +14,8 @@ public extension Project {
     /// The project as drawn while the window visible at source time `t` is on screen (its pixel size, no crop):
     /// what editor overlays map zoom/mask rects against. Identity for single-window projects.
     func visibleWindow(atSource t: Double) -> Project {
-        guard windowCount > 1 else { return self }
         var p = self
+        guard windowCount > 1 else { p.crop = cropSample(atSource: t); return p } // overlays/preview see the keyed crop at the playhead
         let size = source.windowSizes[windowIndex(atSource: t)]
         p.source.pixelWidth = size.w; p.source.pixelHeight = size.h; p.crop = NormRect()
         return p

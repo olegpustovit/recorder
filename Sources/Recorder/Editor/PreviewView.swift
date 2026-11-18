@@ -117,7 +117,7 @@ final class PreviewView: MTKView {
         self.model = model
         self.lastClips = model.project.clips
         self.lastCameraClips = model.project.cameraClips
-        self.lastVideoLayers = model.project.layers.filter { $0.kind != .image }
+        self.lastVideoLayers = model.project.layers.filter { $0.hasMedia }
         self.lastWindowShots = model.project.windowShots
         self.lastAudioClips = model.project.audioClips
         self.lastAudioTracks = model.project.audioTracks
@@ -472,7 +472,7 @@ final class PreviewView: MTKView {
     @objc func paste(_ sender: Any?) { nextResponder?.tryToPerform(#selector(NSText.paste(_:)), with: sender) }
 
     override func keyDown(with event: NSEvent) {
-        if model.isReviewingDraft, event.keyCode == 53 { return }
+        if model.isReviewingDraft, event.keyCode == 53 { MCPServer.shared.takeOverWatching(model); return }
         if model.voiceover.isActive {
             model.voiceover.handleRecordingKey(event)
             return
@@ -521,7 +521,7 @@ final class PreviewView: MTKView {
                     return timing != previous
                 }
                 let mixChanged = audio != self.lastAudioClips || tracks != self.lastAudioTracks
-                let videos = self.model.project.layers.filter { $0.kind != .image }
+                let videos = self.model.project.layers.filter { $0.hasMedia }
                 let videoChanged = videos.count != self.lastVideoLayers.count || zip(videos, self.lastVideoLayers).contains {
                     $0.id != $1.id || $0.kind != $1.kind || $0.file != $1.file || $0.start != $1.start || $0.end != $1.end || $0.mediaStart != $1.mediaStart || $0.track != $1.track
                         || $0.mediaRate != $1.mediaRate || $0.scene?.windowShots != $1.scene?.windowShots
@@ -691,7 +691,7 @@ final class PreviewView: MTKView {
             return (decoder.player, decoder.output, nil, nil)
         }
         layerTransforms = transforms
-        lastVideoLayers = model.project.layers.filter { $0.kind != .image }
+        lastVideoLayers = model.project.layers.filter { $0.hasMedia }
         for (lane, decoder) in layerPlayers {
             if let item = decoder.player.currentItem {
                 layerObservations.append(item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
@@ -848,7 +848,7 @@ final class PreviewView: MTKView {
             }
             try await Task.sleep(for: .milliseconds(20))
         }
-        let activeLanes = Set(model.project.layerStates(atOutput: time).filter { $0.block.kind != .image && layerTransforms[$0.block.file] != nil }.map { $0.block.track })
+        let activeLanes = Set(model.project.layerStates(atOutput: time).filter { $0.block.hasMedia && layerTransforms[$0.block.file] != nil }.map { $0.block.track })
         while !activeLanes.allSatisfy({ lane in
             guard let decoder = layerPlayers[lane] else { return false }
             return decoder.player.currentItem?.status == .readyToPlay && abs(decoder.player.currentTime().seconds - time) <= 0.002
@@ -928,7 +928,7 @@ final class PreviewView: MTKView {
 
     private func currentLayerTextures(at time: Double) -> [Int: FrameState.Texture] {
         var textures: [Int: FrameState.Texture] = [:]
-        for layer in model.project.layerStates(atOutput: time) where layer.block.kind != .image {
+        for layer in model.project.layerStates(atOutput: time) where layer.block.hasMedia {
             let lane = layer.block.track
             guard var decoder = layerPlayers[lane] else { continue }
             if decoder.block != layer.block.id { decoder.last = nil; decoder.block = layer.block.id; lastLayerPTS[lane] = nil }
@@ -1094,7 +1094,7 @@ final class PreviewView: MTKView {
     }
 
     override func cancelOperation(_ sender: Any?) {
-        if model.isReviewingDraft { return }
+        if model.isReviewingDraft { MCPServer.shared.takeOverWatching(model); return }
         if model.voiceover.isActive { model.voiceover.discard(); return }
         if layerGestureID != nil { cancelLayerGesture(); return }
         if !layerRectView.isHidden { return }

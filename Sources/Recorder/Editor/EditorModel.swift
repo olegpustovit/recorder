@@ -1,3 +1,4 @@
+import AppKit
 import Dispatch
 import Foundation
 import Observation
@@ -53,6 +54,134 @@ import RecorderCore
         edit("Add Text") { id = $0.addText(atSource: time, length: length) }
         if let id { isPlaying = false; selectedClips = []; selection = [id]; inspectorShowsProject = false }
         return id
+    }
+
+    /// Adds a motion graphic from a template at the playhead (T-924, `G` / Edit ▸ Add Graphic) and selects it; one undo step.
+    @discardableResult
+    func addGraphic(template name: String, length: Double = 3) -> UUID? {
+        let info = GraphicTemplates.catalog.first { $0.name == name }
+        guard let made = try? GraphicTemplates.make(name, params: info?.example ?? [:], length: length) else { return nil }
+        var id: UUID?
+        edit("Add Graphic") { project in
+            for track in 0..<8 where id == nil { id = project.addGraphic(made.graphic, atOutput: playhead, duration: length, rect: made.rect, track: track) }
+        }
+        if let id { isPlaying = false; selectedClips = []; selection = [id]; inspectorShowsProject = false }
+        return id
+    }
+
+    /// Applies agent-language ops as one named undo step (EDITING-CORE D4: new discrete human commands use `EditOp`, so
+    /// the human and Claude share validation). Returns the error text instead of throwing so callers can show it.
+    @discardableResult
+    func apply(_ ops: [EditOp], name: String) -> String? {
+        do {
+            let result = try project.applying(ops, context: EditContext(words: transcript ?? []))
+            if result.project != project { edit(name) { $0 = result.project } }
+            return nil
+        } catch { return "\(error)" }
+    }
+
+    /// ⇧F (T-933): renders the frame at the playhead into `media/` and holds it for `duration` s (one undo step).
+    func freezeFrame(duration: Double = 1) async {
+        let time = playhead
+        guard let png = try? await EditorWindowController.renderFramesPNG(model: self, at: [time], longEdge: nil).first else { NSSound.beep(); return }
+        let file = "media/freeze-\(UUID().uuidString).png"
+        do {
+            try FileManager.default.createDirectory(at: packageURL.appendingPathComponent("media"), withIntermediateDirectories: true)
+            try png.write(to: packageURL.appendingPathComponent(file), options: .atomic)
+        } catch { NSSound.beep(); return }
+        var trial = project
+        guard trial.insertStill(file: file, atOutput: time, duration: duration) else {
+            try? FileManager.default.removeItem(at: packageURL.appendingPathComponent(file)); NSSound.beep(); return
+        }
+        edit("Freeze Frame") { $0 = trial }
+    }
+
+    /// ⌘T / Edit ▸ Add Dip (T-934): transition at the seam nearest the playhead; a dissolve renders the outgoing frame.
+    func addTransition(_ kind: SeamTransition, duration: Double = 0.5) async {
+        guard let seam = project.seam(near: playhead) else { NSSound.beep(); return }
+        var file: String?
+        if kind == .dissolve {
+            guard let png = try? await EditorWindowController.renderFramesPNG(model: self, at: [max(0, seam.at - 1.0 / 60)], longEdge: nil).first else { NSSound.beep(); return }
+            file = "media/transition-\(UUID().uuidString).png"
+            do {
+                try FileManager.default.createDirectory(at: packageURL.appendingPathComponent("media"), withIntermediateDirectories: true)
+                try png.write(to: packageURL.appendingPathComponent(file!), options: .atomic)
+            } catch { NSSound.beep(); return }
+        }
+        var trial = project
+        guard trial.addTransition(kind, near: seam.at, duration: duration, file: file) else {
+            if let file { try? FileManager.default.removeItem(at: packageURL.appendingPathComponent(file)) }
+            NSSound.beep(); return
+        }
+        edit(kind == .dissolve ? "Add Dissolve" : "Add Dip") { $0 = trial }
+    }
+
+    /// Clip inspector "Ramp" (T-935): eases into and out of clip `i`'s speed with the same stepped ramp the agent's
+    /// `speed {ramp}` lowers to (neighbouring footage steps toward the clip's speed), one undo step.
+    @discardableResult
+    func rampSpeed(clip i: Int, seconds: Double) -> String? {
+        guard project.clips.indices.contains(i), !project.clips[i].isEmpty else { return "no clip" }
+        // A ramp eases a speed *change*: rebuild it from the neighbour's speed to the clip's current speed.
+        var trial = project
+        let target = trial.clips[i].speed
+        let neighbour = i > 0 && !trial.clips[i - 1].isEmpty ? trial.clips[i - 1].speed : i + 1 < trial.clips.count ? trial.clips[i + 1].speed : 1
+        guard abs(neighbour - target) > 1e-9 else { return "the clip already plays at its neighbour's speed" }
+        trial.setSpeed(i, neighbour)
+        let start = trial.clips[..<i].reduce(0) { $0 + $1.outputDuration }, end = start + trial.clips[i].outputDuration
+        let raw: JSONValue = .object(["op": .string("speed"), "from": .number(start), "to": .number(end), "speed": .number(target),
+                                      "ramp": .object(["in": .number(seconds), "out": .number(seconds)])])
+        do {
+            let lowered = try lowerIntents([raw], project: trial) { throw EditError.invalidOp(index: 0, reason: "no storyboard needed") }
+            let ops = try JSONDecoder().decode([EditOp].self, from: JSONEncoder().encode(lowered.ops))
+            let result = try trial.applying(ops, context: EditContext())
+            edit("Speed Ramp") { $0 = result.project }
+            return nil
+        } catch { return "\(error)" }
+    }
+
+    /// I / O / ⌥X (T-937): the export range in output seconds; nil = the whole timeline. Per session, not saved.
+    var exportRange: TimeRange?
+    func setRangeEdge(in isIn: Bool) {
+        let end = project.exportDuration
+        var range = exportRange ?? TimeRange(start: 0, end: end)
+        if isIn { range.start = min(playhead, range.end - 0.1) } else { range.end = max(playhead, range.start + 0.1) }
+        range.start = max(0, range.start); range.end = min(end, range.end)
+        exportRange = range.start <= 1e-6 && range.end >= end - 1e-6 ? nil : range
+    }
+
+    /// `M` (T-930): adds "Marker N" at the playhead, or removes the marker already there (within 0.1 s); one undo step.
+    func toggleMarkerAtPlayhead() {
+        let markers = items(project).filter { $0.kind == .marker }
+        if let near = markers.first(where: { abs($0.out.start - playhead) < 0.1 }) {
+            edit("Remove Marker") { $0.markers.removeAll { $0.id == near.id } }
+        } else {
+            let time = timeMap.sourceTime(atOutput: playhead), label = "Marker \(project.markers.count + 1)"
+            edit("Add Marker") { $0.markers.append(Marker(time: time, label: label)); $0.markers.sort { $0.time < $1.time } }
+        }
+    }
+
+    func renameMarker(_ id: String, to label: String) {
+        let text = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, let i = project.markers.firstIndex(where: { $0.id == id }), project.markers[i].label != text else { return }
+        edit("Rename Marker") { $0.markers[i].label = text }
+    }
+
+    /// `⌃←/⌃→` (T-930): move the playhead to the previous/next marker.
+    func jumpToMarker(forward: Bool) {
+        let times = items(project).filter { $0.kind == .marker }.map(\.out.start).sorted()
+        if let t = forward ? times.first(where: { $0 > playhead + 1e-3 }) : times.last(where: { $0 < playhead - 1e-3 }) { isPlaying = false; playhead = t }
+    }
+
+    /// ⌥K (T-924): key the selected layer/graphic at the playhead with its current transform (so nothing jumps), one undo step.
+    func addKeyAtPlayhead() {
+        guard let id = selection.first, let index = project.layers.firstIndex(where: { $0.id == id.uuidString }),
+              let start = timeMap.outputTime(atSource: project.layers[index].start) else { return }
+        let layer = project.layers[index], t = playhead - start
+        guard t >= 0, t <= layer.end - layer.start else { return }
+        let now = evaluate(layer.keys ?? [], at: t)
+        var keys = (layer.keys ?? []).filter { abs($0.t - t) > 1e-3 }
+        keys.append(Key(t: t, x: now.x, y: now.y, scale: now.scale, rotation: now.rotation, opacity: now.opacity))
+        edit("Add Keyframe") { $0.layers[index].keys = keys.sorted { $0.t < $1.t } }
     }
 
     /// SPEC §7.3 ↑/↓: the nearest edit point (clip boundary or block edge, output time) before/after `t`.
@@ -198,10 +327,14 @@ import RecorderCore
     private var gestureSnapshot: Project?
     var isEditingGesture: Bool { gestureSnapshot != nil }
     var isReviewingDraft = false
+    var isWatchingDraft = false
+    var reviewWasAccepted = false
+    var reviewReduceMotionPreview = false
+    var reviewNotice: String? { isWatchingDraft ? "Claude is editing, Esc to take over" : nil }
     private var reviewSnapshot: Project?
     var liveProject: Project { reviewSnapshot ?? project }
     var reviewSessionID: String?
-    var reviewCuts: [(time: Double, label: String)] = []
+    var reviewCuts: [(id: String, time: Double, label: String)] = []
     var reviewAddedIDs: Set<String> = []
     private var autosaveWork: DispatchWorkItem?
     private(set) var saveStatus = "Saved"
@@ -374,7 +507,7 @@ import RecorderCore
         recordingPaths = recordingPaths.filter { id, _ in project.layers.contains { $0.id == id } }
         guard before.clips != project.clips || before.zooms != project.zooms || before.cursor != project.cursor
             || before.animation.screen != project.animation.screen || before.cursorHidden != project.cursorHidden
-            || before.windowShots != project.windowShots
+            || before.windowShots != project.windowShots || before.cropKeys != project.cropKeys
         else { return }
         windowCursorPaths.removeAll()
         (cursorPath, cameraPath) = Self.buildPaths(project: project, events: events)
@@ -403,7 +536,9 @@ import RecorderCore
                                         hidden: [], duration: project.timelineSourceDuration)
         let cameraPath = CameraPath(zooms: project.zooms, cursor: timelineCursor,
                                      spring: project.animation.screen == .focused ? .focused : .smooth,
-                                     duration: project.timelineSourceDuration, clips: project.clips)
+                                     duration: project.timelineSourceDuration, clips: project.clips,
+                                     // ponytail: only keyed crops convert cursor follow into crop space; a static crop keeps its old (source-space) look so saved projects render unchanged
+                                     cropAt: project.cropKeys.isEmpty ? nil : { project.cropSample(atSource: $0) })
         return (cursorPath, cameraPath)
     }
 
@@ -422,13 +557,14 @@ import RecorderCore
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
     }
 
-    @discardableResult func beginReview() -> Bool {
+    @discardableResult func beginReview(watching: Bool = false) -> Bool {
         guard !voiceover.isActive, !isEditingGesture, !isReviewingDraft, mediaImportStatus == nil else { return false }
         saveNow()
         reviewSnapshot = project
         isPlaying = false
         isReviewingDraft = true
-        inspectorShowsAgent = true
+        isWatchingDraft = watching; reviewWasAccepted = false
+        if !watching { inspectorShowsAgent = true }
         return true
     }
     func updateReview(_ change: (inout Project) throws -> Void) throws {
@@ -447,6 +583,7 @@ import RecorderCore
         let proposed = project
         project = base
         reviewSnapshot = nil; isReviewingDraft = false; reviewSessionID = nil
+        isWatchingDraft = false; reviewWasAccepted = commit
         reviewCuts = []; reviewAddedIDs = []
         if commit, proposed != base { edit(name) { $0 = proposed } }
         else { rebuildPathsIfNeeded(from: proposed); scheduleAutosave() }

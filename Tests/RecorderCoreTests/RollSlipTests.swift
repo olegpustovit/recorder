@@ -1,0 +1,85 @@
+import Testing
+@testable import RecorderCore
+
+/// T-932: roll keeps the length and moves the cut; slip keeps position/length and moves the media; both refuse safely.
+@Suite struct RollSlipTests {
+    func split() -> Project {
+        var p = Project(source: Source(duration: 30, hasMic: true), clips: [Clip(sourceStart: 0, sourceEnd: 20)])
+        _ = p.split(atOutput: 10)
+        return p
+    }
+
+    @Test func rollMovesTheCutNotTheLength() throws {
+        var p = split()
+        let length = TimeMap(p.clips).outputDuration
+        let rolled = p.rollEdit(between: 0, toSource: 12)
+        #expect(rolled)
+        #expect(p.clips[0].sourceEnd == 12 && p.clips[1].sourceStart == 12 && p.clips[1].mediaIn == 12)
+        #expect(TimeMap(p.clips).outputDuration == length && p.checkInvariants() == nil)
+        let back = p.rollEdit(between: 0, toSource: 8)
+        #expect(back && p.clips[0].sourceEnd == 8 && p.clips[1].mediaIn == 8)
+        let last = p.rollEdit(between: 1, toSource: 5)
+        #expect(!last)                                                                  // no clip after the last
+        var mixed = split(); mixed.setSpeed(1, 2)
+        let clocks = mixed.rollEdit(between: 0, toSource: 12)
+        #expect(!clocks)                                                                // different clocks: refuse
+    }
+
+    @Test func slipMovesMediaKeepsPlace() throws {
+        var p = split()
+        let place = (p.clips[1].sourceStart, p.clips[1].sourceEnd)
+        let slipped = p.slipClip(1, byMedia: 3)
+        #expect(slipped)
+        #expect(p.clips[1].mediaIn == 13 && (p.clips[1].sourceStart, p.clips[1].sourceEnd) == place && p.checkInvariants() == nil)
+        let mic = p.audioClips.first { $0.link != nil && $0.start >= 10 - 1e-9 }
+        #expect(mic.map { abs($0.mediaStart - 13) < 1e-9 } == true)                  // linked audio slipped with it
+        let late = p.slipClip(1, byMedia: 8), early = p.slipClip(0, byMedia: -1)
+        #expect(!late && !early)                                                        // past the recording's end / before 0
+    }
+}
+
+@Test func agentSlipsAClipThroughSet() throws {
+    var p = Project(source: Source(duration: 30), clips: [Clip(sourceStart: 0, sourceEnd: 20)])
+    _ = p.split(atOutput: 10)
+    let r = try p.applying([.set(id: "c1", fields: SetFields(mediaStart: 14))], context: EditContext()).project
+    #expect(r.clips[1].mediaIn == 14 && r.clips[1].sourceStart == 10 && TimeMap(r.clips).outputDuration == 20)
+    do { _ = try p.applying([.set(id: "c1", fields: SetFields(mediaStart: 25))], context: EditContext()); Issue.record("slip past end") }
+    catch { #expect("\(error)".contains("cannot slip")) }
+    do { _ = try p.applying([.set(id: "c1", fields: SetFields(from: 2))], context: EditContext()); Issue.record("from on a clip") }
+    catch { #expect("\(error)".contains("clip does not take from; valid: mediaStart")) }
+}
+
+/// T-933: a freeze inserts a still clip at the playhead and pushes later footage back by its length.
+@Test func freezeInsertsAStill() throws {
+    var p = Project(source: Source(duration: 20, hasMic: true), clips: [Clip(sourceStart: 0, sourceEnd: 20)])
+    p.zooms = [Zoom(id: "z", start: 12, end: 14)]
+    let before = TimeMap(p.clips).outputDuration, zoomAt = TimeMap(p.clips).outputTime(atSource: 12)!
+    let frozen = p.insertStill(file: "media/freeze.png", atOutput: 6, duration: 1.5)
+    #expect(frozen && p.checkInvariants() == nil)
+    #expect(abs(TimeMap(p.clips).outputDuration - (before + 1.5)) < 1e-6)
+    let still = try #require(p.layers.first { $0.file == "media/freeze.png" })
+    #expect(abs(still.end - still.start - 1.5) < 1e-6 && still.rect == NormRect() && still.backdrop == .none)
+    #expect(uncoveredRanges(p).isEmpty)                                  // the gap under it is covered by the still
+    let after = items(p).first { $0.id == "z" }!
+    #expect(abs(after.out.start - (zoomAt + 1.5)) < 1e-6)            // effects after the freeze move with their footage
+    let bad = p.insertStill(file: "media/freeze.png", atOutput: 99, duration: 1)
+    #expect(!bad)
+}
+
+/// T-934: transitions find the nearest seam; dissolve = fading still over the next clip, dip = clip fades.
+@Test func seamTransitions() throws {
+    var p = Project(source: Source(duration: 20), clips: [Clip(sourceStart: 0, sourceEnd: 20)])
+    _ = p.split(atOutput: 8)
+    #expect(p.seam(near: 8.3)?.at == 8 && p.seam(near: 9) == nil)
+    var dip = p
+    let dipped = dip.addTransition(.dip, near: 8.2, duration: 0.6)
+    #expect(dipped && dip.clips[0].fadeOut == 0.3 && dip.clips[1].fadeIn == 0.3)
+    var dissolve = p
+    let dissolved = dissolve.addTransition(.dissolve, near: 7.9, duration: 0.5, file: "media/t.png")
+    let still = try #require(dissolve.layers.first)
+    #expect(dissolved && still.fadeOut == 0.5 && still.rect == NormRect() && items(dissolve).first { $0.id == still.id }?.out == TimeRange(start: 8, end: 8.5))
+    let states = dissolve.layerStates(atOutput: 8.25)
+    #expect(states.first.map { abs($0.opacity - 0.5) < 0.05 } == true)          // halfway through, the still is half faded
+    let missing = p.addTransition(.dissolve, near: 8, duration: 0.5)
+    #expect(!missing)                                                              // dissolve needs the rendered frame
+}

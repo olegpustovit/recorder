@@ -30,6 +30,17 @@ struct ClipPanel: View {
                     Text("Multiplies each piece's own speed, keeping their differences.")
                         .font(Font(Theme.captionFont)).foregroundStyle(Theme.textSecondaryColor)
                 }
+                if clip.speed != 1 {   // T-935: ease into/out of the speed change
+                    HStack {
+                        Text("Ramp").foregroundStyle(Theme.textSecondaryColor)
+                        ForEach([0.3, 0.6, 1.0], id: \.self) { seconds in
+                            Button(String(format: "%.1f s", seconds)) { model.rampSpeed(clip: clipIndex, seconds: seconds) }
+                                .buttonStyle(TechButtonStyle(kind: .secondary, compact: true))
+                        }
+                    }
+                    Text("Steps the neighbouring footage toward this speed so the change isn't a jump.")
+                        .font(Font(Theme.captionFont)).foregroundStyle(Theme.textSecondaryColor)
+                }
 
                 Divider().padding(.vertical, 4)
                 Toggle("Hide cursor", isOn: cursorHiddenBinding)

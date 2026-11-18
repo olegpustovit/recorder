@@ -29,7 +29,7 @@ public extension Project {
 /// SPEC §6.4: builds the initial `zooms` array for a finished recording from its click events.
 /// `Edit ▸ Regenerate Auto Zooms` calls this again over the same `events.json`; `Edit ▸ Remove All
 /// Zooms` just empties `project.zooms` (no call here).
-public func generateAutoZooms(clicks: [InputEvent], duration: Double) -> [Zoom] {
+public func generateAutoZooms(clicks: [InputEvent], duration: Double, lead: Double = 0.4, tail: Double = 1.5) -> [Zoom] {
     // 1. Left-button down events, oldest first (the input isn't guaranteed sorted).
     let downs = clicks.filter { $0.k == .down && $0.b == 0 }.sorted { $0.t < $1.t }
 
@@ -46,7 +46,7 @@ public func generateAutoZooms(clicks: [InputEvent], duration: Double) -> [Zoom] 
 
     // 3. Each cluster becomes one zoom.
     let zooms = clusters.map { cluster in
-        Zoom(start: cluster.first!.t - 0.4, end: cluster.last!.t + 1.5, scale: 2.0, mode: .auto)
+        Zoom(start: cluster.first!.t - lead, end: cluster.last!.t + tail, scale: 2.0, mode: .auto)
     }
 
     // 4. Merge zooms whose gap is < 1.0 s. Clusters are already start-sorted, so a single linear

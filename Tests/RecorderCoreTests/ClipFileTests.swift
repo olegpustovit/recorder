@@ -31,11 +31,11 @@ private func base() -> Project {
     let url = dir.appendingPathComponent("project.json")
     var project = base()
     try project.save(to: url)
-    #expect(try Project.load(from: url).version == 3)
+    #expect(try Project.load(from: url).version == Project.currentVersion)
     project.clips[1].file = "media/a.png"
     try project.save(to: url)
     let loaded = try Project.load(from: url)
-    #expect(loaded.version == 4 && loaded.clips == project.clips)
+    #expect(loaded.version == Project.currentVersion && loaded.clips == project.clips)
 }
 
 @Test func clipFileV3Decode() throws {

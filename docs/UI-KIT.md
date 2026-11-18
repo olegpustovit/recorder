@@ -2,6 +2,17 @@
 
 ## Direction and reference study
 
+Claude panel study (T-814): `make gallery CONFIG=debug`, scroll below Editing workspace and choose **Open
+study…**. The generated sample editor uses the production320pt Claude panel, draft replay, compositor and
+timeline. Replay stages17 operations through speed/text/zoom/markers; Accept remains pinned and disabled
+until ready. Stop/repeated Replay cancel pending work; Reduce Motion previews140ms opacity while respecting
+the system preference. Normal panel arrivals wipe320ms with a700ms fading leading edge; disclosures stagger55ms.
+Timeline block/mark wipes run320ms with75ms lane delays, then accepted outlines settle220ms. Reduce Motion
+uses140ms opacity. The study now uses production MCPTools apply/submit instead of directly swapping reviews.
+`--selftest mcp-panel-motion /tmp/recorder-agent-motion` samples the actual sequence and checks interruption,
+base isolation and cleanup. `--selftest mcp-live <fixture> [--reduce-motion]` verifies actual three-call live
+propagation; `mcp-live-client <generated-fixture> <out>` records the real native window while Claude Code edits.
+
 The user rejected the first cyan/neon palette, generic SF typography, widely tracked capitals,
 slogans, and uneven gallery spacing. That direction is superseded.
 

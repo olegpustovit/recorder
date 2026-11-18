@@ -4,6 +4,7 @@ import RecorderCore
 struct AudioPanel: View {
     let model: EditorModel
     let audioID: UUID
+    @State private var pointLevel = 0.5
 
     var clip: AudioClip? { model.project.audioClips.first { $0.id == audioID.uuidString } }
     private var duration: Double {
@@ -21,11 +22,7 @@ struct AudioPanel: View {
                     .font(Font(Theme.captionFont)).foregroundStyle(Theme.textSecondaryColor)
                 let words = model.transcriptWords(in: clip)
                 if words.isEmpty, clip.file == "mic.m4a" { TranscriptStatus(model: model) }
-                if !words.isEmpty {
-                    Text("Transcript").font(Font(Theme.headingFont(22)))
-                    Text(words.map(\.text).joined(separator: " ")).font(Font(Theme.captionFont))
-                        .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-                }
+                if !words.isEmpty { TranscriptEditor(model: model) }
                 Text("Linked to").font(Font(Theme.headingFont(22)))
                 TechSegmentedControl(selection: Binding(get: { clip.link?.rawValue ?? "none" }, set: { value in
                     changeLink(AudioClip.Link(rawValue: value))
@@ -53,6 +50,27 @@ struct AudioPanel: View {
                                   range: 0...max(0.1, duration), defaultValue: 0,
                                   format: { $0 == 0 ? "Off" : String(format: "%.2f s", $0) },
                                   onEditingChanged: gesture("Audio Fade"))
+                }
+                Toggle("Duck under speech", isOn: Binding(get: { model.project.audioTracks[clip.track].duck == true }, set: { on in
+                    model.edit(on ? "Duck Track" : "Stop Ducking") { $0.audioTracks[clip.track].duck = on ? true : nil }
+                })).foregroundStyle(Theme.textPrimaryColor)
+                Text("Lowers this track to 25 % wherever another track plays (music under voice).")
+                    .font(Font(Theme.captionFont)).foregroundStyle(Theme.textSecondaryColor)
+                HStack {   // T-936 editable envelope: a level point at the playhead
+                    LabeledSlider(title: "Level at playhead", value: $pointLevel, range: 0...1, defaultValue: 1,
+                                  format: { String(format: "%.0f %%", $0 * 100) }, onEditingChanged: { _ in })
+                    Button("Set") {
+                        var trial = model.project
+                        if trial.setGainPoint(audio: audioID.uuidString, atOutput: model.playhead, value: pointLevel) { model.edit("Volume Point") { $0 = trial } } else { NSSound.beep() }
+                    }.buttonStyle(TechButtonStyle(kind: .secondary, compact: true))
+                }
+                if let points = clip.envelope {
+                    HStack {
+                        Text("\(points.count) volume points").font(Font(Theme.captionFont)).foregroundStyle(Theme.textSecondaryColor)
+                        Spacer(minLength: 0)
+                        Button("Clear") { model.edit("Clear Volume Points") { p in if let i = p.audioClips.firstIndex(where: { $0.id == audioID.uuidString }) { p.audioClips[i].envelope = nil } } }
+                            .buttonStyle(TechButtonStyle(kind: .secondary, compact: true))
+                    }
                 }
                 Text(String(format: "Duration %.2f s", duration)).font(Font(Theme.captionFont)).foregroundStyle(Theme.textSecondaryColor)
                 Button("Remove audio", role: .destructive) {
@@ -177,5 +195,86 @@ struct AudioClipsPanel: View {
 
     private func gesture(_ name: String) -> (Bool) -> Void {
         { editing in editing ? model.beginGesture() : model.commitGesture(name) }
+    }
+}
+
+/// Text-based editing (T-931): the kept words in output order; click (⇧-click extends) selects, ⌫ or "Cut" removes them
+/// through the same `cutWords` op the agent uses (`EditorModel.apply`), so both paths share validation and one undo step.
+struct TranscriptEditor: View {
+    let model: EditorModel
+    @State private var selected: Set<String> = []
+    @State private var anchor: Int?
+
+    var body: some View {
+        let view = agentTranscript(model.project, words: model.transcript ?? [])
+        let fillers = view.words.filter(\.filler).map(\.id)
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Transcript").font(Font(Theme.headingFont(22))).foregroundStyle(Theme.textPrimaryColor)
+            WordFlow(spacing: 4) {
+                ForEach(Array(view.words.enumerated()), id: \.element.id) { index, word in
+                    Text(word.text).font(Font(Theme.captionFont))
+                        .padding(.horizontal, 3).padding(.vertical, 1)
+                        .foregroundStyle(selected.contains(word.id) ? Theme.bgWindowColor : Theme.textPrimaryColor)
+                        .background(selected.contains(word.id) ? Theme.textPrimaryColor : .clear)
+                        .underline(word.filler, pattern: .dot, color: Theme.warningColor)
+                        .contentShape(Rectangle())
+                        .onTapGesture { select(index, in: view.words) }
+                        .accessibilityAddTraits(.isButton).accessibilityLabel(word.text + (word.filler ? ", filler" : ""))
+                }
+            }
+            HStack {
+                Button("Cut \(selected.count) word\(selected.count == 1 ? "" : "s")") { cut(Array(selected), transcript: view.transcript) }
+                    .buttonStyle(TechButtonStyle(kind: .secondary, compact: true)).disabled(selected.isEmpty)
+                    .keyboardShortcut(.delete, modifiers: [])
+                Button("Remove \(fillers.count) filler\(fillers.count == 1 ? "" : "s")") { cut(fillers, transcript: view.transcript) }
+                    .buttonStyle(TechButtonStyle(kind: .secondary, compact: true)).disabled(fillers.isEmpty)
+            }
+        }
+    }
+
+    private func select(_ index: Int, in words: [AgentWord]) {
+        if NSEvent.modifierFlags.contains(.shift), let anchor {
+            selected = Set(words[min(anchor, index)...max(anchor, index)].map(\.id))
+        } else {
+            let id = words[index].id
+            if selected.contains(id) { selected.remove(id) } else { selected.insert(id) }
+            anchor = index
+        }
+        if let first = words.first(where: { selected.contains($0.id) }) { model.isPlaying = false; model.playhead = first.from }
+    }
+
+    private func cut(_ ids: [String], transcript: String) {
+        guard !ids.isEmpty else { return }
+        model.apply([.cutWords(transcript: transcript, words: ids.sorted { (Int($0.dropFirst()) ?? 0) < (Int($1.dropFirst()) ?? 0) }, snap: true)],
+                    name: ids.count == 1 ? "Cut Word" : "Cut \(ids.count) Words")
+        selected = []; anchor = nil
+    }
+}
+
+/// Wrapping row layout for transcript words.
+struct WordFlow: SwiftUI.Layout {
+    var spacing: CGFloat
+    func sizeThatFits(proposal: ProposedViewSize, subviews: LayoutSubviews, cache: inout ()) -> CGSize {
+        let rows = arrange(width: proposal.width ?? .infinity, subviews)
+        return CGSize(width: proposal.width ?? rows.map(\.width).max() ?? 0, height: rows.last.map { $0.y + $0.height } ?? 0)
+    }
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: LayoutSubviews, cache: inout ()) {
+        for row in arrange(width: bounds.width, subviews) {
+            for (index, x) in row.items { subviews[index].place(at: CGPoint(x: bounds.minX + x, y: bounds.minY + row.y), proposal: .unspecified) }
+        }
+    }
+    private func arrange(width: CGFloat, _ subviews: LayoutSubviews) -> [(items: [(Int, CGFloat)], y: CGFloat, width: CGFloat, height: CGFloat)] {
+        var rows: [(items: [(Int, CGFloat)], y: CGFloat, width: CGFloat, height: CGFloat)] = [([], 0, 0, 0)]
+        for (index, view) in subviews.enumerated() {
+            let size = view.sizeThatFits(.unspecified)
+            if rows[rows.count - 1].width + size.width > width, !rows[rows.count - 1].items.isEmpty {
+                let last = rows[rows.count - 1]
+                rows.append(([], last.y + last.height + spacing, 0, 0))
+            }
+            rows[rows.count - 1].items.append((index, rows[rows.count - 1].width))
+            rows[rows.count - 1].width += size.width + spacing
+            rows[rows.count - 1].height = max(rows[rows.count - 1].height, size.height)
+        }
+        return rows
     }
 }

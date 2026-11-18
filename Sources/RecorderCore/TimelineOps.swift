@@ -10,7 +10,7 @@ public enum Edge: Sendable {
 /// `assert`. The x-axis callers work in is *output* time; conversion to *source* time (where
 /// clips live) goes only through `TimeMap`. See docs/SPEC.md §7.4.
 public extension Project {
-    var videoLayerLanes: [Int] { Set(layers.filter { $0.kind != .image }.map(\.track)).sorted() }
+    var videoLayerLanes: [Int] { Set(layers.filter { $0.hasMedia }.map(\.track)).sorted() }
 
     /// Replay a lifted scene on its original clock so boundary springs and mask fades keep their history.
     func recordingScene(for layer: LayerBlock) -> (project: Project, clip: Clip, sourceStart: Double, sourceRate: Double) {
@@ -101,7 +101,7 @@ public extension Project {
         guard preferred >= 0, preferred < Int.max else { return nil }
         var track = preferred
         while !available(track) { guard track < Int.max - 1 else { return nil }; track += 1 }
-        if kind != .image, videoLayerLanes.count >= 4, !videoLayerLanes.contains(track) { return videoLayerLanes.first(where: available) }
+        if kind == .video || kind == .recording, videoLayerLanes.count >= 4, !videoLayerLanes.contains(track) { return videoLayerLanes.first(where: available) }
         return track
     }
 
@@ -1523,12 +1523,13 @@ public extension Project {
         switch edge {
         case .leading:
             let lower = max(neighbours.filter { $0.end <= range.start + 1e-9 }.map(\.end).max() ?? 0,
-                            layer.kind != .image ? range.start - layer.mediaStart / (layer.mediaRate ?? 1) : 0)
+                            layer.hasMedia ? range.start - layer.mediaStart / (layer.mediaRate ?? 1) : 0)
             changed.start = min(max(requested, lower), range.end - (layer.kind == .recording ? Self.minClipLength / (layer.mediaRate ?? 1) : 0.5))
             changed.advanceMedia(by: changed.start - range.start)
         case .trailing:
             let upper = min(neighbours.filter { $0.start >= range.end - 1e-9 }.map(\.start).min() ?? .infinity,
-                            layer.kind != .image ? range.start + ((mediaDuration ?? (layer.kind == .recording ? source.duration : .infinity)) - layer.mediaStart) / (layer.mediaRate ?? 1) : .infinity)
+                            // An imported video whose length the caller doesn't know may shrink but not run past its current media end (T-911 fuzz).
+                            layer.hasMedia ? range.start + ((mediaDuration ?? (layer.kind == .recording ? source.duration : layer.mediaStart + (range.end - range.start) * (layer.mediaRate ?? 1))) - layer.mediaStart) / (layer.mediaRate ?? 1) : .infinity)
             changed.end = max(min(requested, upper), range.start + (layer.kind == .recording ? Self.minClipLength / (layer.mediaRate ?? 1) : 0.5))
         }
         guard changed.start != range.start || changed.end != range.end else { return }
@@ -1599,7 +1600,7 @@ public extension Project {
                     return (TimeRange(start: start, end: start + $0.outputDuration), nil)
                 }
             case .camera: targets = cameraClips.compactMap { camera in outputRange(camera, connected: false).map { ($0, nil) } }
-            case .layer: targets = layers.filter { $0.kind != .image && ($0.file == audio.file || ($0.kind == .recording && ["mic.m4a", "system.m4a"].contains(audio.file))) && (targetLayer == nil || $0.id == targetLayer) }.compactMap { layer in
+            case .layer: targets = layers.filter { $0.hasMedia && ($0.file == audio.file || ($0.kind == .recording && ["mic.m4a", "system.m4a"].contains(audio.file))) && (targetLayer == nil || $0.id == targetLayer) }.compactMap { layer in
                 outputRange(layer, connected: true).map { ($0, layer.id) }
             }
             }
@@ -1666,7 +1667,7 @@ public extension Project {
             referenceRate = (camera.mediaRate ?? 1) * clips[index].timeScale
         case .layer:
             guard let layer = layers.first(where: { layer in
-                guard layer.kind != .image, let interval = outputRange(layer, connected: true) else { return false }
+                guard layer.hasMedia, let interval = outputRange(layer, connected: true) else { return false }
                 return audio.link == .layer ? layer.id == audio.layer : layer.file == audio.file && interval.start < range.end && interval.end > range.start
             }), let start = map.outputTime(atSource: layer.start) else { return nil }
             referenceRate = layer.mediaRate ?? 1
@@ -2151,6 +2152,7 @@ public extension Project {
         if let e = masks.blockInvariantError(kind: "mask", duration: timelineSourceDuration) { return e }
         for style in [TextBlock.Style.caption, .lowerThird, .chapter] {
             if let e = texts.filter({ $0.style.sharesLane(with: style) }).blockInvariantError(kind: "text", duration: timelineSourceDuration) { return e }
+            if let e = texts.lazy.compactMap({ t in t.keys.flatMap { keysError($0, length: t.end - t.start) }.map { "text \(t.id) \($0)" } }).first { return e }
         }
         if let e = windowShots.blockInvariantError(kind: "window shot", duration: timelineSourceDuration) { return e }
         func mediaIsValid(file: String, start: Double, length: Double) -> Bool {
@@ -2185,7 +2187,7 @@ public extension Project {
                 return "audio \(index) media range outside file"
             }
             if audioClip.link == .layer {
-                guard let layer = audioClip.layer, layers.contains(where: { $0.id == layer && $0.kind != .image }) else {
+                guard let layer = audioClip.layer, layers.contains(where: { $0.id == layer && $0.hasMedia }) else {
                     return "audio \(index) dangling layer link"
                 }
             } else if audioClip.layer != nil { return "audio \(index) layer without layer link" }
@@ -2231,7 +2233,10 @@ public extension Project {
                 }
             }
             if layer.kind == .recording && (!(0.25...16).contains(rate) || layer.file != "screen.mov") { return "recording layer \(index) invalid file or rate" }
-            if layer.kind != .image && !mediaIsValid(file: layer.file, start: layer.mediaStart, length: (layer.end - layer.start) * rate) {
+            if let keys = layer.keys, let e = keysError(keys, length: layer.end - layer.start) { return "layer \(index) \(e)" }
+            if (layer.kind == .graphic) != (layer.graphic != nil) { return "layer \(index) graphic payload must match its kind" }
+            if let g = layer.graphic, let e = graphicError(g, length: layer.end - layer.start) { return "graphic layer \(index) \(e)" }
+            if layer.hasMedia && !mediaIsValid(file: layer.file, start: layer.mediaStart, length: (layer.end - layer.start) * rate) {
                 return "layer \(index) media range outside file"
             }
         }
@@ -2315,7 +2320,7 @@ extension LayerBlock: TimedBlock {
         scene = carried
     }
     mutating func advanceMedia(by delta: Double) {
-        guard kind != .image else { return }
+        guard hasMedia else { return }
         mediaStart += delta * (mediaRate ?? 1)
         if kind == .recording, var carried = scene {
             for i in carried.zooms.indices { carried.zooms[i].start -= delta; carried.zooms[i].end -= delta }
@@ -2758,4 +2763,109 @@ public func snap(_ x: Double, candidates: [Double], threshold: Double) -> (value
         return (x, false)
     }
     return (nearest, true)
+}
+
+// MARK: - Roll and slip (T-932, EDITING-CORE §5)
+
+public extension Project {
+    /// Roll: moves the cut between clip `i` and `i + 1` to spine time `s`; one grows, the other shrinks, the total length
+    /// stays. Built from `trimClip` (shrink first, then grow into the freed time), so linked audio, layers and settling
+    /// follow the same rules as a trim. Needs a seamless boundary on one clock; returns false (unchanged) otherwise.
+    @discardableResult
+    mutating func rollEdit(between i: Int, toSource s: Double) -> Bool {
+        guard clips.indices.contains(i), clips.indices.contains(i + 1), s.isFinite else { return false }
+        let a = clips[i], b = clips[i + 1]
+        guard !a.isEmpty, !b.isEmpty, abs(a.sourceEnd - b.sourceStart) < 1e-9, abs(a.timeScale - b.timeScale) < 1e-9 else { return false }
+        let before = self, length = TimeMap(clips).outputDuration
+        if s > a.sourceEnd { trimClip(i + 1, edge: .leading, toSource: s); trimClip(i, edge: .trailing, toSource: clips[i + 1].sourceStart) }
+        else { trimClip(i, edge: .trailing, toSource: s); trimClip(i + 1, edge: .leading, toSource: clips[i].sourceEnd) }
+        guard abs(TimeMap(clips).outputDuration - length) < 1e-6, abs(clips[i].sourceEnd - clips[i + 1].sourceStart) < 1e-9,
+              clips[i] != a || clips[i + 1] != b, checkInvariants() == nil else { self = before; return false }
+        return true
+    }
+
+    /// Slip: plays other footage in clip `i` (media in-point + `delta` media seconds); position and length stay. Linked
+    /// screen/camera audio inside the clip moves with it; audio spanning other clips would desync, so that refuses.
+    @discardableResult
+    mutating func slipClip(_ i: Int, byMedia delta: Double) -> Bool {
+        guard clips.indices.contains(i), !clips[i].isEmpty, delta.isFinite, delta != 0 else { return false }
+        let clip = clips[i], before = self
+        let limit = clip.file == nil ? source.duration : clip.mediaEnd   // imported files: no known length, so never later
+        guard clip.mediaIn + delta >= 0, clip.mediaEnd + delta <= limit + 1e-9 else { return false }
+        let linked = audioClips.indices.filter { audioClips[$0].link == .screen || audioClips[$0].link == .camera }
+            .filter { audioClips[$0].end > clip.sourceStart + 1e-9 && audioClips[$0].start < clip.sourceEnd - 1e-9 }
+        guard linked.allSatisfy({ audioClips[$0].start >= clip.sourceStart - 1e-9 && audioClips[$0].end <= clip.sourceEnd + 1e-9 }) else { return false }
+        clips[i].mediaStart = clip.mediaIn + delta
+        for a in linked where audioClips[a].link == .screen || linkVideoEdits { audioClips[a].mediaStart += delta * (audioClips[a].mediaRate ?? 1) / (clip.speed / clip.timeScale) }
+        guard checkInvariants() == nil else { self = before; return false }
+        return true
+    }
+}
+
+// MARK: - Freeze frame (T-933)
+
+public extension Project {
+    /// Holds a still (`file`, a package `media/` image — the frame rendered by the caller) for `duration` output seconds
+    /// at output `time`, pushing later footage back. Built from existing ops: split, image layer, insert into the Video lane.
+    @discardableResult
+    mutating func insertStill(file: String, atOutput time: Double, duration: Double) -> Bool {
+        let before = self
+        guard time.isFinite, duration.isFinite, duration >= 0.5, time >= 0, time <= TimeMap(clips).outputDuration else { return false }   // image-layer minimum
+        if time > 1e-6, time < TimeMap(clips).outputDuration - 1e-6, !clips.indices.contains(where: { i in
+            abs(clips[..<i].reduce(0) { $0 + $1.outputDuration } - time) < 1e-6 }) {
+            guard split(atOutput: time) else { self = before; return false }
+        }
+        var offset = 0.0, index = clips.count
+        for (i, clip) in clips.enumerated() { if abs(offset - time) < 1e-6 { index = i; break }; offset += clip.outputDuration }
+        guard let id = addLayer(kind: .image, file: file, atOutput: time, duration: duration, rect: NormRect()) else { self = before; return false }
+        guard let inserted = insertLayers([id], intoVideoAt: index, copy: false).first else { self = before; return false }
+        // `file` is the finished frame (background, zoom, cursor), so it must not be framed again as screen footage: the
+        // inserted time becomes a gap and the still is a full-canvas image layer over it (drawn unframed).
+        clips[inserted].isGap = true; clips[inserted].file = nil; clips[inserted].mediaStart = nil
+        guard let start = TimeMap(clips).outputTime(atSource: clips[inserted].sourceStart),
+              let still = addLayer(kind: .image, file: file, atOutput: start, duration: max(0.5, clips[inserted].outputDuration), rect: NormRect()),
+              let i = layers.firstIndex(where: { $0.id == still.uuidString }) else { self = before; return false }
+        layers[i].end = layers[i].start + clips[inserted].outputDuration
+        layers[i].backdrop = .none; layers[i].fadeIn = nil; layers[i].fadeOut = nil
+        guard checkInvariants() == nil else { self = before; return false }
+        return true
+    }
+}
+
+// MARK: - Seam transitions (T-934)
+
+public enum SeamTransition: String, Codable, Sendable, CaseIterable { case dissolve, dip }
+
+public extension Project {
+    /// Output time of the clip boundary nearest `time` (within 0.5 s), with the index of the clip before it.
+    func seam(near time: Double) -> (index: Int, at: Double)? {
+        var offset = 0.0, best: (index: Int, at: Double)?
+        for i in clips.indices.dropLast() {
+            offset += clips[i].outputDuration
+            if abs(offset - time) <= 0.5, best.map({ abs(offset - time) < abs($0.at - time) }) ?? true { best = (i, offset) }
+        }
+        return best
+    }
+
+    /// dissolve: `file` (the outgoing clip's last frame, rendered by the caller) is a full-canvas still that fades out over
+    /// the first `duration` s of the next clip · dip: the clips fade out/in through the background (existing clip fades).
+    @discardableResult
+    mutating func addTransition(_ kind: SeamTransition, near time: Double, duration: Double, file: String? = nil) -> Bool {
+        // A dissolve's still is an image layer, so it shares the 0.5 s layer minimum; a dip can be shorter.
+        guard duration.isFinite, (kind == .dissolve ? 0.5...3 : 0.1...3).contains(duration), let seam = seam(near: time),
+              !clips[seam.index].isEmpty, !clips[seam.index + 1].isEmpty else { return false }
+        let before = self
+        switch kind {
+        case .dip:
+            clips[seam.index].fadeOut = duration / 2; clips[seam.index + 1].fadeIn = duration / 2
+        case .dissolve:
+            guard let file, clips[seam.index + 1].outputDuration >= duration,
+                  let id = addLayer(kind: .image, file: file, atOutput: seam.at, duration: max(0.5, duration), rect: NormRect()),
+                  let i = layers.firstIndex(where: { $0.id == id.uuidString }) else { self = before; return false }
+            layers[i].end = layers[i].start + duration
+            layers[i].backdrop = .none; layers[i].motion = .fade; layers[i].fadeIn = nil; layers[i].fadeOut = duration
+        }
+        guard checkInvariants() == nil else { self = before; return false }
+        return true
+    }
 }

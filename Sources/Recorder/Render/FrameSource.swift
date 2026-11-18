@@ -150,7 +150,7 @@ func makeComposition(package: URL, project: Project, micURL: URL? = nil) async t
     let map = TimeMap(project.clips)
     for lane in project.videoLayerLanes {
         var previousEnd = 0.0
-        for layer in project.layers.filter({ $0.kind != .image && $0.track == lane }).sorted(by: { $0.start < $1.start }) {
+        for layer in project.layers.filter({ $0.hasMedia && $0.track == lane }).sorted(by: { $0.start < $1.start }) {
             guard lane >= 0, layer.start.isFinite, layer.end.isFinite, layer.end - layer.start >= 0.5 - 1e-9,
                   layer.mediaStart.isFinite, layer.mediaStart >= 0, let output = map.outputTime(atSource: layer.start), output >= previousEnd - 1e-9 else {
                 throw FrameSourceError.invalidProject("Invalid video layer \(layer.id)")
@@ -303,7 +303,7 @@ func makeAudioMix(project: Project, audioTracks: [AVMutableCompositionTrack]) ->
         var cursor = CMTime.negativeInfinity
         for audio in project.audioClips.filter({ $0.track == index }).sorted(by: { $0.start < $1.start }) {
             let previous = cursor
-            for ramp in project.audioVolumeRamps(audio) {
+            for ramp in project.duckedVolumeRamps(audio) {
                 let start = max(cursor, CMTime(seconds: ramp.range.start, preferredTimescale: 600))
                 let end = CMTime(seconds: ramp.range.end, preferredTimescale: 600)
                 guard start < end else { continue }

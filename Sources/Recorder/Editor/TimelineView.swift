@@ -62,7 +62,7 @@ final class TimelineView: NSView {
     private var dragOrigin: CGRect?
     private var selectionStart: CFTimeInterval?
     private var selectionKey = ""
-    private var reduceMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
+    private var reduceMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion || model?.reviewReduceMotionPreview == true }
 
     func toggleSnapping() {
         snappingEnabled.toggle()
@@ -394,6 +394,14 @@ final class TimelineView: NSView {
     private var cutLane: Lane = .clip
     private var bladeShakeStart: CFTimeInterval?
     private var animationLink: CADisplayLink?
+    private var reviewRevealStarts: [String: CFTimeInterval] = [:]
+    private var reviewSession: String?
+    private var reviewMarkedIDs: Set<String> = []
+    private var reviewLastCuts: [(id: String, time: Double, label: String)] = []
+    private var reviewSettlementStart: CFTimeInterval?
+    private var reviewMotionReduced = false
+    var debugReviewSettling: Bool { reviewSettlementStart != nil }
+    func debugReviewProgress(_ id: String) -> Double { reviewProgress(id) }
 
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
@@ -597,6 +605,11 @@ final class TimelineView: NSView {
     @objc private func animationTick(_ link: CADisplayLink) {
         let now = CACurrentMediaTime()
         var active = false
+        if reviewRevealStarts.values.contains(where: { now < $0 + (reduceMotion ? 0.14 : 0.32) }) { active = true }
+        if let start = reviewSettlementStart {
+            if now - start < (reduceMotion ? 0.14 : 0.22) { active = true }
+            else { reviewSettlementStart = nil; reviewMarkedIDs = []; reviewLastCuts = [] }
+        }
         if let start = cutFlash?.start {
             if now - start < Self.cutFlashDuration { active = true } else { cutFlash = nil }
         }
@@ -636,6 +649,7 @@ final class TimelineView: NSView {
     private func observeModel() {
         needsLayout = true
         guard let model else { return }
+        updateReviewAnimation(model)
         let previousContentHeight = contentHeight
         withObservationTracking {
             _ = model.project
@@ -652,6 +666,8 @@ final class TimelineView: NSView {
             _ = model.reviewCuts
             _ = model.reviewAddedIDs
             _ = model.isReviewingDraft
+            _ = model.isWatchingDraft
+            _ = model.reviewReduceMotionPreview
         } onChange: { [weak self] in
             DispatchQueue.main.async {
                 guard let self, let model = self.model else { return }
@@ -845,27 +861,79 @@ final class TimelineView: NSView {
         drawFooter()
     }
 
-    private func drawReviewMarks(_ model: EditorModel) {
-        guard model.isReviewingDraft else { return }
-        Theme.textPrimary.setStroke()
+    private func reviewRects(_ model: EditorModel) -> [(id: String, rect: CGRect)] {
         var rects = blockRects(model).map { ($0.id.uuidString, $0.rect) }
-        for audio in model.project.audioClips where model.reviewAddedIDs.contains(audio.id) {
+        for audio in model.project.audioClips {
             rects += model.project.audioSegments(audio).map { (audio.id, audioRect(audio, output: $0.output)) }
         }
-        for (id, rect) in rects where model.reviewAddedIDs.contains(id) {
+        return rects
+    }
+    private func updateReviewAnimation(_ model: EditorModel) {
+        let now = CACurrentMediaTime()
+        if model.isReviewingDraft, let session = model.reviewSessionID {
+            if session != reviewSession { reviewRevealStarts = [:]; reviewSettlementStart = nil }
+            let ids = model.reviewAddedIDs.union(model.reviewCuts.map { "cut:\($0.id)" })
+            if reviewMotionReduced != reduceMotion {
+                for (id, start) in reviewRevealStarts where now < start + 0.32 { reviewRevealStarts[id] = now - 0.32 }
+            }
+            let fresh = ids.subtracting(reviewRevealStarts.keys)
+            let rects = reviewRects(model).filter { fresh.contains($0.id) }
+            let rows = Array(Set(rects.map { $0.rect.minY })).sorted()
+            for id in fresh {
+                let row = rects.first { $0.id == id }.flatMap { rows.firstIndex(of: $0.rect.minY) } ?? 0
+                reviewRevealStarts[id] = now + (reduceMotion ? 0 : Double(row) * 0.075)
+            }
+            reviewRevealStarts = reviewRevealStarts.filter { ids.contains($0.key) }
+            reviewMarkedIDs = model.reviewAddedIDs; reviewLastCuts = model.reviewCuts
+            reviewSession = session
+            if !fresh.isEmpty { ensureAnimating() }
+        } else if reviewSession != nil {
+            reviewSession = nil; reviewRevealStarts = [:]
+            if model.reviewWasAccepted { reviewSettlementStart = now; ensureAnimating() }
+            else { reviewSettlementStart = nil; reviewMarkedIDs = []; reviewLastCuts = [] }
+        }
+        reviewMotionReduced = reduceMotion
+    }
+    private func reviewProgress(_ id: String) -> Double {
+        guard let start = reviewRevealStarts[id] else { return 1 }
+        let t = min(1, max(0, (CACurrentMediaTime() - start) / (reduceMotion ? 0.14 : 0.32)))
+        return 1 - pow(1 - t, 3)
+    }
+    private func applyReviewMask(_ rect: CGRect, id: String) {
+        guard model?.isReviewingDraft == true, reviewMarkedIDs.contains(id) || id.hasPrefix("cut:") else { return }
+        let progress = reviewProgress(id)
+        if reduceMotion { NSGraphicsContext.current?.cgContext.setAlpha(progress) }
+        else { CGRect(x: rect.minX - 3, y: rect.minY - 3, width: (rect.width + 6) * progress, height: rect.height + 6).clip() }
+    }
+    private func drawReviewMarks(_ model: EditorModel) {
+        guard model.isReviewingDraft || reviewSettlementStart != nil else { return }
+        let settled = reviewSettlementStart.map { min(1, (CACurrentMediaTime() - $0) / (reduceMotion ? 0.14 : 0.22)) } ?? 0
+        Theme.textPrimary.withAlphaComponent(1 - settled).setStroke()
+        for (id, rect) in reviewRects(model) where reviewMarkedIDs.contains(id) {
+            NSGraphicsContext.saveGraphicsState()
+            defer { NSGraphicsContext.restoreGraphicsState() }
+            applyReviewMask(rect, id: id)
             let outline = NSBezierPath(rect: rect.insetBy(dx: 1, dy: 1))
-            outline.lineWidth = 1; outline.setLineDash([4, 3], count: 2, phase: 0); outline.stroke()
+            outline.lineWidth = 1
+            let gap = reduceMotion ? 3 : 3 * (1 - settled)
+            if gap > 0.01 { outline.setLineDash([4, gap], count: 2, phase: 0) }
+            outline.stroke()
         }
         let attrs: [NSAttributedString.Key: Any] = [.font: Theme.captionFont, .foregroundColor: Theme.textPrimary]
-        for cut in model.reviewCuts {
+        for cut in reviewLastCuts {
+            NSGraphicsContext.saveGraphicsState()
+            defer { NSGraphicsContext.restoreGraphicsState() }
+            let progress = reviewProgress("cut:\(cut.id)")
+            NSGraphicsContext.current?.cgContext.setAlpha((1 - settled) * (reduceMotion ? progress : 1))
             let px = x(forOutput: cut.time)
             let rule = NSBezierPath()
             rule.move(to: CGPoint(x: px, y: Self.rulerHeight))
-            rule.line(to: CGPoint(x: px, y: contentHeight))
+            rule.line(to: CGPoint(x: px, y: Self.rulerHeight + (contentHeight - Self.rulerHeight) * (reduceMotion ? 1 : progress)))
             rule.lineWidth = 1; rule.stroke()
             let label = cut.label as NSString, size = label.size(withAttributes: attrs)
             let chip = CGRect(x: min(max(gutterWidth, px - size.width / 2 - 4), bounds.width - size.width - 8),
                               y: 1, width: size.width + 8, height: Self.rulerHeight - 2)
+            if !reduceMotion { CGRect(x: chip.minX, y: chip.minY, width: chip.width * progress, height: chip.height).clip() }
             Theme.bgControl.setFill(); NSBezierPath(roundedRect: chip, xRadius: 3, yRadius: 3).fill()
             label.draw(at: CGPoint(x: chip.minX + 4, y: chip.midY - size.height / 2), withAttributes: attrs)
         }
@@ -1046,6 +1114,7 @@ final class TimelineView: NSView {
         }
         if dragKind != nil { status += snapGuideX == nil ? "  · ⌘ free" : "  · Snapped" }
         if let trimChip { status = trimChip.text }
+        if let notice = model.reviewNotice { status = notice }
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineBreakMode = .byTruncatingTail
         let reveal = reduceMotion || dragKind != nil ? 1 : min(1, selectionStart.map { (CACurrentMediaTime() - $0) / Theme.Motion.contextReveal } ?? 1)
@@ -1100,6 +1169,22 @@ final class TimelineView: NSView {
             let label = rulerLabel(t, interval: interval) as NSString
             label.draw(at: CGPoint(x: px + 4, y: 3), withAttributes: attrs)
             t += interval
+        }
+        // Markers (T-930): flag + label on the ruler, from the one item view so they match timeline.get.
+        guard let model else { return }
+        if let range = model.exportRange {   // export In/Out (T-937): a white band on the ruler
+            let a = max(gutterWidth, x(forOutput: range.start)), b = min(bounds.width, x(forOutput: range.end))
+            if b > a { Theme.accent.withAlphaComponent(0.18).setFill(); CGRect(x: a, y: 0, width: b - a, height: Self.rulerHeight).fill()
+                Theme.accent.setFill(); CGRect(x: a, y: Self.rulerHeight - 2, width: b - a, height: 2).fill() }
+        }
+        for marker in items(model.project) where marker.kind == .marker {
+            let px = x(forOutput: marker.out.start)
+            guard px >= gutterWidth - 4, px <= bounds.width else { continue }
+            Theme.warning.setFill()
+            let flag = NSBezierPath(); flag.move(to: CGPoint(x: px, y: Self.rulerHeight)); flag.line(to: CGPoint(x: px, y: 2))
+            flag.line(to: CGPoint(x: px + 7, y: 5)); flag.line(to: CGPoint(x: px, y: 8)); flag.close(); flag.fill()
+            Theme.warning.setStroke(); NSBezierPath.strokeLine(from: CGPoint(x: px, y: 2), to: CGPoint(x: px, y: Self.rulerHeight))
+            (marker.label as NSString).draw(at: CGPoint(x: px + 9, y: Self.rulerHeight - 13), withAttributes: [.font: Theme.captionFont, .foregroundColor: Theme.warning])
         }
     }
 
@@ -1224,7 +1309,7 @@ final class TimelineView: NSView {
                 let rect = CGRect(x: x(forOutput: segment.outStart), y: row.minY + 2,
                                   width: x(forOutput: segment.outEnd) - x(forOutput: segment.outStart), height: row.height - 4)
                 drawBlock(rect, fill: Theme.layout, tornLeft: false, tornRight: false, label: "Camera",
-                          selected: UUID(uuidString: clip.id).map { model?.selection.contains($0) == true } ?? false, tag: clip.color)
+                          selected: UUID(uuidString: clip.id).map { model?.selection.contains($0) == true } ?? false, tag: clip.color, reviewID: clip.id)
             }
         }
     }
@@ -1272,7 +1357,7 @@ final class TimelineView: NSView {
                 let rect = CGRect(x: x(forOutput: segment.outStart), y: row.minY + 2,
                                    width: max(0, x(forOutput: segment.outEnd) - x(forOutput: segment.outStart)), height: row.height - 4)
                 guard rect.width > 0.5 else { continue }
-                drawBlock(rect, fill: Theme.zoom, tornLeft: segment.tornLeft, tornRight: segment.tornRight, label: label, selected: selected, tag: zoom.color)
+                drawBlock(rect, fill: Theme.zoom, tornLeft: segment.tornLeft, tornRight: segment.tornRight, label: label, selected: selected, tag: zoom.color, reviewID: zoom.id)
             }
         }
     }
@@ -1287,7 +1372,7 @@ final class TimelineView: NSView {
                 let rect = CGRect(x: x(forOutput: segment.outStart), y: row.minY + 2,
                                    width: max(0, x(forOutput: segment.outEnd) - x(forOutput: segment.outStart)), height: row.height - 4)
                 guard rect.width > 0.5 else { continue }
-                drawBlock(rect, fill: Theme.layout, tornLeft: segment.tornLeft, tornRight: segment.tornRight, label: label, selected: selected, tag: layout.color)
+                drawBlock(rect, fill: Theme.layout, tornLeft: segment.tornLeft, tornRight: segment.tornRight, label: label, selected: selected, tag: layout.color, reviewID: layout.id)
             }
         }
     }
@@ -1302,7 +1387,7 @@ final class TimelineView: NSView {
                 let rect = CGRect(x: x(forOutput: segment.outStart), y: row.minY + 2,
                                    width: max(0, x(forOutput: segment.outEnd) - x(forOutput: segment.outStart)), height: row.height - 4)
                 guard rect.width > 0.5 else { continue }
-                drawBlock(rect, fill: Theme.layout, tornLeft: segment.tornLeft, tornRight: segment.tornRight, label: label, selected: selected, tag: layout.color)
+                drawBlock(rect, fill: Theme.layout, tornLeft: segment.tornLeft, tornRight: segment.tornRight, label: label, selected: selected, tag: layout.color, reviewID: layout.id)
             }
         }
     }
@@ -1320,7 +1405,7 @@ final class TimelineView: NSView {
                 let rect = CGRect(x: x(forOutput: segment.outStart), y: row.minY + 2,
                                    width: max(0, x(forOutput: segment.outEnd) - x(forOutput: segment.outStart)), height: row.height - 4)
                 guard rect.width > 0.5 else { continue }
-                drawBlock(rect, fill: Theme.mask, tornLeft: segment.tornLeft, tornRight: segment.tornRight, label: label, selected: selected, tag: mask.color)
+                drawBlock(rect, fill: Theme.mask, tornLeft: segment.tornLeft, tornRight: segment.tornRight, label: label, selected: selected, tag: mask.color, reviewID: mask.id)
             }
         }
     }
@@ -1334,7 +1419,7 @@ final class TimelineView: NSView {
                 let rect = CGRect(x: x(forOutput: segment.outStart), y: row.minY + 2,
                                    width: max(0, x(forOutput: segment.outEnd) - x(forOutput: segment.outStart)), height: row.height - 4)
                 guard rect.width > 0.5 else { continue }
-                drawBlock(rect, fill: Theme.text, tornLeft: segment.tornLeft, tornRight: segment.tornRight, label: text.text, selected: selected, tag: text.color)
+                drawBlock(rect, fill: Theme.text, tornLeft: segment.tornLeft, tornRight: segment.tornRight, label: text.text, selected: selected, tag: text.color, reviewID: text.id)
             }
         }
     }
@@ -1350,7 +1435,7 @@ final class TimelineView: NSView {
                 let rect = CGRect(x: x(forOutput: segment.outStart), y: row.minY + 2,
                                    width: max(0, x(forOutput: segment.outEnd) - x(forOutput: segment.outStart)), height: row.height - 4)
                 guard rect.width > 0.5 else { continue }
-                drawBlock(rect, fill: Theme.clip, tornLeft: segment.tornLeft, tornRight: segment.tornRight, label: "Window \(shot.window + 1)", selected: selected, tag: shot.color)
+                drawBlock(rect, fill: Theme.clip, tornLeft: segment.tornLeft, tornRight: segment.tornRight, label: "Window \(shot.window + 1)", selected: selected, tag: shot.color, reviewID: shot.id)
             }
         }
     }
@@ -1388,7 +1473,10 @@ final class TimelineView: NSView {
         CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: min(3, rect.height)).fill()
     }
 
-    private func drawBlock(_ rect: CGRect, fill: NSColor, tornLeft: Bool, tornRight: Bool, label: String?, selected: Bool = false, tag: BlockColor? = nil) {
+    private func drawBlock(_ rect: CGRect, fill: NSColor, tornLeft: Bool, tornRight: Bool, label: String?, selected: Bool = false, tag: BlockColor? = nil, reviewID: String? = nil) {
+        NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        if let reviewID { applyReviewMask(rect, id: reviewID) }
         let radius: CGFloat = 0
         let path = NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius)
         let hovered = hoverX.map { x in hoverY.map { rect.contains(CGPoint(x: x, y: $0)) } ?? false } ?? false
@@ -2426,13 +2514,18 @@ final class TimelineView: NSView {
         }
         for layer in project.layers {
             guard let rect = mediaLayerRect(layer), rect.maxX >= gutterWidth, rect.minX <= bounds.width else { continue }
-            let color = tinted(layer.kind == .image ? Theme.mask : Theme.zoom, layer.color)
-            drawBlock(rect, fill: color, tornLeft: false, tornRight: false, label: nil, selected: UUID(uuidString: layer.id).map(model.selection.contains) ?? false)
+            NSGraphicsContext.saveGraphicsState()
+            defer { NSGraphicsContext.restoreGraphicsState() }
+            applyReviewMask(rect, id: layer.id)
+            let color = tinted(layer.kind == .graphic ? Theme.layout : layer.kind == .image ? Theme.mask : Theme.zoom, layer.color)
+            let selected = UUID(uuidString: layer.id).map(model.selection.contains) ?? false
+            drawBlock(rect, fill: color, tornLeft: false, tornRight: false, label: nil, selected: selected)
             NSGraphicsContext.saveGraphicsState()
             rect.clip()
             let url = model.packageURL.appendingPathComponent(layer.file).standardizedFileURL.resolvingSymlinksInPath()
-            let missing = !url.path.hasPrefix(model.packageURL.standardizedFileURL.resolvingSymlinksInPath().path + "/") || !FileManager.default.fileExists(atPath: url.path)
+            let missing = layer.kind != .graphic && (!url.path.hasPrefix(model.packageURL.standardizedFileURL.resolvingSymlinksInPath().path + "/") || !FileManager.default.fileExists(atPath: url.path))
             if missing { drawAudioHatch(rect) }
+            else if layer.kind == .graphic {}   // drawn by the compositor; no file thumbnails
             else {
                 var pixel = rect.minX + floor(max(0, gutterWidth - rect.minX) / 54) * 54
                 while pixel < min(bounds.width, rect.maxX) {
@@ -2446,7 +2539,15 @@ final class TimelineView: NSView {
             }
             color.withAlphaComponent(0.92).setFill(); CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: 12).fill()
             drawTagStripe(rect, layer.color)
-            let label = missing ? "Missing media" : String(format: "%@ · %.1f s", layer.kind == .image ? "Image" : "Video", layer.end - layer.start)
+            let name = layer.kind == .graphic ? (layer.graphic?.template?.name ?? "Graphic") : layer.kind == .image ? "Image" : "Video"
+            let label = missing ? "Missing media" : String(format: "%@ · %.1f s", name, layer.end - layer.start)
+            if selected { // keyframe diamonds (T-924)
+                Theme.mediaMatte.setFill()
+                for key in layer.keys ?? [] {
+                    let cx = rect.minX + CGFloat(key.t * geometry.pxPerSecond), cy = rect.midY + 4
+                    let d = NSBezierPath(); d.move(to: CGPoint(x: cx, y: cy - 4)); d.line(to: CGPoint(x: cx + 4, y: cy)); d.line(to: CGPoint(x: cx, y: cy + 4)); d.line(to: CGPoint(x: cx - 4, y: cy)); d.close(); d.fill()
+                }
+            }
             (label as NSString).draw(at: CGPoint(x: max(rect.minX + 18, gutterWidth + 4), y: rect.minY), withAttributes: [.font: Theme.captionFont, .foregroundColor: Theme.mediaMatte])
             for zoom in layer.scene?.zooms ?? [] { // carried zooms, dimmed (they belong to the scene, not the Zoom lane)
                 Theme.zoom.withAlphaComponent(0.4).setFill()
@@ -2555,6 +2656,7 @@ final class TimelineView: NSView {
     }
 
     override func keyDown(with event: NSEvent) {
+        if event.keyCode == 53, let model, MCPServer.shared.takeOverWatching(model) { return }
         if model?.isReviewingDraft == true, ![49, 123, 124, 125, 126].contains(event.keyCode) { return }
         if let voiceover = model?.voiceover, voiceover.isActive {
             voiceover.handleRecordingKey(event)
@@ -2588,6 +2690,7 @@ final class TimelineView: NSView {
         if cmd, chars?.lowercased() == "v" { paste(nil); return }
         if cmd, chars?.lowercased() == "l" { toggleAudioLink(); return }
         if !cmd, chars?.lowercased() == "n" { toggleSnapping(); return }
+        if !cmd, shift, chars?.lowercased() == "f", let model { Task { await model.freezeFrame() }; return }   // ⇧F = freeze frame (T-933)
         if !cmd, chars?.lowercased() == "f" { menuZoomToSelection(); return }
         if cmd, chars == "=" || chars == "+", let model {
             zoom(by: 1.4, anchorX: geometry.x(forOutput: model.playhead))
@@ -2611,6 +2714,29 @@ final class TimelineView: NSView {
             addZoom(atOutput: model?.playhead ?? 0)
         } else if !cmd, !shift, chars?.lowercased() == "t", let model { // `T` = add text at the playhead
             model.addText(atSource: model.timeMap.sourceTime(atOutput: model.playhead))
+        } else if !cmd, !shift, event.modifierFlags.contains(.option), event.charactersIgnoringModifiers?.lowercased() == "k", let model { // `⌥K` = keyframe
+            model.addKeyAtPlayhead()
+        } else if !cmd, event.modifierFlags.contains(.option), chars == "," || chars == "." || chars == "<" || chars == ">", let model,
+                  let i = model.selectedClip { // `⌥,`/`⌥.` = slip the selected clip one frame (⇧: ten) (T-932)
+            let frames = (chars == "," || chars == "<" ? -1.0 : 1.0) * (shift ? 10 : 1)
+            var trial = model.project
+            if trial.slipClip(i, byMedia: frames / 30) { model.edit("Slip Clip") { $0 = trial } } else { NSSound.beep() }
+        } else if !cmd, !shift, event.modifierFlags.contains(.option), chars?.lowercased() == "x", let model { // `⌥X` = clear In/Out (T-937)
+            model.exportRange = nil; needsDisplay = true
+        } else if !cmd, !shift, !event.modifierFlags.contains(.option), chars?.lowercased() == "i" || chars?.lowercased() == "o", let model { // `I`/`O` = export In/Out
+            model.setRangeEdge(in: chars?.lowercased() == "i"); needsDisplay = true
+        } else if !cmd, !shift, chars?.lowercased() == "m", let model { // `M` = toggle a marker at the playhead (T-930)
+            model.toggleMarkerAtPlayhead()
+        } else if event.modifierFlags.contains(.control), let arrow = event.specialKey, arrow == .leftArrow || arrow == .rightArrow, let model { // `⌃←/⌃→` = previous/next marker
+            model.jumpToMarker(forward: arrow == .rightArrow)
+        } else if !cmd, !shift, chars?.lowercased() == "g" { // `G` = template menu at the pointer (T-924)
+            let menu = NSMenu(title: "Add Graphic")
+            for info in GraphicTemplates.catalog {
+                let entry = NSMenuItem(title: info.name.prefix(1).uppercased() + info.name.dropFirst(), action: #selector(EditorWindowController.addGraphicAtPlayhead(_:)), keyEquivalent: "")
+                entry.representedObject = info.name; entry.toolTip = info.summary
+                menu.addItem(entry)
+            }
+            menu.popUp(positioning: nil, at: convert(event.locationInWindow, from: nil), in: self)
         } else if cmd, chars?.lowercased() == "d" { // `⌘D` = duplicate the selected zoom/mask after itself
             duplicateSelection()
         } else {
@@ -2735,13 +2861,29 @@ final class TimelineView: NSView {
         }
         let hit = hitTest(at: p)
         switch hit {
+        case .ruler where event.clickCount >= 2:   // double-click a marker flag = rename it (T-930)
+            guard let model, let marker = items(model.project).first(where: { $0.kind == .marker && abs(x(forOutput: $0.out.start) - p.x) < 8 }) else { break }
+            renamingMarker = marker.id
+            let field = NSTextField(string: marker.label)
+            field.frame = NSRect(x: 0, y: 0, width: 180, height: 22)
+            let popover = NSPopover(), controller = NSViewController()
+            controller.view = field; popover.contentViewController = controller; popover.behavior = .transient
+            field.target = self; field.action = #selector(commitMarkerRename(_:))
+            if window != nil { popover.show(relativeTo: NSRect(x: p.x - 4, y: 0, width: 8, height: Self.rulerHeight), of: self, preferredEdge: .maxY) }
+            markerPopover = popover
         case .playhead, .ruler:
             dragKind = .scrub
             scrub(toViewX: p.x)
         case .clipEdge(let i, let edge):
+            rollTrim = event.modifierFlags.contains(.option)   // ⌥-drag a cut = roll (T-932)
             beginTrim(index: i, edge: edge)
         case .clipBody(let i):
             guard let model else { return }
+            if event.modifierFlags.contains(.command), !model.project.clips[i].isEmpty {   // ⌘-drag = slip (T-932)
+                selectClip(i); model.beginGesture()
+                slipDrag = (i, p.x, model.project)
+                return
+            }
             if event.modifierFlags.contains(.shift) {
                 if model.selectedClips.contains(i) { model.selectedClips.subtract(model.project.clipGroup(containing: i)) }
                 else { model.selectedClips.insert(i) }
@@ -3016,6 +3158,13 @@ final class TimelineView: NSView {
 
     override func mouseDragged(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
+        if let slip = slipDrag, let model {   // drag right = later footage, at the clip's own playback rate
+            let clip = slip.project.clips[slip.index]
+            let media = Double(p.x - slip.startX) / geometry.pxPerSecond * clip.speed / clip.timeScale
+            model.update { project in project = slip.project; project.slipClip(slip.index, byMedia: media) }
+            trimChip = (x: p.x, text: String(format: "Slip %+.2f s", media)); needsDisplay = true
+            return
+        }
         if overviewDrag != nil { panOverview(to: p.x, centered: false); return }
         if eraserDrag != nil { eraserDrag?.end = max(gutterWidth, p.x); needsDisplay = true; return }
         if let start = marqueeStart, let model {
@@ -3110,6 +3259,7 @@ final class TimelineView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
+        if slipDrag != nil { slipDrag = nil; trimChip = nil; model?.commitGesture("Slip Clip"); needsDisplay = true; return }
         if eraserDrag != nil { finishEraser(); return }
         if marqueeStart != nil {
             if marqueeRect == nil {
@@ -3180,6 +3330,7 @@ final class TimelineView: NSView {
     /// SPEC §7.3: "Esc: cancel drag → exit split mode → deselect", checked in that order.
     /// AC-TL-6: `Esc` mid-drag restores the pre-drag project.
     override func cancelOperation(_ sender: Any?) {
+        if let model, model.isReviewingDraft { MCPServer.shared.takeOverWatching(model); return }
         if model?.voiceover.isActive == true { model?.voiceover.discard(); return }
         if marqueeStart != nil {
             model?.selectedClips = marqueeOriginalSelection.clips
@@ -3231,6 +3382,19 @@ final class TimelineView: NSView {
 
     // MARK: - Trim (SPEC §7.2 "Trim")
 
+    /// Marker being renamed from its ruler flag (T-930), and the popover holding the field.
+    private(set) var renamingMarker: String?
+    private var markerPopover: NSPopover?
+    @objc func commitMarkerRename(_ sender: NSTextField) {
+        if let id = renamingMarker { model?.renameMarker(id, to: sender.stringValue) }
+        renamingMarker = nil; markerPopover?.close(); markerPopover = nil; needsDisplay = true
+    }
+
+    /// ⌥ held when the edge drag began: roll instead of trim (T-932).
+    private var rollTrim = false
+    /// ⌘-drag on a clip body: slip its media (T-932); the gesture's base project and pointer start.
+    private var slipDrag: (index: Int, startX: CGFloat, project: Project)?
+
     private func beginTrim(index: Int, edge: RecorderCore.Edge) {
         guard let model, model.project.clips.indices.contains(index) else { return }
         dragClips = model.project.clips
@@ -3258,8 +3422,13 @@ final class TimelineView: NSView {
         var placed: Int?
         model.update { project in
             if let dragProject { project = dragProject }
-            placed = project.placeClip(index, start: edge == .leading ? target : beginSourceStart,
-                                       end: edge == .trailing ? target : beginSourceEnd, propagate: true)
+            if rollTrim, edge == .trailing || index > 0 {
+                // Roll the cut on this edge's side; the neighbour gives or takes the same time (length unchanged).
+                project.rollEdit(between: edge == .trailing ? index : index - 1, toSource: target); placed = index
+            } else {
+                placed = project.placeClip(index, start: edge == .leading ? target : beginSourceStart,
+                                           end: edge == .trailing ? target : beginSourceEnd, propagate: true)
+            }
         }
         model.selectedClip = placed
         let index = model.selectedClip ?? index
@@ -4363,6 +4532,9 @@ extension TimelineView {
             for segment in segments {
                 let rect = audioRect(audio, output: segment.output)
                 guard rect.maxX >= gutterWidth, rect.minX <= bounds.width else { continue }
+                NSGraphicsContext.saveGraphicsState()
+                defer { NSGraphicsContext.restoreGraphicsState() }
+                applyReviewMask(rect, id: audio.id)
                 let voice = project.audioTracks[audio.track].name.hasPrefix("Voiceover")
                 drawBlock(rect, fill: voice ? Theme.voiceover : Theme.audio,
                           tornLeft: false, tornRight: false, label: nil, selected: selected, tag: audio.color)
@@ -4972,5 +5144,65 @@ extension TimelineView {
             model.cancelGesture()
             model.saveNow()
         }
+    }
+}
+
+// MARK: - v2 gesture self-test (headless: synthesized events on a windowless view)
+
+extension TimelineView {
+    /// ⌘-drag slip, ⌥-drag roll, M marker and ⌥K key through the real event handlers, on a temp copy of `package`.
+    @MainActor static func runV2GestureSelfTest(package: URL) async throws {
+        struct Fail: Error, CustomStringConvertible { let description: String }
+        let fm = FileManager.default, copy = fm.temporaryDirectory.appendingPathComponent("gestures-\(UUID().uuidString).recorder")
+        try fm.copyItem(at: package, to: copy)
+        defer { try? fm.removeItem(at: copy) }
+        let model = try loadEditorModel(package: copy)
+        model.edit("Split") { _ = $0.split(atOutput: 5) }
+        let view = TimelineView(frame: NSRect(x: 0, y: 0, width: 1200, height: 420))
+        view.model = model
+        view.layoutSubtreeIfNeeded()
+        func mouse(_ type: NSEvent.EventType, _ p: CGPoint, _ mods: NSEvent.ModifierFlags) -> NSEvent {
+            NSEvent.mouseEvent(with: type, location: view.convert(p, to: nil), modifierFlags: mods, timestamp: 0, windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+        }
+        func key(_ chars: String, _ mods: NSEvent.ModifierFlags = [], code: UInt16 = 0) -> NSEvent {
+            NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: mods, timestamp: 0, windowNumber: 0, context: nil,
+                             characters: chars, charactersIgnoringModifiers: chars, isARepeat: false, keyCode: code)!
+        }
+        let row = view.laneRow(.clip)
+        // ⌘-drag the second clip's body left by 1 s of output (it already ends at the recording's end): the media in-point
+        // moves 1 s × its rate earlier; place and length stay.
+        let before = model.project.clips[1], length = TimeMap(model.project.clips).outputDuration
+        let start = CGPoint(x: view.x(forOutput: 7), y: row.midY), px = CGFloat(view.geometry.pxPerSecond)
+        view.mouseDown(with: mouse(.leftMouseDown, start, .command))
+        view.mouseDragged(with: mouse(.leftMouseDragged, CGPoint(x: start.x - px, y: start.y), .command))
+        view.mouseUp(with: mouse(.leftMouseUp, CGPoint(x: start.x - px, y: start.y), .command))
+        let slipped = model.project.clips[1]
+        guard abs(before.mediaIn - slipped.mediaIn - before.speed / before.timeScale) < 0.02, slipped.sourceStart == before.sourceStart,
+              abs(TimeMap(model.project.clips).outputDuration - length) < 1e-6, model.undoStepNames.last == "Slip Clip" else {
+            throw Fail(description: "⌘-drag slip: \(before.mediaIn) → \(slipped.mediaIn), undo \(model.undoStepNames.suffix(2))")
+        }
+        model.undo()
+        // ⌥-drag the cut at 5 s to 6 s: roll, total length unchanged.
+        let edge = CGPoint(x: view.x(forOutput: 5) - 1, y: row.midY)
+        view.mouseDown(with: mouse(.leftMouseDown, edge, .option))
+        view.mouseDragged(with: mouse(.leftMouseDragged, CGPoint(x: view.x(forOutput: 6), y: row.midY), .option))
+        view.mouseUp(with: mouse(.leftMouseUp, CGPoint(x: view.x(forOutput: 6), y: row.midY), .option))
+        let cut = model.project.clips[0].outputDuration
+        guard abs(cut - 6) < 0.05, abs(TimeMap(model.project.clips).outputDuration - length) < 1e-6 else {
+            throw Fail(description: "⌥-drag roll: first clip \(cut) s, length \(TimeMap(model.project.clips).outputDuration) vs \(length)")
+        }
+        // Keys: M adds a marker at the playhead, I/O set the export range.
+        model.playhead = 2; view.keyDown(with: key("m"))
+        model.playhead = 1; view.keyDown(with: key("i")); model.playhead = 3; view.keyDown(with: key("o"))
+        guard model.project.markers.count == 1, model.exportRange == TimeRange(start: 1, end: 3) else {
+            throw Fail(description: "keys: markers \(model.project.markers.count), range \(String(describing: model.exportRange))")
+        }
+        // Double-click the flag: rename (the field's action commits, as Return would).
+        let flag = view.convert(CGPoint(x: view.x(forOutput: 2), y: 10), to: nil)
+        view.mouseDown(with: NSEvent.mouseEvent(with: .leftMouseDown, location: flag, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil, eventNumber: 0, clickCount: 2, pressure: 1)!)
+        guard view.renamingMarker == model.project.markers[0].id else { throw Fail(description: "double-click did not start a rename") }
+        view.commitMarkerRename(NSTextField(string: "Intro"))
+        guard model.project.markers[0].label == "Intro", model.undoStepNames.last == "Rename Marker" else { throw Fail(description: "rename") }
+        print(String(format: "timeline-gestures: ⌘-drag slip +%.2f s media, ⌥-drag roll cut → %.2f s (length kept), M marker, I/O range", slipped.mediaIn - before.mediaIn, cut))
     }
 }

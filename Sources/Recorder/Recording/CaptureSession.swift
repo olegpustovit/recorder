@@ -26,6 +26,7 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
     private let outputQueue = DispatchQueue(label: "CaptureSession.output")
 
     private let screenWriter: TrackWriter
+    private let liveShots = ShotAnalysis.Live()   // analyze.shots cache built while recording
     private var systemWriter: TrackWriter?
     private var micWriter: TrackWriter?
 
@@ -194,6 +195,7 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
         if let error = screenWriter.error ?? extraWriters.compactMap(\.error).first ?? systemWriter?.error ?? micWriter?.error { throw error }
         let asset = AVURLAsset(url: packageURL.appendingPathComponent("screen.mov"))
         let duration = try await asset.load(.duration).seconds
+        liveShots.write(package: packageURL, duration: duration)
 
         var source = Source(kind: sourceKind, pixelWidth: pixelWidth, pixelHeight: pixelHeight,
                                scale: Double(target.scale), duration: duration, hasCamera: hasCamera,
@@ -280,6 +282,7 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
             guard let t0 else { return }
             let offset = pts - t0 - pausedSoFar
             screenWriter.append(sampleBuffer, offset: offset)
+            if let buffer = sampleBuffer.imageBuffer { liveShots.add(buffer, at: offset.seconds) }
 
         case .audio:
             guard let t0 else { return } // drop audio that arrives before the first complete screen frame

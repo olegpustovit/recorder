@@ -13,13 +13,13 @@ public struct ViewTransform: Sendable, Equatable {
 /// centre = the zoom's manual centre, or (auto) the smoothed cursor position with a dead-zone — the
 /// target only moves when the cursor leaves the central 60% of the *current* viewport, and then by
 /// just enough to bring it back to that box. `instant` zooms jump straight to the target (zero
-/// velocity) on both the entering and leaving edge; everything else reaches the target through `spring`.
+/// velocity) on both the entering and leaving edge; everything else reaches the target through the zoom's own `ease` preset, else `spring`.
 public struct CameraPath: Sendable {
     private let rate: Double
     private let duration: Double
     private let table: [ViewTransform]
 
-    public init(zooms: [Zoom], cursor: CursorPath, spring: Spring, duration: Double, rate: Double = 240, clips: [Clip] = []) {
+    public init(zooms: [Zoom], cursor: CursorPath, spring: Spring, duration: Double, rate: Double = 240, clips: [Clip] = [], cropAt: ((Double) -> NormRect)? = nil) {
         self.rate = rate
         self.duration = max(duration, 0)
         let dt = 1 / rate
@@ -42,12 +42,15 @@ public struct CameraPath: Sendable {
         var cx = 0.5, cy = 0.5, scale = 1.0
         var vx = 0.0, vy = 0.0, vScale = 0.0
         var previousZoom: Zoom?
+        var lastActive: Zoom?   // keeps a zoom's own easing for its leaving transition
         var values = [ViewTransform](repeating: .identity, count: steps)
 
         for i in 0..<steps {
             let t = Double(i) * dt
             let zoom = activeZoom(at: t)
             let stepDt = dt / timeScale(at: t)
+            if let zoom { lastActive = zoom }
+            let easing = (zoom ?? lastActive)?.ease?.spring ?? spring
 
             let targetScale = zoom?.scale ?? 1
             let targetCX: Double, targetCY: Double
@@ -57,8 +60,9 @@ public struct CameraPath: Sendable {
                     targetCY = zoom.center.y
                 } else {
                     let c = cursor.sample(atSource: t)
-                    targetCX = deadZoneTarget(cursorPos: c.x, currentCenter: cx, scale: scale)
-                    targetCY = deadZoneTarget(cursorPos: c.y, currentCenter: cy, scale: scale)
+                    let p = cropAt.map { cropSpace(x: c.x, y: c.y, in: $0(t)) } ?? (c.x, c.y)
+                    targetCX = deadZoneTarget(cursorPos: p.0, currentCenter: cx, scale: scale)
+                    targetCY = deadZoneTarget(cursorPos: p.1, currentCenter: cy, scale: scale)
                 }
             } else {
                 targetCX = 0.5
@@ -70,9 +74,9 @@ public struct CameraPath: Sendable {
                 cx = targetCX; cy = targetCY; scale = targetScale
                 vx = 0; vy = 0; vScale = 0
             } else {
-                spring.step(x: &cx, v: &vx, target: targetCX, dt: stepDt)
-                spring.step(x: &cy, v: &vy, target: targetCY, dt: stepDt)
-                spring.step(x: &scale, v: &vScale, target: targetScale, dt: stepDt)
+                easing.step(x: &cx, v: &vx, target: targetCX, dt: stepDt)
+                easing.step(x: &cy, v: &vy, target: targetCY, dt: stepDt)
+                easing.step(x: &scale, v: &vScale, target: targetScale, dt: stepDt)
             }
 
             // Clamp the viewport [c - 0.5/scale, c + 0.5/scale] inside 0...1 (AC-ZM-2).

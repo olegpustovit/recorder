@@ -668,7 +668,7 @@ enum ExporterSelfTest {
             times.insert(start + length / 2)
             times.insert(start + min(layer.fadeIn ?? 0, length) / 2)
             times.insert(start + length - min(layer.fadeOut ?? 0, length) / 2)
-            if layer.kind != .image, length > 1.1 {
+            if layer.hasMedia, length > 1.1 {
                 times.insert(start + 1 - 1.0 / 60)
                 times.insert(start + 1 + 1.0 / 60)
             }
@@ -687,7 +687,9 @@ enum ExporterSelfTest {
                 }
             }
         }
-        let orderedTimes = times.filter { $0 >= 0 && $0 < duration }.sorted()
+        // Both paths must sample the same instant: the preview seeks on a 1/600 s CMTime clock, so quantize here (an
+        // unquantized 1.286 vs the player's 1.28667 picked neighbouring frames of a variable-rate recording: maxDelta 4).
+        let orderedTimes = Set(times.map { ($0 * 600).rounded() / 600 }).filter { $0 >= 0 && $0 < duration }.sorted()
 
         guard let device = MTLCreateSystemDefaultDevice() else { throw SelfTestArgError.usage("no Metal device") }
         let compositor = try Compositor(device: device, package: packageURL)
@@ -816,7 +818,7 @@ enum ExporterSelfTest {
 
             // (3) both call `makeFrameState` with the identical outputTime/size (see `render` above).
             var previewLayers: [Int: FrameState.Texture] = [:]
-            let activeLanes = Set(project.layerStates(atOutput: t).filter { $0.block.kind != .image }.map { $0.block.track })
+            let activeLanes = Set(project.layerStates(atOutput: t).filter { $0.block.hasMedia }.map { $0.block.track })
             for (lane, decoder) in layerPlayers where activeLanes.contains(lane) {
                 _ = await decoder.player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
                 guard let buffer = decoder.output.copyPixelBuffer(forItemTime: time, itemTimeForDisplay: nil), let texture = textureCache.texture(from: buffer) else { throw SelfTestArgError.usage("No layer preview frame on lane \(lane) at \(t)") }

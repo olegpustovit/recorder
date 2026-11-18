@@ -61,7 +61,7 @@ Sources for this spec: Screen Studio's public guide (editor) and local toolchain
 | Projects | Create project from existing video file | M6 |
 | Editor | Preview canvas, play/pause, frame-accurate scrub with audio | M3 |
 | Editor | Background (wallpaper/gradient/colour/image, blur), padding, rounded corners, inset, shadow | M3 |
-| Editor | Output aspect ratio (Auto, 16:9, 9:16, 1:1, 4:3, 16:10), crop | M3 |
+| Editor | Output aspect ratio (Auto, 16:9, 9:16, 1:1, 4:3, 16:10; 4:5 via agent `reframe`), crop | M3 |
 | Editor | Timeline: clip track with split / trim / remove / speed; undo/redo | M4 |
 | Editor | Zoom track: auto-zooms from clicks, manual zooms, add/move/resize/disable/remove, instant zoom | M4 |
 | Editor | Cursor: size, smoothing preset, hide when idle, hide entirely, loop position, always-arrow, rotate, remove shakes, click sound, hide-cursor ranges | M4 (size/smooth/idle) / M6 (rest) |
@@ -429,6 +429,7 @@ My Recording.recorder/
   events.json       { "events":[ {"t":1.234,"k":"move","x":0.41,"y":0.62}, {"t":…,"k":"down","b":0,…}, {"k":"key",…}, {"k":"cursor","id":"ab12"} ] }
   cursors/ab12.png  + cursors/ab12.json {"hotX":..,"hotY":..,"scale":2}
   thumbnail.jpg     640 px wide, frame at 1 s, written on first save
+  agent-draft.json  optional pending agent draft (MCP.md D8): calls, base project/revision, exclusions; deleted on accept/discard
 ```
 
 `project.json` (times use the **timeline/source clock** unless noted; positions/sizes are normalised 0…1 of the
@@ -436,7 +437,7 @@ source frame unless noted; media in-points use their own file's seconds):
 
 ```jsonc
 {
-  "version": 3,                 // 5 for motion text; else 4 for recording layers/imported clips; else 3
+  "version": 3,                 // 6 for aspect 4:5 or cropKeys; else 5 for motion text; else 4 for recording layers/imported clips; else 3
   "id": "UUID", "title": "My Recording", "createdAt": "ISO8601",
   "source": { "kind": "display|window|area", "pixelWidth": 2880, "pixelHeight": 1800, "scale": 2, "duration": 93.4, "hasCamera": true, "hasMic": true, "hasSystemAudio": false },
   "clips":   [ { "sourceStart": 0, "sourceEnd": 41.2, "speed": 1 }, { "sourceStart": 47.0, "sourceEnd": 93.4, "speed": 2 } ],
@@ -445,7 +446,8 @@ source frame unless noted; media in-points use their own file's seconds):
   "masks":   [ { "id": "UUID", "start": 10, "end": 14, "kind": "mask|highlight", "rect": {"x":..,"y":..,"w":..,"h":..}, "opacity": 0.8 } ],
   "cursorHidden": [ { "start": 20, "end": 25 } ],
   "crop": { "x": 0, "y": 0, "w": 1, "h": 1 },
-  "output": { "aspect": "auto|16:9|9:16|1:1|4:3|16:10" },
+  "output": { "aspect": "auto|16:9|9:16|1:1|4:3|16:10|4:5" },
+  "cropKeys": [ { "t": 3.0, "rect": {"x":0.3,"y":0,"w":0.32,"h":1} } ],   // optional time-varying crop (reframe), source seconds, linear; empty = static "crop"
   "background": { "kind": "wallpaper|gradient|color|image", "wallpaper": "01", "color": "#5B3DF5", "gradient": ["#5B3DF5","#E0567A"], "gradientAngle": 45, "imagePath": "background.jpg", "blur": 0 },
   "frame": { "padding": 0.08, "cornerRadius": 0.02, "inset": 0, "insetColor": "#000000", "shadow": 0.5 },
   "cursor": { "hidden": false, "size": 1.5, "style": "smooth|medium|rapid|none", "hideWhenIdle": true, "loop": false, "alwaysArrow": false, "rotate": false, "removeShakes": false, "clickSound": false },
@@ -478,7 +480,7 @@ Rules:
   the project removes it. "Extract raw files" = reveal the package contents in Finder.
 - Chosen backdrop images use immutable `background-<id>.<ext>` files beside `project.json`; `background.imagePath`
   selects the current copy. Replacing a backdrop never overwrites the file a previous undo state references.
-- **Version rule.** Save `"version": 5` when any text uses `lowerThird` or `chapter`; otherwise save `4` when a recording layer or a clip with `file` exists; otherwise save `3`. Markers (`id`, source-time `at`, `label`) are additive and default to `[]`, with no version bump. Older builds reject a newer version with the alert above and never rewrite it. Opening a v3 project needs no migration.
+- **Version rule.** Save `"version": 6` when `output.aspect` is `4:5` or `cropKeys` is non-empty (older builds cannot decode 4:5 nor follow keys); else `"version": 5` when any text uses `lowerThird` or `chapter`; otherwise save `4` when a recording layer or a clip with `file` exists; otherwise save `3`. Markers (`id`, source-time `at`, `label`) are additive and default to `[]`, with no version bump. Older builds reject a newer version with the alert above and never rewrite it. Opening a v3 project needs no migration.
 - **Clip `group`**: optional string. Neighbouring clips with the same `group` show, select, move and trim as one clip
   (Join Clips ⌘J); each keeps its own `speed`, cuts and fades. Absent = not grouped. Older builds ignore it, so no
   version bump. A paste gets a fresh id so a copy never merges into the group it came from.
@@ -507,9 +509,11 @@ Rules:
   Camera, key, layout and text lanes keep absolute output positions when recording clips move between lane kinds.
   Audio collisions preserve sound settings and may require another lane. Recording layers count toward the four
   video-decoder-lane limit; minimum length is 0.1 media seconds, including output spans below 0.1 seconds at speed.
-- Maximum supported format is 5. New/versionless models default to version 3 metadata; atomic `save` chooses the
-  minimum version using the rule above. The loaded version remains metadata in memory. File loading checks
-  the version header before decoding feature enums so a future version fails clearly without rewriting it.
+- **One format version** (7, decided 2026-11-17: no backward-compatibility shims). `save` always writes
+  `Project.currentVersion`; there are no per-feature minimum versions, and the "vN" notes in this section are history.
+  Loading still fills missing fields with defaults so existing projects open; a file with a newer version than the
+  app fails clearly before decoding feature enums, without being rewritten. Keyframes (`keys` on texts/layers) and
+  graphics are part of version 7 (EDITING-CORE D5/D6).
 - Screen/camera-linked audio uses timeline-clock start/end, with file playback rate `mediaRate ?? 1`, mapped through
   the overlapping video clips. Unlinked/layer-linked audio and all layers are **connected**: output start =
   `TimeMap.outputTime(atSource: start)`, output duration = `end - start`, independent of video speed. Their own media
@@ -685,7 +689,7 @@ Wallpapers: ship 12 JPEGs in `Resources/Wallpapers/` (abstract gradients generat
 └───────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-Reuses the same `SelectionRectView` as §4.5 (one implementation). Size/position in source pixels.
+Reuses the same `SelectionRectView` as §4.5 (one implementation). Size/position in source pixels. Confirm sets the manual crop for the whole project and replaces any automatic reframe keyframes, even when the selection matches the saved manual crop.
 
 **AC-CROP-1** Confirm applies crop to preview + export and is one undo step; Discard/`Esc` changes nothing. **AC-CROP-2** Zoom centres and masks remain anchored to the same content after cropping (they are stored in uncropped source coordinates).
 
@@ -1152,16 +1156,60 @@ binary (e.g. a source build). The agentpack pane runs `init` (if needed) → `mc
 
 
 Per-project access is **Off**, **Read**, **Draft** (default) or **Live**, selected in the Claude inspector.
-Draft edits stay in app memory and do not change the saved project. `draft.submit` opens the Claude tab:
-review the rendered preview and timeline cut marks, untick individual operations, then Accept or Discard.
+Draft edits stay in app memory and do not change the saved project. The first successful `edit.apply` starts
+a read-only **watching** preview, showing the draft immediately; subsequent calls update that same preview.
+The human base remains frozen for autosave/Save Now/close, with no undo entry until acceptance. Before submit,
+inclusion/Accept are disabled and the panel/timeline say `Claude is editing, Esc to take over`. Escape restores
+the human base and pauses automatic preview for that session while retaining its draft. Later agent calls stay
+hidden; a human edit makes the old draft stale. `draft.submit` makes the visible draft ready for review, enables
+controls and focuses Claude. Review the preview/marks, untick individual operations or whole groups, then Accept.
+Claude may append another call to its submitted pending draft using the current checked proposal's revision.
+That returns the same draft to watching until resubmitted, retaining operation ids, human exclusions and a nil
+verdict. Status reports excluded op indices and skipped op indices/reasons so Claude can respond to rejections.
+Dry runs, empty batches and failed calls leave the submitted review ready. Acceptance after iteration still
+creates one undo step for the full checked proposal.
+Clip-splitting agent operations (`cut`, `cutWords`, `speed`) accept `snap:true`; pause-derived cuts enable it by
+default. Snapping uses the existing media/output split minimums, moves invalid boundaries to the nearest clip
+edge, and reports adjusted source ranges in `changes[].note`. Ranges that collapse below the minimum or cannot
+leave editable media are skipped with a warning, preserving the rest of the atomic batch. Their status reasons
+remain visible and they do not count toward acceptance. Strict opt-out retains exact-range validation. Zoom
+center coordinates are normalized0–1 in the source frame with a top-left origin.
+First Draft/Live apply selects Claude automatically only in a key editor window. Other clients can retain
+invisible drafts but cannot replace/submit over the current preview; their panel shows that the draft is hidden.
+Changes are collapsed by kind (Cuts, Speed, Zoom, Text, Markers, Other), with a native tri-state checkbox,
+lane swatch, count and selected duration delta. Expanding shows individual changes and skipped reasons;
+clicking a change seeks to its output time. The summary shows selected count, resulting duration and delta.
+Accept N stays pinned outside the scroll area; unticking all and Accept 0 closes without a project mutation.
+Stale/error notices stay above the summary; a stale draft offers Replay on current. Activity is collapsed.
+Disclosures open in320ms, with55ms child stagger/4pt entrance; Reduce Motion uses140ms opacity without movement.
+The Claude status strip shows the current call's intent, then Idle, Drafting, Ready for review or Accepted N.
+A1pt rail draws once on call completion; it resets at the next call and does not imply a known percentage of
+the agent's overall work. New groups wipe in over320ms with a2pt leading edge fading out over700ms. Adding
+more operations to an existing group refreshes only the edge/counts, preserving its expansion and controls.
+Reduce Motion replaces these wipes with140ms opacity and omits the edge. Sequences terminate and cancel
+when their view, replay or motion mode changes; there are no ambient loops or pulses.
+Accepted groups remain visible/read-only with Accepted N in the status/footer. Replay resets group/activity
+disclosures and cancels pending child reveals.
+New timeline blocks/marks wipe in over320ms,75ms apart by lane; existing marks keep their stable identities.
+Accepted dashed outlines settle to the normal solid block edge over220ms. Reduce Motion uses140ms opacity
+without wipes, lane delays or dash movement. One shared finite display link stops at settlement; discard or
+replacement cancels old motion. These preview/animation fields never enter project JSON.
 Accept creates one named `Claude: …` undo step; Live mode applies each call directly as one named undo step.
-A stale draft offers **Replay on current** or Discard; replay reports invalid/dependent operations as skipped.
-Only one review can be active per project. Quitting Recorder loses pending drafts; disconnecting a client does
-not automatically accept them. Human gestures, active review and voiceover recording guard conflicting edits.
+A stale draft offers **Replay on current**; replay reports invalid/dependent operations as skipped.
+Only one review can be active per project. Pending drafts persist in the package (`agent-draft.json`) and `project.open` re-adopts them; disconnecting a client does
+not automatically accept them. Human gestures, review ownership and voiceover recording guard conflicting edits.
 
 Agents never receive key characters. Activity analysis returns ranges/times only; agent frames, sheets and proxies
 force the Keys overlay off. The last 200 activity summaries are kept in memory (the panel shows the last 50 for
-this project). Agent renders use UUID files under `~/Library/Caches/Recorder/Agent/<session>/`; files older than
+this project). Each activity entry has a fixed tool/operation-kind intent and an aggregate result (counts,
+duration delta or error code), never typed keys, edit text, labels, notes, paths or raw error details.
+Concurrent in-flight calls have separate identities; finishing/cancelling one preserves the others.
+The collapsed newest-first feed shows intent/result prominently, with time/duration as secondary detail.
+The gallery's **Claude panel motion study** opens a generated disposable recording with the real inspector,
+preview and timeline. Replay stages17 operations, ending ready for review; Stop/restart cancels old work,
+Reduce Motion supplements the system setting, and closing removes the sample/session. The study uses the
+production MCPTools apply/submit path, including live propagation and the same review/autosave protections.
+Agent renders use UUID files under `~/Library/Caches/Recorder/Agent/<session>/`; files older than
 seven days are purged at launch. A final MP4 export requires a native approval sheet showing the client, project,
 range/preset and destination. Deny, timeout and cancellation write no final output. Existing destinations are never
 overwritten. Accepted final exports use the native saved settings (including configured visual effects), with an
@@ -1183,17 +1231,40 @@ notifications when the client supplies a progress token. The shim exits if the a
 | `analyze` | `transcribe` on-device, `pauses`, `fillers`, `activity` |
 | `edit` | `apply` an atomic operation array, optional `dryRun`; `undo` the latest Live agent step |
 | `draft` | `status`, `submit`, `discard` |
-| `render` | `frames` (up to 6 PNGs, at most 640px), `sheet` (up to 24 tiles), `clip` (540p MP4), `cancel` |
+| `render` | `frames` (up to 24 PNGs, at most 640px), `sheet` (up to 24 tiles), `clip` (540p MP4), `cancel` |
 | `export` | `final`, with native approval and optional SRT |
 | `ui` | `show` a playhead time and optional selected IDs |
 
 All tool times are **output seconds** at the supplied `ifRevision`; Core converts to source time before mutation.
+Editing core v2 (2026-11-17, `docs/EDITING-CORE.md`): one item view (`items`) behind timeline.get/assets/lint; `set` is the
+only patch op; new ops `graphic`, `animate`, `freeze`, `transition`, `export.final {from,to}`; `project.templates`. The human
+editor reaches the same ops through `EditorModel.apply` for discrete commands (transcript cuts, ramps).
 Reads and renders include the calling session's draft by default; final export renders the accepted live project.
-The twelve edit operations are `cut`, `cutPauses`, `cutWords`, `speed`, `zoom`, `text`, `captions`, `highlight`,
-`marker`, `update`, `remove` and `style`. IDs come from timeline/transcript reads. Revision conflicts return
+The thirteen edit operations are `cut`, `cutPauses`, `cutWords`, `speed`, `zoom`, `text`, `captions`, `highlight`,
+`marker`, `update`, `layer`, `remove` and `style`. IDs come from timeline/transcript reads. Revision conflicts return
 `STALE_REVISION`; transcript identity changes return `TRANSCRIPT_CHANGED`; invalid batches leave the project intact.
 Filler suggestions are lexical and depend on words retained by on-device recognition. Imported clips have no
 recorded transcript and are excluded from word/pause cuts.
+
+**Play draft.** While a draft is being watched or reviewed, the Claude panel footer's **Play draft** renders that draft's 540p
+proxy with the `render.clip` pipeline (progress in the button, which becomes **Cancel n%** while rendering; repeat clicks never queue a
+second render) and plays it with audio in a native player window. The preview is tied to the draft id and revision: a new
+`edit.apply`, accept, discard, take-over or editor close cancels the render and closes/deletes the preview, and a render that
+finishes for a draft that has since moved on is deleted and reported ("The draft changed while rendering"), never shown. Audio
+edit operations remain outside the MCP scope.
+
+**Assets and layers.** `project.assets` lists the image/video media already used as layers (`asset` = its `media/…` file) and
+the other library recordings the agent may read (same per-recording access gate as `project.list`). A `layer` op places one
+on the timeline from exactly one source: `asset` (existing package media), `path` (an absolute image or video file) or
+`recording` (a library recording's `screen.mov`). Images need `from`/`to`; videos play their whole clip (omit `to`) and default to
+the editor's card placement; `rect` overrides it. Local paths must be regular image/video files, at most 4 GB, inside the home or
+temp folder, not hidden, not in `~/Library` (except the agent render cache) and not inside a `.recorder` package; symlinks are
+resolved first. The app probes the file with the editor's own import code, then copies it to an immutable `media/<uuid>.<ext>`
+in the package — the saved project is never written by a draft, so the copy is invisible to autosave and the saved project until
+Accept; files whose layer is discarded, excluded or replaced are removed, a failed call removes what it imported, and Core only
+ever sees imported `asset`s (carried in the draft call's frozen context so replay never touches the disk). Audio-only files,
+trimming a video layer and agent-chosen lanes are not offered. Orphans from a draft abandoned by quitting Recorder stay in the
+package's `media/` folder until removed by hand.
 
 Settings ▸ Agents offers **Connect** for Claude Code, **Copy JSON** for other clients, and live connection status.
 The complete schemas, error codes, operation examples and acceptance checks live in [MCP.md](MCP.md).

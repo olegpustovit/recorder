@@ -1,9 +1,21 @@
 import AppKit
 import SwiftUI
 import RecorderCore
+import Observation
 
 enum UIKitGallery {
     private static var window: NSWindow?
+    private static var agentStudy: AgentPanelReplayStudy?
+
+    @MainActor static func showAgentStudy() {
+        Task {
+            do {
+                if agentStudy?.closed != false { agentStudy = try await AgentPanelReplayStudy.make() }
+                agentStudy?.controller?.window?.makeKeyAndOrderFront(nil)
+                NSApp.activate()
+            } catch { NSLog("Claude panel study unavailable: %@", error.localizedDescription) }
+        }
+    }
 
     @MainActor static func show() {
         if window == nil { window = makeWindow() }
@@ -115,6 +127,12 @@ private struct UIKitGalleryView: View {
                             VStack(alignment: .leading, spacing: 12) {
                                 masthead.modifier(GalleryReveal(enabled: advanced, order: 0, replay: replay)).id("intro")
                                 if !advanced { workspace }
+                                HStack {
+                                    Text("Claude panel motion study").font(Font(Theme.headingFont(24)))
+                                    Spacer()
+                                    Button("Open study…") { UIKitGallery.showAgentStudy() }
+                                        .buttonStyle(TechButtonStyle(kind: .secondary, compact: true))
+                                }.padding(.vertical, 12)
                                 TimelineInteractionPrototype(
                                     autoAudition: CommandLine.arguments.contains("--ui-gallery-audition"),
                                     scrollReveals: advanced, galleryReplay: replay
@@ -735,5 +753,272 @@ private struct GalleryReveal: ViewModifier {
                     withAnimation(.easeOut(duration: Theme.Motion.reveal)) { revealed = true }
                 } catch { /* Visibility changes and replay cancel pending stages. */ }
             }
+    }
+}
+
+/// Replay uses the production panel, draft replay and review renderer over generated media only.
+@MainActor @Observable final class AgentPanelReplayStudy {
+    weak var controller: EditorWindowController?
+    let model: EditorModel
+    let session = MCPSession()
+    let package: URL
+    let base: Project
+    var generation = 0
+    var playing = false
+    var reducedMotion = false { didSet { model.reviewReduceMotionPreview = reducedMotion } }
+    private(set) var closed = false
+
+    private init(_ controller: EditorWindowController, package: URL) {
+        self.controller = controller; model = controller.model; base = model.project; self.package = package
+        session.agentName = "Claude · sample replay"; session.projectURL = model.packageURL.standardizedFileURL
+        MCPServer.shared.register(session)
+        model.inspectorShowsAgent = true
+    }
+    static func make() async throws -> AgentPanelReplayStudy {
+        let package = FileManager.default.temporaryDirectory.appendingPathComponent("recorder-agent-study-\(UUID().uuidString).recorder")
+        let sample = EditorWorkspaceGallery.makeModel(at: package)
+        var project = sample.project
+        project.title = "Claude panel motion study"; project.zooms = []
+        try project.save(to: package.appendingPathComponent("project.json"))
+        do {
+            try await WorkspaceMedia.prepare(at: package)
+            try Task.checkCancellation()
+            guard let controller = await EditorWindowController.open(package: package).value else { throw CocoaError(.fileReadCorruptFile) }
+            let study = AgentPanelReplayStudy(controller, package: package)
+            controller.inspectorView = NSHostingView(rootView: AgentStudyInspector(study: study))
+            let window = controller.window!, editor = window.contentView!
+            let stack = NSStackView(); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 0
+            let controls = NSHostingView(rootView: AgentStudyControls(study: study))
+            stack.addArrangedSubview(editor); stack.addArrangedSubview(controls)
+            window.contentView = stack
+            NSLayoutConstraint.activate([editor.widthAnchor.constraint(equalTo: stack.widthAnchor),
+                controls.widthAnchor.constraint(equalTo: stack.widthAnchor), controls.heightAnchor.constraint(equalToConstant: 44)])
+            window.minSize.height += 44; window.setContentSize(NSSize(width: 1200, height: 804))
+            return study
+        } catch { try? FileManager.default.removeItem(at: package); throw error }
+    }
+    func reset() {
+        try? MCPServer.shared.finishReview(session, commit: false)
+        AgentActivity.shared.clear(sessionID: session.id)
+        session.lastDraftVerdict = nil; session.reviewError = nil
+        model.isPlaying = false
+        if model.project != base { model.edit("Reset sample replay") { $0 = base } }
+        model.inspectorShowsAgent = true
+    }
+    func run() async throws {
+        reset()
+        let speedStarts: [Double] = [2, 6, 10, 14, 18]
+        let speeds: [EditOp] = speedStarts.map { EditOp.speed(from: .seconds($0), to: .seconds($0 + 2), speed: 2) }
+        let times: [Double] = [0.3, 4.3, 8.3, 12.3, 18.3, 24.3]
+        let labels = ["Project walkthrough", "Prepare", "Record", "Review", "Export", "Recap"]
+        let texts: [EditOp] = times.enumerated().map { index, time in
+            EditOp.text(from: .seconds(time), to: .seconds(time + 1), style: .lowerThird, text: labels[index], position: nil, size: nil)
+        }
+        let markers: [EditOp] = times.dropFirst().enumerated().map { index, time in EditOp.marker(at: .seconds(time), label: "Section \(index + 1)") }
+        let steps: [[EditOp]] = [speeds, texts, [.zoom(from: 10.3, to: 13.3, scale: 1.8, center: NormPoint(x: 0.6, y: 0.4))], markers]
+        let reading = AgentActivity.shared.begin(.init(time: Date(), agent: session.agentName, tool: "timeline.get", intent: "Reading timeline",
+            projectID: base.id, sessionID: session.id))
+        do { try await Task.sleep(for: .milliseconds(500)) }
+        catch { AgentActivity.shared.finish(reading, result: "Cancelled"); throw error }
+        AgentActivity.shared.finish(reading, result: "Completed")
+        for ops in steps {
+            try Task.checkCancellation()
+            let args: [String: Any] = ["ops": try JSONSerialization.jsonObject(with: JSONEncoder().encode(ops))]
+            let call = AgentActivity.shared.begin(.init(time: Date(), agent: session.agentName, tool: "edit.apply",
+                intent: MCPTools.activityIntent("edit", "apply", args), projectID: base.id, sessionID: session.id))
+            do {
+                try await Task.sleep(for: .milliseconds(450))
+                try Task.checkCancellation()
+                var request = args
+                request["action"] = "apply"
+                request["ifRevision"] = try session.draft?.revision ?? MCPTools.revision(model.liveProject)
+                let response = await MCPTools.call("edit", request, session: session)
+                guard response["isError"] as? Bool == false else { throw CocoaError(.fileReadCorruptFile) }
+                AgentActivity.shared.clearPending(call)
+                try await Task.sleep(for: .milliseconds(850))
+            } catch { AgentActivity.shared.finish(call, result: error is CancellationError ? "Cancelled" : "INVALID_OP", isError: !(error is CancellationError)); throw error }
+        }
+        try Task.checkCancellation()
+        let response = await MCPTools.call("draft", ["action": "submit", "note": "Tightened playback, added section labels, a zoom and markers."], session: session)
+        guard response["isError"] as? Bool == false else { throw CocoaError(.fileReadCorruptFile) }
+    }
+    func close() {
+        guard !closed else { return }
+        closed = true; playing = false; generation += 1
+        try? MCPServer.shared.finishReview(session, commit: false)
+        session.draft = nil; session.connected = false; MCPServer.shared.removeFinishedSessions()
+        AgentActivity.shared.clear(sessionID: session.id)
+        UserDefaults.standard.removeObject(forKey: "agentAccess.\(base.id)")
+        try? FileManager.default.removeItem(at: package)
+    }
+}
+
+private struct AgentStudyInspector: View {
+    let study: AgentPanelReplayStudy
+    var body: some View { InspectorView(model: study.model).environment(\.agentReduceMotionPreview, study.reducedMotion) }
+}
+
+private struct AgentStudyControls: View {
+    @Bindable var study: AgentPanelReplayStudy
+    var body: some View {
+        HStack(spacing: 12) {
+            Text("Generated sample").font(Font(Theme.captionFont)).foregroundStyle(Theme.textSecondaryColor)
+            Button("Replay Claude editing") { study.playing = true; study.generation += 1 }
+                .buttonStyle(TechButtonStyle(kind: .secondary, compact: true))
+            Button("Stop") { study.playing = false; study.generation += 1 }
+                .buttonStyle(TechButtonStyle(kind: .quiet, compact: true)).disabled(!study.playing)
+            Toggle("Reduce Motion", isOn: $study.reducedMotion).toggleStyle(.checkbox).font(Font(Theme.labelFont))
+            Spacer()
+        }.padding(.horizontal, 16).frame(maxWidth: .infinity, maxHeight: .infinity).background(Theme.bgPanelColor)
+            .overlay(alignment: .top) { Rectangle().fill(Theme.strokeColor).frame(height: 1) }
+            .signalWindow()
+            .task(id: study.generation) {
+                let generation = study.generation
+                guard !study.closed else { return }
+                guard study.playing else { study.reset(); return }
+                do {
+                    try await study.run()
+                    if generation == study.generation { study.playing = false }
+                } catch {
+                    guard generation == study.generation else { return }
+                    study.playing = false; study.reset()
+                    if !(error is CancellationError) { study.session.reviewError = "Sample replay failed: \(error.localizedDescription)" }
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification, object: study.controller?.window)) { _ in study.close() }
+    }
+}
+
+extension UIKitGallery {
+    @MainActor static func checkAgentStudy(to directory: URL) async throws {
+        struct Failure: Error, CustomStringConvertible { let description: String }
+        NSApplication.shared.setActivationPolicy(.accessory); NSApplication.shared.finishLaunching()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let study = try await AgentPanelReplayStudy.make()
+        guard let controller = study.controller, let window = controller.window,
+              let controls = (window.contentView as? NSStackView)?.arrangedSubviews.last else { throw Failure(description: "Study controls unavailable") }
+        defer { window.close(); study.close() }
+        let saved = try Data(contentsOf: study.package.appendingPathComponent("project.json"))
+        func capture(_ name: String) throws {
+            let view = controller.inspectorView
+            view.layoutSubtreeIfNeeded()
+            guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw Failure(description: "Panel bitmap unavailable") }
+            view.cacheDisplay(in: view.bounds, to: rep)
+            guard let png = rep.representation(using: .png, properties: [:]) else { throw Failure(description: "Panel PNG unavailable") }
+            try png.write(to: directory.appendingPathComponent(name + ".png"))
+        }
+        func click(_ x: CGFloat, y: CGFloat = 22, in view: NSView? = nil) {
+            let location = (view ?? controls).convert(NSPoint(x: x, y: y), to: nil)
+            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                window.sendEvent(NSEvent.mouseEvent(with: type, location: location, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                    windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!)
+            }
+        }
+        func wait(_ message: String, seconds: Double = 4, until ready: () -> Bool) async throws {
+            let deadline = Date().addingTimeInterval(seconds)
+            while !ready(), Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+            guard ready() else { throw Failure(description: message) }
+        }
+        try await Task.sleep(for: .milliseconds(400))
+        try capture("idle")
+        click(200)
+        try await wait("Native Replay did not start") { study.playing }
+        try await wait("Current apply did not appear") {
+            AgentActivity.shared.current.values.contains { $0.sessionID == study.session.id && $0.intent == "Applying 5 speed ops" }
+        }
+        try capture("working")
+        for count in 1...4 {
+            try await wait("Missing replay call \(count)") { (study.session.draft?.calls.count ?? 0) >= count }
+            try await Task.sleep(for: .milliseconds(100))
+            try capture("call-\(count)-mid")
+            try await Task.sleep(for: .milliseconds(340))
+            try capture("call-\(count)")
+        }
+        try await wait("Replay did not become ready", seconds: 8) { !study.playing && study.session.draft?.submitted == true }
+        guard study.session.draft?.selectedCount == 17,
+              study.session.draft?.groups.map(\.kind) == [.speed, .zoom, .text, .markers],
+              study.model.liveProject == study.base,
+              try Data(contentsOf: study.package.appendingPathComponent("project.json")) == saved,
+              AgentActivity.shared.current.values.allSatisfy({ $0.sessionID != study.session.id }) else {
+            throw Failure(description: "Replay counts, fixed group order, idle status or base isolation")
+        }
+        try await Task.sleep(for: .milliseconds(400))
+        try capture("ready")
+        study.model.playhead = 10.8
+        let rendered = try await controller.previewView.captureRenderedFrame(atOutput: study.model.playhead)
+        let overlay = NSImageView(frame: controller.previewView.bounds)
+        overlay.image = NSImage(cgImage: rendered, size: overlay.bounds.size); overlay.imageScaling = .scaleAxesIndependently
+        controller.previewView.addSubview(overlay, positioned: .above, relativeTo: nil)
+        let originalSize = window.contentView!.bounds.size
+        for (name, size) in [("editor-ready", originalSize), ("editor-minimum", NSSize(width: 1100, height: 744))] {
+            window.setContentSize(size); window.contentView?.layoutSubtreeIfNeeded(); overlay.frame = controller.previewView.bounds
+            try await Task.sleep(for: .milliseconds(200))
+            guard let view = window.contentView?.superview, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw Failure(description: "Study editor bitmap unavailable") }
+            view.cacheDisplay(in: view.bounds, to: rep)
+            guard let png = rep.representation(using: .png, properties: [:]) else { throw Failure(description: "Study editor PNG unavailable") }
+            try png.write(to: directory.appendingPathComponent(name + ".png"))
+        }
+        window.setContentSize(originalSize); overlay.removeFromSuperview()
+        try MCPServer.shared.finishReview(study.session, commit: true)
+        guard study.model.undoStepNames.count == 1 else { throw Failure(description: "Replay acceptance must remain one undo step") }
+        try await Task.sleep(for: .milliseconds(300))
+        try capture("accepted")
+        click(200)
+        try await wait("Replay could not restart") { study.playing }
+        try await wait("Restart did not reach apply") { !AgentActivity.shared.current.isEmpty }
+        click(320)
+        try await wait("Native Stop did not clear the replay") { !study.playing && study.session.draft == nil && !study.model.isReviewingDraft }
+        try await Task.sleep(for: .milliseconds(1500))
+        guard study.session.draft == nil, AgentActivity.shared.current.values.allSatisfy({ $0.sessionID != study.session.id }), study.model.project == study.base else {
+            throw Failure(description: "Cancelled replay left stale work or an in-flight call")
+        }
+        try capture("stopped")
+        click(200)
+        try await wait("Repeated replay did not start") { study.playing }
+        try await Task.sleep(for: .milliseconds(200))
+        click(200)
+        try await wait("Repeated replay did not reset") { study.session.draft == nil }
+        try await wait("Repeated replay did not finish", seconds: 9) { !study.playing && study.session.draft?.submitted == true }
+        guard study.session.draft?.selectedCount == 17 else { throw Failure(description: "Repeated replay duplicated operations") }
+        // The native toggle sets a preview-only environment override; the user's system preference is unchanged.
+        click(410)
+        try await wait("Native Reduce Motion toggle did not change the study") { study.reducedMotion }
+        click(200)
+        try await wait("Reduced replay did not start") { study.playing }
+        try await wait("Reduced replay did not reset") { study.session.draft == nil }
+        try await wait("Reduced first call missing") { (study.session.draft?.calls.count ?? 0) >= 1 }
+        try await Task.sleep(for: .milliseconds(100))
+        try capture("reduced-mid")
+        try await wait("Reduced replay did not finish", seconds: 9) { !study.playing && study.session.draft?.submitted == true }
+        try await Task.sleep(for: .milliseconds(400))
+        try capture("reduced-ready")
+        study.session.reviewError = "INVALID_OP: sample error state"
+        AgentActivity.shared.log(.init(time: Date(), agent: study.session.agentName, tool: "edit.apply", intent: "Applying edits",
+            result: "INVALID_OP", isError: true, projectID: study.base.id, sessionID: study.session.id))
+        try await Task.sleep(for: .milliseconds(180))
+        try capture("error")
+        func buttons(_ view: NSView) -> [NSButton] { (view as? NSButton).map { [$0] } ?? view.subviews.flatMap(buttons) }
+        guard let markers = buttons(controller.inspectorView).first(where: { $0.accessibilityLabel() == "Include markers" }) else { throw Failure(description: "Marker group unavailable") }
+        let frame = markers.convert(markers.bounds, to: controller.inspectorView)
+        click(25, y: frame.midY + 48, in: controller.inspectorView)
+        try await Task.sleep(for: .milliseconds(700))
+        try capture("activity-error")
+        click(200)
+        try await wait("Expanded activity replay did not reset") { study.session.draft == nil }
+        try await Task.sleep(for: .milliseconds(150))
+        try capture("replay-reset")
+        click(320)
+        try await wait("Stop after expanded activity did not finish") { !study.playing && study.session.draft == nil }
+        let ownProject = study.base.id, otherSession = UUID().uuidString
+        let other = AgentActivity.shared.begin(.init(time: Date(), agent: "Other sample", tool: "timeline.get", intent: "Reading timeline", projectID: ownProject, sessionID: otherSession))
+        let first = AgentActivity.shared.begin(.init(time: Date(), agent: "Sample", tool: "render.clip", intent: "Rendering preview", projectID: ownProject, sessionID: study.session.id))
+        AgentActivity.shared.finish(first, result: "Cancelled")
+        guard AgentActivity.shared.current[other] != nil else { throw Failure(description: "Finishing one call cleared a concurrent call") }
+        AgentActivity.shared.finish(other, result: "Completed")
+        AgentActivity.shared.clear(sessionID: otherSession)
+        window.close()
+        guard study.closed, !FileManager.default.fileExists(atPath: study.package.path),
+              !MCPServer.shared.sessions.contains(where: { $0 === study.session }) else { throw Failure(description: "Closing the study retained its session or files") }
+        print("Agent panel motion: native Replay/Stop/Reduce Motion, four cumulative groups/17 changes, working/idle/error/ready/accepted samples, rapid restart/cancellation, frozen-base isolation, one undo and concurrent activity cleanup verified: \(directory.path)")
     }
 }
